@@ -19,12 +19,16 @@ Edits to opportunities.json (patch or write_file) must keep every existing "sour
 "queried_at" value. Test 13c rewrote a record's source to a different hotel's page, so the
 earlier hotels' prices in that record looked sourced to a page that never showed them; it also
 dropped a candidate date window. New findings go in their own fields with their own source.
+
+A clarify question's markdown links are rewritten as "名稱：網址" (the question is plain text on
+Telegram). When a question times out, the reply that follows must not repeat it: see TIMED_OUT.
 """
 import json
 import os
 from pathlib import Path
 import re
 import sqlite3
+from urllib.parse import unquote
 
 TOTAL = re.compile(r"總計 NT\$[\d,]+[^\n]*")
 MEDIA = re.compile(r"^\s*MEDIA:", re.M)
@@ -152,6 +156,40 @@ def problem(text, output):
     return None
 
 
+LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
+
+
+def plain_links(text):
+    """A clarify question is sent as plain text, so "[官網訂房](https://…)" shows as typed.
+    Write "官網訂房：https://…" instead, with the address decoded so a Google Maps search reads
+    as the place's name rather than a run of %E7%83%8F…; the phone still opens it as a link."""
+    return LINK.sub(lambda m: f"{m.group(1)}：{short_url(m.group(2))}", text)
+
+
+MAPS_SEARCH = re.compile(r"https://www\.google\.com/maps/search/\?api=1&query=([^&#\s]+)$")
+
+
+def short_url(url):
+    """The shortest address that opens the same page: a Google Maps search becomes
+    https://maps.google.com/?q=<place name>, anything else is only decoded."""
+    found = MAPS_SEARCH.match(url)
+    if found:
+        return "https://maps.google.com/?q=" + unquote(found.group(1)).replace(" ", "+")
+    return unquote(url)
+
+
+def readable_questions(args):
+    """args with every question's markdown links written out, or None when there are none."""
+    questions = args.get("questions")
+    if isinstance(questions, list):
+        changed = [dict(q, question=plain_links(str(q.get("question", "")))) if isinstance(q, dict) else q
+                   for q in questions]
+        return {"questions": changed} if changed != questions else None
+    if isinstance(args.get("question"), str) and LINK.search(args["question"]):
+        return {"question": plain_links(args["question"])}
+    return None
+
+
 def pre_tool_call(tool_name, args, task_id="", session_id="", turn_id="", **kwargs):
     if tool_name in ("patch", "write_file") and isinstance(args, dict):
         try:
@@ -159,23 +197,85 @@ def pre_tool_call(tool_name, args, task_id="", session_id="", turn_id="", **kwar
         except Exception:  # a broken check must never stop the bot
             return None
         return {"action": "block", "message": why} if why else None
-    if tool_name != "clarify" or not isinstance(args, dict) or not session_id:
+    if tool_name != "clarify" or not isinstance(args, dict):
         return None
     try:
         text = question_text(args)
         if MEDIA.search(text):
             return {"action": "block", "message": MEDIA_PROBLEM}
-        if not TOTAL.search(text):
-            return None
-        home = os.environ.get("HERMES_HOME") or Path.home() / ".hermes"
-        output = latest_cost_output(session_id, home)
-        if output is UNKNOWN:
-            return None
-        why = problem(text, output)
+        why = None
+        if TOTAL.search(text) and session_id:
+            home = os.environ.get("HERMES_HOME") or Path.home() / ".hermes"
+            output = latest_cost_output(session_id, home)
+            if output is not UNKNOWN:
+                why = problem(text, output)
+        if why:
+            return {"action": "block", "message": why}
+        readable = readable_questions(args)
     except Exception:  # a broken check must never stop the bot from answering
         return None
-    return {"action": "block", "message": why} if why else None
+    return {"action": "modify", "args": readable} if readable else None
+
+
+# 2026-11-15: a button question went unanswered for 10 minutes; clarify gave up, and 小居's
+# reply then repeated the whole plan as a second message under buttons that no longer worked.
+# After a timed-out question the reply says so in one line and lists the choices to type.
+TIMED_OUT = {}  # session_id -> {"turn", "question", "choices", "minutes"}
+TIMEOUT_NOTE = ("使用者還沒選，按鈕已失效。最後回覆不要重貼方案或問題（手機上已經看得到），"
+                "只說一句按鈕已失效、想繼續就直接回覆編號或打字，並列出選項。")
+
+
+def transform_tool_result(tool_name="", args=None, result=None, session_id="", turn_id="", **kwargs):
+    if tool_name != "clarify" or not session_id or not isinstance(result, str):
+        return None
+    try:
+        data = json.loads(result)
+        if not isinstance(data, dict) or data.get("outcome") != "timed_out":
+            TIMED_OUT.pop(session_id, None)
+            return None
+        responses = [r for r in data.get("responses") or [] if isinstance(r, dict)]
+        minutes = re.search(r"(\d+)\s*m\]", str(data.get("notice", "")))
+        TIMED_OUT[session_id] = {
+            "turn": turn_id,
+            "question": "\n".join(str(r.get("question", "")) for r in responses),
+            "choices": [str(c) for r in responses for c in r.get("choices_offered") or []],
+            "minutes": minutes.group(1) if minutes else "",
+        }
+        return json.dumps({**data, "note": TIMEOUT_NOTE}, ensure_ascii=False)
+    except Exception:
+        return None
+
+
+def repeats(reply, question):
+    """Whether the reply re-sends the question's content (three of its lines, or its total)."""
+    asked = {line.strip() for line in question.splitlines() if len(line.strip()) >= 4}
+    said = [line.strip() for line in reply.splitlines() if line.strip()]
+    if any(TOTAL.search(line) and line in asked for line in said):
+        return True
+    return sum(line in asked for line in said) >= 3
+
+
+def timeout_reply(reply, pending):
+    photos = [line.strip() for line in reply.splitlines() if MEDIA.match(line)]
+    waited = f"{pending['minutes']} 分鐘" if pending["minutes"] else "太久"
+    lines = photos + [f"上面的按鈕問題 {waited}沒選，按鈕已失效。想繼續就直接回覆編號或打字："]
+    lines += [f"{n}. {choice}" for n, choice in enumerate(pending["choices"], start=1)]
+    return "\n".join(lines)
+
+
+def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
+    pending = TIMED_OUT.pop(session_id, None) if session_id else None
+    if not pending or not isinstance(response_text, str):
+        return None
+    if pending["turn"] and turn_id and pending["turn"] != turn_id:
+        return None
+    try:
+        return timeout_reply(response_text, pending) if repeats(response_text, pending["question"]) else None
+    except Exception:
+        return None
 
 
 def register(ctx):
     ctx.register_hook("pre_tool_call", pre_tool_call)
+    ctx.register_hook("transform_tool_result", transform_tool_result)
+    ctx.register_hook("transform_llm_output", transform_llm_output)

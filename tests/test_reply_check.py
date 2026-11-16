@@ -120,6 +120,65 @@ class ReplyCheckTests(unittest.TestCase):
             self.assertTrue((REPO / "plugins" / setup.REPLY_CHECK / name).is_file())
 
 
+MAPS = "https://www.google.com/maps/search/?api=1&query=%E7%83%8F%E4%BE%86%E6%B9%AF%E5%B8%83%E8%8B%91%E6%BA%AB%E6%B3%89%E9%A4%A8"
+PLAN = ("12/7 烏來溫泉一日遊，兩人總價 NT$1,600，預算剩 NT$400\n"
+        "總計 NT$1,600，預算剩 NT$400（NT$760 未確認）\n首選：烏來湯布苑溫泉館（雙人溪景湯屋）\n"
+        f"照片：未取得\n📍 [Google 地圖・查空房]({MAPS})\n🏨 [官網訂房](https://www.yufuinspring.com.tw/)\n"
+        "📞 02-2661-8001\n備案：12/6–12/7 礁溪山口兩天一夜\n下一步想如何安排？")
+CHOICES = ["維持 12/7 烏來一日遊", "改看 12/6–12/7 礁溪兩天一夜", "改看其他溫泉地點"]
+
+
+def timed_out(question=PLAN, choices=CHOICES):
+    return json.dumps({"responses": [{"question": question, "choices_offered": choices, "status": "unanswered",
+                                      "user_response": None}],
+                       "outcome": "timed_out", "notice": "[user did not respond within 10m]"}, ensure_ascii=False)
+
+
+class ButtonQuestionTests(unittest.TestCase):
+    def test_links_in_a_button_question_are_written_out_short(self):
+        # 2026-11-15: the phone showed "[Google 地圖・查空房](https://www.google.com/maps/search/?api=1&query=
+        # %E7%83%8F…)" — a clarify question is plain text, so markdown links show as typed.
+        result = check.pre_tool_call("clarify", {"questions": [{"question": PLAN, "choices": CHOICES}]})
+        self.assertEqual(result["action"], "modify")
+        text = result["args"]["questions"][0]["question"]
+        self.assertIn("📍 Google 地圖・查空房：https://maps.google.com/?q=烏來湯布苑溫泉館\n", text)
+        self.assertIn("🏨 官網訂房：https://www.yufuinspring.com.tw/\n", text)
+        self.assertNotIn("](", text)
+        self.assertEqual(result["args"]["questions"][0]["choices"], CHOICES)
+        self.assertIsNone(check.pre_tool_call("clarify", {"questions": [{"question": "要哪天？", "choices": ["a"]}]}))
+
+    def test_a_timed_out_question_is_not_sent_again(self):
+        # 2026-11-15 21:47 → 21:57: nobody pressed a button for 10 minutes, then the reply repeated the
+        # whole plan as a second message under buttons that had stopped working.
+        noted = json.loads(check.transform_tool_result("clarify", {}, timed_out(), session_id="s9", turn_id="t1"))
+        self.assertIn("不要重貼方案", noted["note"])
+        reply = PLAN.rsplit("\n", 1)[0] + "\nMEDIA:C:/hermes/photos/a.jpg"
+        out = check.transform_llm_output(response_text=reply, session_id="s9", turn_id="t1")
+        self.assertEqual(out, "MEDIA:C:/hermes/photos/a.jpg\n上面的按鈕問題 10 分鐘沒選，按鈕已失效。"
+                              "想繼續就直接回覆編號或打字：\n1. 維持 12/7 烏來一日遊\n"
+                              "2. 改看 12/6–12/7 礁溪兩天一夜\n3. 改看其他溫泉地點")
+        # Only that turn's reply; the next turn is left alone.
+        self.assertIsNone(check.transform_llm_output(response_text=reply, session_id="s9", turn_id="t2"))
+
+    def test_a_short_reply_or_an_answer_is_left_alone(self):
+        check.transform_tool_result("clarify", {}, timed_out(), session_id="s9", turn_id="t1")
+        self.assertIsNone(check.transform_llm_output(response_text="按鈕已失效，回覆 1–3 即可。",
+                                                     session_id="s9", turn_id="t1"))
+        answered = json.dumps({"responses": [], "outcome": "submitted"})
+        self.assertIsNone(check.transform_tool_result("clarify", {}, answered, session_id="s9", turn_id="t3"))
+        self.assertIsNone(check.transform_llm_output(response_text=PLAN, session_id="s9", turn_id="t3"))
+
+    def test_another_conversation_is_left_alone(self):
+        check.transform_tool_result("clarify", {}, timed_out(), session_id="s9", turn_id="t1")
+        self.assertIsNone(check.transform_llm_output(response_text=PLAN, session_id="other", turn_id="t1"))
+        check.TIMED_OUT.clear()
+
+    def test_hooks_are_declared(self):
+        manifest = (REPO / "plugins/travel-reply-check/plugin.yaml").read_text(encoding="utf-8")
+        for hook in ("pre_tool_call", "transform_tool_result", "transform_llm_output"):
+            self.assertIn(f"  - {hook}", manifest)
+
+
 if __name__ == "__main__":
     unittest.main()
 
