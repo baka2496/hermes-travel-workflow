@@ -5,6 +5,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from urllib.parse import unquote
 
 REPO = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("reply_check", REPO / "plugins/travel-reply-check/__init__.py")
@@ -17,19 +18,24 @@ COST = ("總計 NT$2,932，預算剩 NT$3,068（全部未確認）\r\n"
         "• 兩天餐飲小吃估算 NT$800，未確認")
 
 
-def home_with(*outputs, session="s1"):
-    """A Hermes home whose session ran trip-cost.py once per output, in order."""
+def home_with(*outputs, session="s1", tool="trip-cost.py", home=None):
+    """A Hermes home whose session ran `tool` once per output, in order."""
     # Retain fixtures: the user's policy forbids recursive cleanup.
-    home = Path(tempfile.mkdtemp(prefix="hermes-reply-check-"))
-    path = home / "profiles" / "travel-commander" / "state.db"
-    path.parent.mkdir(parents=True)
+    path = Path(home or tempfile.mkdtemp(prefix="hermes-reply-check-")) / "profiles" / "travel-commander" / "state.db"
+    home = path.parents[2]
+    if not path.exists():
+        path.parent.mkdir(parents=True)
+        db = sqlite3.connect(path)
+        db.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, "
+                   "content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL)")
+        db.execute("INSERT INTO messages (session_id, role, content) VALUES ('s1', 'user', '排方案')")
+        db.commit()
+        db.close()
     db = sqlite3.connect(path)
-    db.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, "
-               "content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL)")
-    db.execute("INSERT INTO messages (session_id, role, content) VALUES ('s1', 'user', '排方案')")
-    for n, output in enumerate(outputs):
+    for output in outputs:
+        n = db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
         call = {"id": f"c{n}", "type": "function", "function": {
-            "name": "terminal", "arguments": json.dumps({"command": '"python" "…/trip-cost.py" --budget 6000 x=1'})}}
+            "name": "terminal", "arguments": json.dumps({"command": f'"python" "…/{tool}" x=1'})}}
         db.execute("INSERT INTO messages (session_id, role, tool_calls) VALUES (?, 'assistant', ?)",
                    (session, json.dumps([call])))
         db.execute("INSERT INTO messages (session_id, role, content, tool_call_id, tool_name) VALUES (?, 'tool', ?, ?, "
@@ -172,6 +178,43 @@ class ButtonQuestionTests(unittest.TestCase):
         check.transform_tool_result("clarify", {}, timed_out(), session_id="s9", turn_id="t1")
         self.assertIsNone(check.transform_llm_output(response_text=PLAN, session_id="other", turn_id="t1"))
         check.TIMED_OUT.clear()
+
+    def test_booking_lines_must_be_what_the_tool_printed(self):
+        # 2026-11-16 (Telegram): booking-links.py printed the map search for 「山口溫泉飯店」, and the
+        # question showed 「山口溫泉館」, a link 小居 had typed itself.
+        printed = ("📍 [Google 地圖・查空房](https://www.google.com/maps/search/?api=1&query=%E5%B1%B1%E5%8F%A3"
+                   "%E6%BA%AB%E6%B3%89%E9%A3%AF%E5%BA%97)\n"
+                   "🛏 [Booking](https://www.booking.com/hotel/tw/shan-kou-wen-quan-fan-dian.zh-tw.html)")
+        home = home_with(printed, tool="booking-links.py")
+        typed = ("12/6–12/7 礁溪兩天一夜\n📍 [Google 地圖](https://www.google.com/maps/search/?api=1&query="
+                 "%E5%B1%B1%E5%8F%A3%E6%BA%AB%E6%B3%89%E9%A4%A8)\n"
+                 "🏨 [Booking 訂房](https://www.booking.com/hotel/tw/shan-kou-wen-quan-fan-dian.zh-tw.html)\n下一步？")
+        result = ask(home, typed)
+        self.assertEqual(result["action"], "block")
+        self.assertIn("山口溫泉館", unquote(result["message"]).split("它印過的是")[0])
+        self.assertNotIn("Booking 訂房", result["message"].split("它印過的是")[0])
+        self.assertIn(printed, result["message"])
+        # Pasted as printed (or already written short), it goes out, with its links written out.
+        self.assertEqual(ask(home, "方案\n" + printed + "\n下一步？")["action"], "modify")
+        short = "方案\n📍 Google 地圖：https://maps.google.com/?q=山口溫泉飯店\n下一步？"
+        self.assertIsNone(ask(home, short))
+
+    def test_a_phone_must_be_one_the_tool_printed(self):
+        home = home_with("📍 [Google 地圖・查空房](https://www.google.com/maps/search/?api=1&query=x)\n📞 03-9888699",
+                         tool="booking-links.py")
+        self.assertIsNone(ask(home, "方案\n📞 03-9888699\n下一步？"))
+        result = ask(home, "方案\n📞 03-9888698\n下一步？")
+        self.assertEqual(result["action"], "block")
+        self.assertIn("📞 03-9888698", result["message"])
+
+    def test_links_without_a_tool_run_are_held_back(self):
+        result = ask(home_with(), "方案\n🏨 [官網](https://www.example-hotel.com.tw/)\n下一步？")
+        self.assertEqual(result["action"], "block")
+        self.assertIn("還沒有執行 booking-links.py", result["message"])
+
+    def test_other_lines_and_addresses_pass(self):
+        home = home_with()
+        self.assertIsNone(ask(home, "📍 集合：台北車站東三門\n來源：https://www.metro.taipei/\n要哪天？"))
 
     def test_hooks_are_declared(self):
         manifest = (REPO / "plugins/travel-reply-check/plugin.yaml").read_text(encoding="utf-8")
