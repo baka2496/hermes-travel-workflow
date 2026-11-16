@@ -87,6 +87,16 @@ UNKNOWN = object()  # the conversation is in no readable database: nothing to ch
 def latest_cost_output(session_id, home):
     """Output of the last trip-cost.py run in this conversation, None if it has none yet,
     or UNKNOWN if the conversation cannot be found."""
+    outputs = tool_outputs(session_id, home, TOOL)
+    if outputs is UNKNOWN:
+        return UNKNOWN
+    headed = [o for o in outputs if o.startswith("總計")]
+    return headed[-1] if headed else None
+
+
+def tool_outputs(session_id, home, tool):
+    """Outputs of every run of `tool` in this conversation, oldest first (empty if none),
+    or UNKNOWN if the conversation cannot be found."""
     for path in databases(home):
         try:
             db = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=5)
@@ -97,12 +107,13 @@ def latest_cost_output(session_id, home):
                 continue
             ids = []
             for (calls,) in db.execute("SELECT tool_calls FROM messages WHERE session_id = ? AND tool_calls LIKE ? "
-                                       "ORDER BY id", (session_id, f"%{TOOL}%")):
+                                       "ORDER BY id", (session_id, f"%{tool}%")):
                 for call in json.loads(calls or "[]"):
                     function = call.get("function", call)
-                    if TOOL in str(function.get("arguments", "")):
+                    if tool in str(function.get("arguments", "")):
                         ids.append(call.get("id") or call.get("call_id"))
-            for call_id in reversed(ids):
+            outputs = []
+            for call_id in ids:
                 row = db.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'tool' "
                                  "AND tool_call_id = ? ORDER BY id DESC LIMIT 1", (session_id, call_id)).fetchone()
                 if not row:
@@ -111,9 +122,10 @@ def latest_cost_output(session_id, home):
                     output = json.loads(row[0]).get("output", "")
                 except (ValueError, AttributeError):
                     output = row[0] or ""
-                if output.lstrip().startswith("總計"):
-                    return output.replace("\r\n", "\n").strip()
-            return None
+                output = str(output or "").replace("\r\n", "\n").strip()
+                if output:
+                    outputs.append(output)
+            return outputs
         except sqlite3.Error:
             continue
         finally:
@@ -190,6 +202,50 @@ def readable_questions(args):
     return None
 
 
+# 2026-11-16: booking-links.py printed the map link for 「山口溫泉飯店」, and the question showed
+# one for 「山口溫泉館」 that 小居 had typed itself. Booking lines are pasted as printed.
+LINKS_TOOL = "booking-links.py"
+BOOKING_LINE = re.compile(r"^[\s•\-*]*(📍|🏨|🛏|📞)")
+ADDRESS = re.compile(r"https?://[^\s)\]）]+")
+MAPS = re.compile(r"https?://(?:www\.google\.[^/\s]+/maps|maps\.google\.[^/\s]+|maps\.app\.goo\.gl)")
+
+
+def printed_links(outputs):
+    """Addresses (as printed, and as plain_links writes them) and phone numbers booking-links.py printed."""
+    addresses, phones = set(), set()
+    for output in outputs:
+        for line in output.splitlines():
+            for url in ADDRESS.findall(line):
+                addresses.update({url, short_url(url)})
+            if line.strip().startswith("📞"):
+                phones.add(line.strip()[1:].strip())
+    return addresses, phones
+
+
+def links_problem(text, outputs):
+    """Why the booking lines in this question are not booking-links.py's, or None."""
+    lines = [line.strip() for line in text.splitlines()
+             if BOOKING_LINE.match(line) or MAPS.search(line)]
+    if not lines:
+        return None
+    addresses, phones = printed_links(outputs)
+    wrong = []
+    for line in lines:
+        if line.lstrip("•-* ").startswith("📞"):
+            phone = line.lstrip("•-* ")[1:].strip()
+            if phone and phone not in phones:
+                wrong.append(line)
+        elif any(unquote(url) not in {unquote(a) for a in addresses} for url in ADDRESS.findall(line)):
+            # A 📍 line without an address (e.g. 「📍 集合：台北車站」) is not a booking link.
+            wrong.append(line)
+    if not wrong:
+        return None
+    printed = "\n".join(outputs) if outputs else f"（這次對話還沒有執行 {LINKS_TOOL}）"
+    return (f"地圖、官網、訂房、電話這幾行要原樣貼上 {LINKS_TOOL} 印出的結果，不能自己改店名、網址或電話。"
+            f"這幾行和它印的不一樣：{'；'.join(wrong)}。它印過的是：\n{printed}\n"
+            f"要換地方就用正確名稱重跑 {LINKS_TOOL}，再把輸出原樣貼上。")
+
+
 def pre_tool_call(tool_name, args, task_id="", session_id="", turn_id="", **kwargs):
     if tool_name in ("patch", "write_file") and isinstance(args, dict):
         try:
@@ -204,11 +260,16 @@ def pre_tool_call(tool_name, args, task_id="", session_id="", turn_id="", **kwar
         if MEDIA.search(text):
             return {"action": "block", "message": MEDIA_PROBLEM}
         why = None
+        home = os.environ.get("HERMES_HOME") or Path.home() / ".hermes"
         if TOTAL.search(text) and session_id:
-            home = os.environ.get("HERMES_HOME") or Path.home() / ".hermes"
             output = latest_cost_output(session_id, home)
             if output is not UNKNOWN:
                 why = problem(text, output)
+        if not why and session_id and any(BOOKING_LINE.match(line) or MAPS.search(line)
+                                          for line in text.splitlines()):
+            outputs = tool_outputs(session_id, home, LINKS_TOOL)
+            if outputs is not UNKNOWN:
+                why = links_problem(text, outputs)
         if why:
             return {"action": "block", "message": why}
         readable = readable_questions(args)
