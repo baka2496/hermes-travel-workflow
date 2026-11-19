@@ -44,27 +44,82 @@ def records_show(records, key, pattern):
 
 def opened_pages_show(hermes_root, key, pattern, now):
     """True if a page tool opened that page in the last few hours and its text shows the value."""
+    return opened_page_text(hermes_root, key, pattern, now) is not None
+
+
+def opened_page_text(hermes_root, key, pattern, now):
+    """The text of the latest page-tool result for that page, in the last few hours, that shows the
+    value; None if there is none."""
     since = now - RECENT_HOURS * 3600
+    found = None
     for db_path in sorted((hermes_root / "profiles").glob("*/state.db")):
         try:
             with closing(sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=5)) as db:
-                if shows(db, since, key, pattern):
-                    return True
+                text = shows(db, since, key, pattern)
+                if text is not None:
+                    found = text
         except sqlite3.Error:  # a busy or foreign database is no evidence either way
             continue
-    return False
+    return found
 
 
 def shows(db, since, key, pattern):
-    """True if one page-tool result in this database shows the value and was for that page."""
+    """The latest page-tool result in this database that shows the value and was for that page, or None."""
     rows = db.execute("SELECT id, session_id, tool_call_id, tool_name, content FROM messages "
-                      "WHERE role = 'tool' AND timestamp >= ?", (since,)).fetchall()
+                      "WHERE role = 'tool' AND timestamp >= ? ORDER BY id DESC", (since,)).fetchall()
     for row_id, session, call_id, tool, content in rows:
-        if not tool or not tool.startswith(PAGE_TOOLS) or not content or not pattern.search(content):
+        if not tool or not tool.startswith(PAGE_TOOLS) or not content or not pattern.search(visible(content)):
             continue
         if key in result_pages(db, session, row_id, call_id, content):
-            return True
-    return False
+            return visible(content)
+    return None
+
+
+# 2026-11-19 (Telegram): 「客房泡湯2小時 NT$800」 counted as confirmed from 湯布苑's page. Its visible
+# prices were 「假日特價 $800 / 1小時」; 「價格800起，平日2小時」 sat only inside a share button's
+# URL-encoded link. Text a visitor cannot read is no evidence.
+ENCODED = re.compile(r"[^\s\"'<>\\]*(?:%[0-9A-Fa-f]{2}){2}[^\s\"'<>\\]*")
+
+
+def visible(text):
+    """The text without URL-encoded runs (share links, tracking parameters)."""
+    return ENCODED.sub(" ", text or "")
+
+
+# 2026-11-19: the plan said 「雙人溪景湯屋 NT$600」; the official page said 「平日特價 $600 / 1小時」.
+UNIT_AFTER = re.compile(r"^\s*(?:元|TWD)?\s*(?:[/／]\s*|每\s*)(?P<unit>\d*\s*(?:小時|hr|分鐘|晚|人|位|次|間|房|天|日))")
+STARTING = re.compile(r"^\s*(?:元)?\s*起")
+UNIT_BEFORE = re.compile(r"每\s*(?P<unit>\d*\s*(?:小時|分鐘|晚|人|位|次|間|房|天|日))\s*[:：]?\s*(?:NT\$|\$|TWD)?\s*$")
+
+
+DAY = re.compile(r"平日|假日|週末|周末|週六|週日|例假日")
+
+
+def price_details(text, pattern):
+    """What the page says right next to the price: {"unit": 「1小時」, 「人」, 「起價」 or None,
+    "day": 「平日」, 「假日」 or None}, from the first place the price appears with either."""
+    for match in pattern.finditer(text or ""):
+        after, before = text[match.end():match.end() + 20], text[max(0, match.start() - 20):match.start()]
+        unit = UNIT_AFTER.match(after) or UNIT_BEFORE.search(before)
+        unit = re.sub(r"\s+", "", unit["unit"]) if unit else "起價" if STARTING.match(after) else None
+        # The label nearest the price: 「平日特價 $600 / 1小時 | 假日特價 $800」 puts both before 800.
+        line = re.split(r"[\n|｜]", before)[-1]
+        days = DAY.findall(line)
+        day = ("平日" if days[-1] == "平日" else "假日") if days else None
+        if unit or day:
+            return {"unit": unit, "day": day}
+    return {"unit": None, "day": None}
+
+
+def price_unit(text, pattern):
+    """What the page says the price is for, right next to it: 「1小時」, 「人」, or 「起價」; else None."""
+    return price_details(text, pattern)["unit"]
+
+
+def details_shown(source, pattern, hermes_root=HERMES_ROOT, now=None):
+    """What an opened page says next to this price (see price_details)."""
+    text = opened_page_text(Path(hermes_root), page_key(source), pattern, now or time.time())
+    return price_details(text, pattern)
 
 
 def own_call_pages(db, session, row_id, call_id):
