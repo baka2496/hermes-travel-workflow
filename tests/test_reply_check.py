@@ -330,6 +330,40 @@ class ButtonQuestionTests(unittest.TestCase):
             self.assertIn(f"  - {hook}", manifest)
 
 
+
+class CheckersAreOffLimitsTests(unittest.TestCase):
+    # 2026-11-19 (Telegram): a cheaper-hot-spring request took 42 minutes; 小居 queried state.db,
+    # read the checkers' code and patched page_evidence.py to make a price pass.
+    TOOLS = "C:/Users/shiro/AppData/Local/hermes/shared/travel-workflow"
+
+    def blocked(self, tool, **args):
+        result = check.pre_tool_call(tool, args, session_id="s1")
+        return bool(result) and result.get("action") == "block" and "檢查結果就是結論" in result["message"]
+
+    def test_editing_or_reading_the_checkers_is_blocked(self):
+        self.assertTrue(self.blocked("patch", path=f"{self.TOOLS}/page_evidence.py", old_string="a", new_string="b"))
+        self.assertTrue(self.blocked("write_file", path=r"C:\hermes\shared\travel-workflow\trip-cost.py", content="x"))
+        self.assertTrue(self.blocked("read_file", path=f"{self.TOOLS}/trip-cost.py"))
+        self.assertTrue(self.blocked("patch", path="C:/hermes/profiles/project-manager/plugins/travel-reply-check/__init__.py",
+                                     old_string="a", new_string="b"))
+        for command in (
+                "python -c \"import sqlite3; sqlite3.connect('C:/hermes/profiles/project-manager/state.db')\"",
+                f"python -c \"import sys; sys.path.append('{self.TOOLS}'); import page_evidence\"",
+                f"type {self.TOOLS}/page_evidence.py",
+                f"python -c \"import importlib.util; importlib.util.spec_from_file_location('x', 'y')\""):
+            with self.subTest(command=command):
+                self.assertTrue(self.blocked("terminal", command=command))
+
+    def test_running_the_tools_is_fine(self):
+        for command in (
+                f"\"C:/Python313/python.exe\" \"{self.TOOLS}/trip-cost.py\" --budget 2000 \"湯屋=699@https://a.example/\"",
+                f"python {self.TOOLS}/place-photo.py 春和 --page https://a.example/ --list",
+                f"python {self.TOOLS}/trip-cost.py --help"):
+            with self.subTest(command=command):
+                self.assertFalse(self.blocked("terminal", command=command))
+        self.assertFalse(self.blocked("read_file", path=f"{self.TOOLS}/opportunities.json"))
+        self.assertFalse(self.blocked("patch", path=f"{self.TOOLS}/opportunities.json", old_string="a", new_string="a b"))
+
 if __name__ == "__main__":
     unittest.main()
 

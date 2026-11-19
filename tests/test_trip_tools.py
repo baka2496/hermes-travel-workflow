@@ -168,6 +168,7 @@ class TripCostTests(unittest.TestCase):
         self.assertNotIn("未確認", out)
         for name in ("油錢", "停車費", "套房（來源網頁上沒看到這個價格）"):
             self.assertIn(name, err)  # the agent still learns what was left out
+        self.assertIn("不要再查原因或改程式", err)  # 2026-11-19: 42 minutes spent fighting the check
         status, out, err = run("trip-cost.py", "--budget", "2000", "油錢=120", "--records", records,
                                "--hermes-root", root, "--preferences", str(prefs))
         self.assertEqual(status, 0, err)

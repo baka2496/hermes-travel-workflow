@@ -185,7 +185,9 @@ def report_hidden(hidden):
         sys.stdout.flush()
         names = "、".join(f"{item['name']}（{item.get('why') or '沒有網頁確認'}）" for item in hidden)
         print(f"給小居，不要貼進回覆：使用者只要確認過的價格，這些沒列出也沒算進總計：{names}。"
-              "回覆裡不要提它們、不要寫估算金額或「待確認」。", file=sys.stderr)
+              "回覆裡不要提它們、不要寫估算金額或「待確認」。"
+              "這是最後結果：不要再查原因或改程式，也不要換寫法重跑同一個價格；"
+              "要推薦更便宜的地方，就打開另一家有標價的官網再跑一次。", file=sys.stderr)
 
 
 if __name__ == "__main__":

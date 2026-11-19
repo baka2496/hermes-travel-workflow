@@ -86,5 +86,16 @@ class PhotoFitsThePlanTests(unittest.TestCase):
         self.assertIn("--for", result.stderr)
 
 
+
+class CommentedOutCaptionTests(unittest.TestCase):
+    def test_words_hidden_in_an_html_comment_are_not_a_caption(self):
+        # 2026-11-19: 「📷 雙人池 Double Pool -->」: 春和's 雙人池 label sits inside <!-- -->, so a
+        # visitor never sees it and it cannot name the photo.
+        html = ('<img src="images/hotp_01.png"><!-- <div><h1>雙人池</h1><h2>Double Pool</h2></div> -->'
+                '<img src="images/hotp_02.png"><p>溫馨家庭池</p>')
+        photos = place_photo.photos_on_page(html, "https://spring.example/hotspring.html")
+        self.assertEqual(photos["https://spring.example/images/hotp_01.png"], [])
+        self.assertEqual(photos["https://spring.example/images/hotp_02.png"], ["溫馨家庭池"])
+
 if __name__ == "__main__":
     unittest.main()
