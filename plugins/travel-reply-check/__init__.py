@@ -276,8 +276,49 @@ def links_problem(text, outputs):
             f"要換地方就用正確名稱重跑 {LINKS_TOOL}，再把輸出原樣貼上。")
 
 
+# 2026-11-19 (Telegram): asked for a cheaper hot spring, 小居 took 42 minutes. trip-cost.py
+# rightly left out 「雙人池 40分鐘 NT$250」 (the official page shows no price; its price page was
+# 404), and 小居 spent half an hour querying state.db, reading the checkers' code and patching
+# page_evidence.py to make the price pass; the failed patch's warning reached the user's phone.
+# The checkers' verdict is final: the workflow's own scripts, this plugin and the session
+# databases are off limits to the bot.
+GUARDED = re.compile(r"(?:shared[\\/]+travel-workflow[\\/]+[\w.-]+\.py|travel-reply-check[\\/]|travel[-_]rules"
+                     r"|\.db\b|sqlite3|profiles[\\/]+[\w-]+[\\/]+cache\b|page_cache|sys\.path\.(?:append|insert)|spec_from_file_location"
+                     r"|\bimport\s+(?:page_evidence|trip_cost|place_photo|booking_links|phone_check))", re.I)
+WRITES = ("patch", "write_file")
+# `python …/trip-cost.py …`: the script right after a Python interpreter is being run, not read.
+RUN_TOOL = re.compile(r"""((?:^|[\s;&|(])["']?[^\s"';&|]*python[\w.]*["']?\s+)["']?[^\s"']*"""
+                      r"""shared[\\/]+travel-workflow[\\/]+[\w.-]+\.py["']?(?=\s|$)""", re.I)
+TAMPER_PROBLEM = ("不能查或改檢查程式（shared/travel-workflow 的 .py、travel-reply-check 外掛、state.db）。"
+                  "檢查結果就是結論：價格沒通過，就表示開過的官網上沒有這個價格。"
+                  "直接照工具輸出寫回覆：改推薦官網上有標價的地方，或不寫這個價格。"
+                  "要看工具用法就跑它的 --help。")
+
+
+def tamper_problem(tool_name, args):
+    if tool_name in WRITES:
+        path = str(args.get("path") or args.get("file_path") or "")
+        return TAMPER_PROBLEM if GUARDED.search(path) else None
+    if tool_name == "terminal":
+        command = str(args.get("command") or "")
+        # Running the tools (python …/trip-cost.py …) is fine; reading their insides is not.
+        inside = RUN_TOOL.sub(r"\1 ", command)
+        return TAMPER_PROBLEM if GUARDED.search(inside) else None
+    if tool_name in ("read_file", "search_files"):
+        path = str(args.get("path") or args.get("file_path") or "")
+        return TAMPER_PROBLEM if GUARDED.search(path) else None
+    return None
+
+
 def pre_tool_call(tool_name, args, task_id="", session_id="", turn_id="", **kwargs):
-    if tool_name in ("patch", "write_file") and isinstance(args, dict):
+    if isinstance(args, dict):
+        try:
+            why = tamper_problem(tool_name, args)
+        except Exception:
+            why = None
+        if why:
+            return {"action": "block", "message": why}
+    if tool_name in WRITES and isinstance(args, dict):
         try:
             why = record_edit_problem(tool_name, args)
         except Exception:  # a broken check must never stop the bot

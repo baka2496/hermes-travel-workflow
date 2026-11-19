@@ -70,6 +70,8 @@ def photos_on_page(html, page):
     Logos and icons are left out."""
     text = page_text(html)
     text = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", text)
+    # 2026-11-19: 「📷 雙人池 Double Pool -->」: the page's HTML comment leaked into the caption.
+    text = re.sub(r"(?s)<!--.*?-->", " ", text)
     refs = [m for m in REF.finditer(text) if PHOTO.search(m.group(1)) and not ICON.search(m.group(1))]
     photos = {}
     for n, ref in enumerate(refs):

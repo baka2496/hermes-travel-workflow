@@ -35,7 +35,10 @@ PROFILE_SETTINGS = (("compression.threshold_tokens", "64000"),
                     ("session_reset.at_hour", "4"),
                     # Buttons stay usable for 10 minutes; Hermes' default 90 s expired them before
                     # the user had read the plan on a phone (Telegram test, 2026-11-14).
-                    ("agent.clarify_timeout", "600"))
+                    ("agent.clarify_timeout", "600"),
+                    # A stalled model call waited 900 s for its first byte before retrying; one
+                    # 2026-11-19 reply sat 8 minutes on a single call (normal calls take 4-7 s).
+                    ("agent.local_stream_stale_timeout", "180"))
 
 
 def digest(data):

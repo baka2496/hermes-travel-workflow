@@ -161,6 +161,7 @@ class ProfileSettingsTests(unittest.TestCase):
         # later, and by then the buttons no longer worked.
         # The same test sent "12/5–12/7 兩天一夜" (really three days) and the bot copied it unchecked.
         self.assertIn(("agent.clarify_timeout", "600"), setup.PROFILE_SETTINGS)
+        self.assertIn(("agent.local_stream_stale_timeout", "180"), setup.PROFILE_SETTINGS)
         for role in ("travel-commander", "trip", "schedule-manager"):
             with self.subTest(role=role):
                 text = (Path(setup.__file__).parent / "roles" / f"{role}.md").read_text(encoding="utf-8")
@@ -219,6 +220,9 @@ class ProfileSettingsTests(unittest.TestCase):
                 self.assertIn("不要用大廳、閱覽區、外觀或 logo 代替", text)
                 # 2026-11-19: 「未確認就不要傳給我，傳給我確認過的就好」.
                 self.assertIn("`show_unconfirmed` 是 false 時", text)
+                # 2026-11-19: 42 minutes and a patch to page_evidence.py to make one price pass.
+                self.assertIn("的結果就是結論", text)
+                self.assertIn("一定要重開官網看", text)
                 self.assertIn("--for \"<方案裡推薦的項目，照方案寫>\"", text)
                 self.assertNotIn("--label <房型或外觀>", text)
                 self.assertIn("（這幾小時內打開過的）", text)
