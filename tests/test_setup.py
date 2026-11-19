@@ -209,6 +209,12 @@ class ProfileSettingsTests(unittest.TestCase):
                 # 2026-11-19: a record's 「TWD 120」 for another route confirmed a fare; records no longer
                 # vouch for prices, so reusing one means opening its page again.
                 self.assertIn("紀錄本身不算", text)
+                # 2026-11-19: 「湯屋 NT$600」 was 「$600 / 1小時」; and 「我都是騎車或開車，不要再給我大眾運輸了」.
+                self.assertIn("網頁寫「/ 1小時」「每人」「起」就照寫", text)
+                self.assertIn("`public_transit` 是 false", text)
+                self.assertIn("交通費算油錢（估算）、停車費、國道通行費", text)
+                # 2026-11-19 (Telegram): 「客房泡湯2小時 NT$800」 used a 假日 1-hour price.
+                self.assertIn("改用跟這次行程時長、平日或假日相符的價格再算", text)
                 self.assertIn("（這幾小時內打開過的）", text)
                 self.assertNotIn("或機會紀錄裡的）", text)
                 self.assertNotIn("機會紀錄裡有附來源網址的也可以用那個網址", text)

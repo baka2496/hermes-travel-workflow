@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from urllib.parse import quote
 
 from evidence_fixture import add_parallel_reads, add_tool_result, fake_hermes
 
@@ -118,6 +119,64 @@ class TripCostTests(unittest.TestCase):
         evidence = fake_hermes([("https://www.kamalan.com.tw", "葛瑪蘭客運 首頁 最新消息")])
         status, out, err = self.cost("--budget", "6000", "客運=206x2@https://www.kamalan.com.tw", evidence=evidence)
         self.assertIn("未確認（來源網頁上沒看到這個價格）", out)
+
+    def test_the_pages_unit_goes_with_the_price(self):
+        # 2026-11-19: the plan said 「雙人溪景湯屋 NT$600」; 湯布苑's page said 「平日特價　$600 / 1小時」.
+        page = "https://www.yufuinspring.com.tw/"
+        text = ("溪景湯屋\n 定價:NT$1,500   /    面積:4坪   /    PEOPLE:2\n價格：\n\n定價　$1,500 / 1小時\n"
+                "平日特價　$600 / 1小時\n假日特價　$800 / 1小時\n 每人 350 元\n雙人房 2,400 元起")
+        evidence = fake_hermes([(page, text)])
+        status, out, err = self.cost("--budget", "2000", f"雙人溪景湯屋平日=600@{page}", f"湯屋假日1小時=800@{page}",
+                                     f"大眾池=350x2@{page}", f"雙人房=2400@{page}", evidence=evidence)
+        self.assertEqual(status, 0, err)
+        self.assertEqual(out.splitlines()[1:], ["• 雙人溪景湯屋平日 NT$600（每1小時）",
+                                                "• 湯屋假日1小時 NT$800",  # the name already says it
+                                                "• 大眾池 NT$700（NT$350每人×2）",
+                                                "• 雙人房 NT$2,400（起價）"])
+
+    def test_the_pages_hours_and_day_must_match_the_item(self):
+        # 2026-11-19 (Telegram): 「客房泡湯2小時 NT$800」 counted as confirmed. 湯布苑's page showed
+        # 「假日特價 $800 / 1小時」; 「價格800起，平日2小時」 was only inside a share button's encoded link.
+        page = "https://www.yufuinspring.com.tw/"
+        share = quote("客房泡湯雙人使用，價格800起，平日2小時，另有方案1234元")
+        text = (f"平日特價　$600 / 1小時 | 假日特價　$800 / 1小時\n"
+                f'<a href="https://www.facebook.com/sharer.php?u=x&quote={share}">分享</a>')
+        evidence = fake_hermes()
+        add_parallel_reads(evidence[1], [(page, text)])  # as the bot did: new_tab('<page>') then read it
+        status, out, err = self.cost("--budget", "3000", f"客房泡湯2小時=800@{page}", f"溪景湯屋=800@{page}",
+                                     f"溪景湯屋平日=800@{page}", f"湯屋60分鐘=600@{page}", f"方案=1234@{page}",
+                                     evidence=evidence)
+        self.assertEqual(status, 0, err)
+        self.assertEqual(out.splitlines()[1:], ["• 客房泡湯2小時 NT$800，未確認（網頁上這個價格是每1小時）",
+                                                "• 溪景湯屋 NT$800（假日價・每1小時）",
+                                                "• 溪景湯屋平日 NT$800，未確認（網頁上這個價格是假日價）",
+                                                "• 湯屋60分鐘 NT$600（平日價）",  # 60分鐘 is the page's 1小時
+                                                "• 方案 NT$1,234，未確認（來源網頁上沒看到這個價格）"])
+
+    def test_no_public_transport_for_a_rider_or_driver(self):
+        # 2026-11-19: 「我都是騎車或開車所以不要再給我大眾運輸了」.
+        folder = Path(tempfile.mkdtemp(prefix="hermes-prefs-"))  # retained: no recursive cleanup
+        prefs = folder / "preferences.json"
+        prefs.write_text(json.dumps({"transport_mode": "自己騎機車或開車（不搭大眾運輸、不搭飛機）",
+                                     "public_transit": False}, ensure_ascii=False), encoding="utf-8")
+        records, root = self.evidence
+        for item in ("捷運輔大新店來回=45x4", "849公車來回=15x4", "葛瑪蘭客運=115x2", "台鐵區間車=100x2"):
+            with self.subTest(item=item):
+                status, out, err = run("trip-cost.py", "--budget", "2000", item, "餐費=700",
+                                       "--records", records, "--hermes-root", root, "--preferences", str(prefs))
+                self.assertNotEqual(status, 0)
+                self.assertEqual(out, "")
+                self.assertIn("不要算大眾運輸", err)
+                self.assertIn("油錢", err)
+        status, out, err = run("trip-cost.py", "--budget", "2000", "機車油錢來回=100", "停車費=50x2", "國道通行費=120",
+                               "--records", records, "--hermes-root", root, "--preferences", str(prefs))
+        self.assertEqual(status, 0, err)
+        self.assertEqual(out.splitlines()[0], "總計 NT$320，預算剩 NT$1,680（全部未確認）")
+        # Someone who does ride public transport is not stopped.
+        prefs.write_text(json.dumps({"transport_mode": "大眾運輸"}, ensure_ascii=False), encoding="utf-8")
+        status, out, err = run("trip-cost.py", "--budget", "2000", "捷運=45x4", "--records", records,
+                               "--hermes-root", root, "--preferences", str(prefs))
+        self.assertEqual(status, 0, err)
 
     def test_an_opportunity_record_does_not_vouch_for_a_price(self):
         # 2026-11-19 (Telegram): 「捷運公車來回=120x2@<台北捷運 fare page>」 counted as confirmed. The page
