@@ -190,16 +190,46 @@ def short_url(url):
     return unquote(url)
 
 
+def tidy(question):
+    """Markdown links written out; a leading ❓ dropped (Telegram adds its own, which showed as "❓ ❓")."""
+    return re.sub(r"^\s*(?:❓\s*)+", "", plain_links(question))
+
+
 def readable_questions(args):
-    """args with every question's markdown links written out, or None when there are none."""
+    """args with every question tidied, or None when nothing changed."""
     questions = args.get("questions")
     if isinstance(questions, list):
-        changed = [dict(q, question=plain_links(str(q.get("question", "")))) if isinstance(q, dict) else q
+        changed = [dict(q, question=tidy(str(q.get("question", "")))) if isinstance(q, dict) else q
                    for q in questions]
         return {"questions": changed} if changed != questions else None
-    if isinstance(args.get("question"), str) and LINK.search(args["question"]):
-        return {"question": plain_links(args["question"])}
+    if isinstance(args.get("question"), str) and tidy(args["question"]) != args["question"]:
+        return {"question": tidy(args["question"])}
     return None
+
+
+# 2026-11-19: 「我要跟小居去泡溫泉」 took three button questions in a row — keep the plan that was
+# already set, then "看費用明細", then another "下一步". A choice is a decision, never a way to
+# see information, and one message from the user gets at most one button question.
+INFO_CHOICE = re.compile(r"^\s*(?:\d+[.、]\s*)?(?:看|查看|顯示|列出|展開|瀏覽)")
+INFO_PROBLEM = ("按鈕選項只能放不同的做法，不能放「{choice}」這種看資訊的選項：費用每項一行、交通或行程重點直接寫進方案。"
+                "拿掉這個選項；剩下的如果不是真的要使用者選，就不用按鈕，直接把結果講完。")
+ANSWERED = {}  # session_id -> turn_id whose button question the user already answered
+SECOND_PROBLEM = ("這則訊息已經問過一次按鈕，使用者也選了。照選的做完，用一般回覆講結果就結束，"
+                  "不要再用按鈕問下一步；之後要做什麼讓使用者自己說。")
+
+
+def choices_of(args):
+    questions = args.get("questions")
+    if isinstance(questions, list):
+        return [str(c) for q in questions if isinstance(q, dict) for c in q.get("choices") or []]
+    return [str(c) for c in args.get("choices") or []]
+
+
+def steps_problem(args, session_id, turn_id):
+    if session_id and turn_id and ANSWERED.get(session_id) == turn_id:
+        return SECOND_PROBLEM
+    info = [c for c in choices_of(args) if INFO_CHOICE.match(c)]
+    return INFO_PROBLEM.format(choice=info[0].strip()) if info else None
 
 
 # 2026-11-16: booking-links.py printed the map link for 「山口溫泉飯店」, and the question showed
@@ -259,9 +289,9 @@ def pre_tool_call(tool_name, args, task_id="", session_id="", turn_id="", **kwar
         text = question_text(args)
         if MEDIA.search(text):
             return {"action": "block", "message": MEDIA_PROBLEM}
-        why = None
+        why = steps_problem(args, session_id, turn_id)
         home = os.environ.get("HERMES_HOME") or Path.home() / ".hermes"
-        if TOTAL.search(text) and session_id:
+        if not why and TOTAL.search(text) and session_id:
             output = latest_cost_output(session_id, home)
             if output is not UNKNOWN:
                 why = problem(text, output)
@@ -291,6 +321,8 @@ def transform_tool_result(tool_name="", args=None, result=None, session_id="", t
         return None
     try:
         data = json.loads(result)
+        if isinstance(data, dict) and data.get("outcome") == "submitted" and turn_id:
+            ANSWERED[session_id] = turn_id
         if not isinstance(data, dict) or data.get("outcome") != "timed_out":
             TIMED_OUT.pop(session_id, None)
             return None
@@ -324,14 +356,67 @@ def timeout_reply(reply, pending):
     return "\n".join(lines)
 
 
+# 2026-11-19: with fewer button questions, the plan went out as an ordinary reply, which the
+# clarify checks never saw: it said "總計 NT$1,600（預算剩 NT$400；含未確認 NT$820）" and listed
+# 公車 NT$60 and 餐飲 NT$760 without 未確認. An ordinary reply cannot be sent back, so its total
+# line is replaced with the tool's headline and each unconfirmed amount gets "（未確認）".
+TOTAL_AMOUNT = re.compile(r"總計\s*(NT\$[\d,]+)")
+
+
+def corrected_costs(text, outputs):
+    """text with each 總計 line set to the headline of the trip-cost.py run with that same total,
+    and those runs' unconfirmed amounts marked. A total no run printed is left alone."""
+    runs = {}
+    for output in outputs:  # oldest first, so the latest run with a total wins
+        found = TOTAL_AMOUNT.search(output.splitlines()[0])
+        if found:
+            runs[found.group(1)] = output
+    used = [runs[m] for m in TOTAL_AMOUNT.findall(text) if m in runs]
+    if not used:
+        return text
+    amounts = sorted({a for output in used for a in unconfirmed_amounts(output)}, key=len, reverse=True)
+    # One pass, so "NT$60（NT$30×2）" is marked once, after its unit price, and NT$30 is not re-marked.
+    marked = re.compile("(?:" + "|".join(map(re.escape, amounts)) + r")(?![\d,])(?:（[^（）\n]*）)?") \
+        if amounts else None
+    lines, items = [], None
+    for line in text.splitlines():
+        total = TOTAL_AMOUNT.search(line)
+        if items is not None:
+            # The cost lines right under a total are the tool's own item lines (2026-11-19: 「捷運及公車
+            # NT$240」 merged a confirmed NT$180 with an unconfirmed NT$60).
+            if "NT$" in line and not total:
+                continue
+            lines.extend(items)
+            items = None
+        if total:
+            if total.group(1) in runs:
+                run = runs[total.group(1)].splitlines()
+                line = line[:total.start()] + run[0].strip()
+                items = [item.strip() for item in run[1:] if item.strip()]
+        elif marked and "未確認" not in line:
+            line = marked.sub(lambda m: m.group(0) + "（未確認）", line)
+        lines.append(line)
+    if items is not None:
+        lines.extend(items)
+    return "\n".join(lines)
+
+
 def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
-    pending = TIMED_OUT.pop(session_id, None) if session_id else None
-    if not pending or not isinstance(response_text, str):
+    if not session_id or not isinstance(response_text, str):
         return None
-    if pending["turn"] and turn_id and pending["turn"] != turn_id:
-        return None
+    pending = TIMED_OUT.pop(session_id, None)
     try:
-        return timeout_reply(response_text, pending) if repeats(response_text, pending["question"]) else None
+        if pending and not (pending["turn"] and turn_id and pending["turn"] != turn_id) \
+                and repeats(response_text, pending["question"]):
+            return timeout_reply(response_text, pending)
+        if not re.search(r"總計\s*NT\$", response_text):
+            return None
+        home = os.environ.get("HERMES_HOME") or Path.home() / ".hermes"
+        outputs = tool_outputs(session_id, home, TOOL)
+        if outputs is UNKNOWN or not outputs:
+            return None
+        fixed = corrected_costs(response_text, [o for o in outputs if o.startswith("總計")])
+        return fixed if fixed != response_text else None
     except Exception:
         return None
 
