@@ -73,6 +73,45 @@ class PhotoFitsThePlanTests(unittest.TestCase):
         self.assertTrue(place_photo.related("雙人房", "週六雙人房"))
         self.assertEqual(place_photo.first_words("1F 休憩大廳 時尚的休憩大廳"), "休憩大廳")
 
+    def test_text_after_a_photo_from_the_next_section_does_not_name_it(self):
+        # 2026-11-20: the photo before 玫瑰園's section 「提供服務 溫泉湯屋 …」 was its corridor and shop.
+        self.assertIsNone(place_photo.related("提供服務 溫泉湯屋 提供2坪大溫泉湯屋共", "溫泉湯屋 50分鐘"))
+        self.assertEqual(place_photo.related("溪景湯屋 定價:NT$1,500", "溪景湯屋 1小時"), "溪景湯屋")
+
+
+class CandidatesTests(unittest.TestCase):
+    def test_named_photos_come_first_then_uncaptioned_ones_and_the_agent_must_look(self):
+        # 2026-11-20: on 玫瑰園's site the 「溫泉湯屋」 photo was the shop front and the real room photos
+        # had no caption, so the agent picks after looking at them.
+        import contextlib, io, tempfile, types
+        saved_fetch = place_photo.fetch
+        place_photo.fetch = lambda url, limit: (b"x" * place_photo.MIN_BYTES, "image/jpeg")
+        try:
+            args = types.SimpleNamespace(name="湯布苑", page=SPA, recommended="溪景湯屋 1小時",
+                                         out=Path(tempfile.mkdtemp(prefix="place-photo-")))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                status = place_photo.candidates(args, place_photo.photos_on_page(YUFUIN, SPA))
+        finally:
+            place_photo.fetch = saved_fetch
+        text = out.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("vision_analyze", text)
+        self.assertIn("1. ", text)
+        self.assertIn("官網旁邊寫：溪景湯屋", text.splitlines()[1])  # named first
+        self.assertIn("官網旁邊寫：沒有說明", text)  # then uncaptioned (rooms/a1.jpg)
+        self.assertNotIn("休憩大廳", text)
+        self.assertIn("📷 溪景湯屋 1小時（www.spa.example）", text)
+
+    def test_no_candidates_prints_the_line_for_the_reply(self):
+        import contextlib, io, tempfile, types
+        args = types.SimpleNamespace(name="x", page=SPA, recommended="溪景湯屋",
+                                     out=Path(tempfile.mkdtemp(prefix="place-photo-")))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            place_photo.candidates(args, {"https://cdn.spa.example/lobby.jpg": ["休憩大廳"]})
+        self.assertEqual(out.getvalue().strip(), "照片：未取得")
+
     def test_the_label_must_be_the_pages_own_words(self):
         caption = place_photo.caption_of(YUFUIN, SPA, "https://cdn.spa.example/facilities/lobby.jpg")
         self.assertIn("休憩大廳", caption)

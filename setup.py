@@ -31,8 +31,22 @@ PROFILE_SETTINGS = (("compression.threshold_tokens", "64000"),
                     ("compression.proactive_prune_tokens", "45000"),
                     ("web.extract_char_limit", "5000"),
                     ("telegram.gateway_restart_notification", "false"),
-                    ("session_reset.mode", "daily"),
+                    # 2026-11-20: a chat that ran all day sat near the 64K limit, so one question
+                    # compressed twice (2.5 of its 6 minutes). A new question after an idle hour
+                    # starts fresh; open questions carry over through `pending_question`.
+                    ("session_reset.mode", "both"),
                     ("session_reset.at_hour", "4"),
+                    ("session_reset.idle_minutes", "60"),
+                    # The same reply: each compression took 67-92 s with the medium-effort model.
+                    ("auxiliary.compression.provider", "antigravity-oauth"),
+                    ("auxiliary.compression.base_url", "agy://local"),
+                    ("auxiliary.compression.model", "gemini-3.8-flash-low"),
+                    # 2026-11-20: the antigravity-oauth plugin sends messages as plain text, so its
+                    # models never receive an image ("目前收到的訊息中並未附帶任何圖片"). Photos
+                    # are checked through the OpenAI Codex login, which sees them (6 s a photo).
+                    ("auxiliary.vision.provider", "openai-codex"),
+                    ("auxiliary.vision.base_url", ""),
+                    ("auxiliary.vision.model", "gpt-6-luna"),
                     # Buttons stay usable for 10 minutes; Hermes' default 90 s expired them before
                     # the user had read the plan on a phone (Telegram test, 2026-11-14).
                     ("agent.clarify_timeout", "600"),

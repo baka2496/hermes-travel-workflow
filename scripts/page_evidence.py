@@ -112,6 +112,7 @@ def latest_page_text(hermes_root, source, now=None):
 
 
 PRICE = re.compile(r"(?:NT\$|NTD|TWD|\$)\s*\d[\d,]*|\d[\d,]*\s*(?:元|TWD)")
+CJK = re.compile(r"[一-鿿]")
 
 
 def price_lines(text, headings=(), limit=40):
@@ -119,11 +120,18 @@ def price_lines(text, headings=(), limit=40):
     heading it sits under: 「溪景湯屋｜平日特價 $600 / 1小時」 (湯布苑 lists four rooms' prices
     under their names)."""
     seen, lines, heading, names = set(), [], "", set(headings)
+    just_named = False
     for line in (text or "").splitlines():
         line = re.sub(r"\s+", " ", line).strip()
         if line in names:
-            heading = line
+            # 2026-11-20: 春和's 「價位資訊」 heading is followed by its English 「Price」, and 小居 named
+            # the item 「Price 60分鐘」. An English heading right after a Chinese one is its translation.
+            if not (just_named and CJK.search(heading) and not CJK.search(line)):
+                heading = line
+            just_named = True
             continue
+        if line:
+            just_named = False
         if not line or not PRICE.search(line) or len(line) > 160:
             continue
         shown = f"{heading}｜{line}" if heading and heading not in line else line

@@ -320,6 +320,8 @@ def pre_tool_call(tool_name, args, task_id="", session_id="", turn_id="", **kwar
             why = None
         if why:
             return {"action": "block", "message": why}
+        if tool_name == "vision_analyze" and session_id:
+            VIEWED.setdefault(session_id, set()).add(photo_key(args.get("image_url")))
     if tool_name in WRITES and isinstance(args, dict):
         try:
             why = record_edit_problem(tool_name, args)
@@ -522,6 +524,37 @@ def without_unconfirmed(text, outputs):
     return "\n".join(kept)
 
 
+# 2026-11-20: the words beside a photo on a page do not say what it shows (玫瑰園's 「溫泉湯屋」 photo
+# was the shop front). A saved photo goes out only after the agent looked at it with vision_analyze.
+VIEWED = {}  # session_id -> photo paths the agent looked at
+PHOTO = re.compile(r"^\s*MEDIA:\s*(?P<path>\S+)")
+UNSEEN = "照片：未取得"
+
+
+def photo_key(path):
+    return str(path or "").strip().strip("\"'").replace("\\", "/").lower()
+
+
+def without_unseen_photos(text, session_id):
+    """text without saved photos the agent never looked at (and their 📷 caption)."""
+    seen = VIEWED.get(session_id, set())
+    if not any(PHOTO.match(line) for line in text.splitlines()):
+        return text
+    kept, dropped = [], False
+    for line in text.splitlines():
+        match = PHOTO.match(line)
+        if match and "travel-workflow/photos/" in photo_key(match["path"]) and photo_key(match["path"]) not in seen:
+            kept.append(UNSEEN)
+            dropped = True
+            continue
+        if dropped and line.lstrip().startswith("📷"):
+            dropped = False
+            continue
+        dropped = False
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
     if not session_id or not isinstance(response_text, str):
         return None
@@ -530,15 +563,15 @@ def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
         if pending and not (pending["turn"] and turn_id and pending["turn"] != turn_id) \
                 and repeats(response_text, pending["question"]):
             return timeout_reply(response_text, pending)
+        fixed = without_unseen_photos(response_text, session_id)
         home = os.environ.get("HERMES_HOME") or Path.home() / ".hermes"
         hide = confirmed_only(home)
-        if not hide and not re.search(r"總計\s*NT\$", response_text):
-            return None
-        outputs = tool_outputs(session_id, home, TOOL)
-        outputs = [] if outputs is UNKNOWN else [o for o in outputs if o.startswith("總計")]
-        fixed = corrected_costs(response_text, outputs) if outputs else response_text
-        if hide:
-            fixed = without_unconfirmed(fixed, outputs)
+        if hide or re.search(r"總計\s*NT\$", fixed):
+            outputs = tool_outputs(session_id, home, TOOL)
+            outputs = [] if outputs is UNKNOWN else [o for o in outputs if o.startswith("總計")]
+            fixed = corrected_costs(fixed, outputs) if outputs else fixed
+            if hide:
+                fixed = without_unconfirmed(fixed, outputs)
         return fixed if fixed != response_text else None
     except Exception:
         return None

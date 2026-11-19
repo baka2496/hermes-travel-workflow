@@ -81,7 +81,8 @@ def main():
     print(f"網頁上的價格（{urlsplit(args.url).netloc}）：")
     for line in lines:
         print(f"• {line}")
-    print("只用上面這些價格；trip-cost.py 的來源寫 @" + args.url)
+    print("只用上面這些價格；trip-cost.py 的來源寫 @" + args.url +
+          "，項目名稱寫推薦的是什麼加時長或人數（例如「溫泉湯屋 50分鐘」）")
     return 0
 
 

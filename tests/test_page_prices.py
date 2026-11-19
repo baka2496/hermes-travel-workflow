@@ -64,6 +64,13 @@ class ReadPageTests(unittest.TestCase):
                           "豪華套房｜平日特價 $800 / 1.5小時"])
 
 
+    def test_an_english_heading_after_a_chinese_one_is_its_translation(self):
+        # 2026-11-20: 春和's 「價位資訊」 then 「Price」, and the item became 「Price 60分鐘」.
+        text, headings = page_evidence.read_page("<h1>價位資訊</h1><h2>Price</h2><p>60分鐘 699元</p>"
+                                                 "<h2>Spa</h2><p>30分鐘 500元</p>")
+        self.assertEqual(page_evidence.price_lines(text, headings), ["價位資訊｜60分鐘 699元", "Spa｜30分鐘 500元"])
+
+
 class PagePricesToolTests(unittest.TestCase):
     def test_it_prints_the_prices_and_keeps_a_snapshot(self):
         root = tempfile.mkdtemp(prefix="hermes-page-prices-")
@@ -73,6 +80,7 @@ class PagePricesToolTests(unittest.TestCase):
         self.assertEqual(status, 0, err)
         self.assertIn("• 價位資訊｜冬季 (10-4月)：699元 / 60分鐘", out)
         self.assertNotIn("250", out)
+        self.assertIn("項目名稱寫推薦的是什麼加時長或人數", out)  # so place-photo.py can match the photo
         saved = json.loads(page_evidence.snapshot_path(root, page_evidence.page_key(PAGE)).read_text(encoding="utf-8"))
         self.assertEqual(saved["url"], PAGE)
 
@@ -140,6 +148,28 @@ class RecordsAndSnapshotsInThePluginTests(unittest.TestCase):
         run_tool = check.pre_tool_call("terminal", {"command": "python C:/hermes/shared/travel-workflow/page-prices.py "
                                                                "https://spring.example/"}, session_id="s1")
         self.assertIsNone(run_tool)
+
+    def test_a_photo_goes_out_only_after_the_bot_looked_at_it(self):
+        # 2026-11-20: 玫瑰園's photo captioned 「溫泉湯屋」 was its shop front.
+        import os
+        photo = "C:/Users/me/AppData/Local/hermes/shared/travel-workflow/photos/ab12.jpg"
+        reply = f"12/14 礁溪 2人\nMEDIA:{photo}\n📷 溫泉湯屋 50分鐘（spa.example）\n玫瑰園原泉湯屋"
+        old = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="hermes-photo-")  # no preferences: show all
+        try:
+            fixed = check.transform_llm_output(response_text=reply, session_id="photo1", turn_id="t1")
+            self.assertEqual(fixed, "12/14 礁溪 2人\n照片：未取得\n玫瑰園原泉湯屋")
+            self.assertIsNone(check.pre_tool_call("vision_analyze", {"image_url": photo.replace("/", "\\"),
+                                                                       "question": "是湯屋嗎"}, session_id="photo1"))
+            self.assertIsNone(check.transform_llm_output(response_text=reply, session_id="photo1", turn_id="t1"))
+            self.assertIsNotNone(check.transform_llm_output(response_text=reply, session_id="photo2", turn_id="t1"))
+            self.assertIsNone(check.transform_llm_output(response_text="沒有照片的回覆", session_id="photo3",
+                                                         turn_id="t1"))
+        finally:
+            if old is None:
+                del os.environ["HERMES_HOME"]
+            else:
+                os.environ["HERMES_HOME"] = old
 
     def test_the_block_message_does_not_send_the_bot_to_the_tool_internals(self):
         # The roles say not to read the tools' code or --help; the block message must agree.
