@@ -282,6 +282,48 @@ class ButtonQuestionTests(unittest.TestCase):
             else:
                 os.environ["HERMES_HOME"] = old
 
+    def test_items_listed_away_from_the_total_are_not_shown_twice(self):
+        # 2026-11-19 (Telegram): the reply put its item lines under the photo, not under 總計. The tool's
+        # lines went in under 總計 and the reply's copy stayed, so every item showed twice, and the
+        # confirmed 溪景湯屋 NT$600 got 「（未確認）」 because the meal was NT$600 too.
+        output = ("總計 NT$1,440，預算剩 NT$560（NT$840 未確認）\r\n• 油錢來回估算 NT$120，未確認\r\n"
+                  "• 立體停車場停車費 NT$120（NT$30×4），未確認\r\n• 湯布苑雙人溪景湯屋平日 NT$600（每1小時）\r\n"
+                  "• 老街午餐及點心兩人 NT$600，未確認")
+        reply = ("12/7 烏來 兩人\n總計 NT$1,440，預算剩 NT$560（NT$840 未確認）\nMEDIA:x.jpg\n📷 溪景湯屋（www.spa.example）\n"
+                 "騎車或開車約 50–60 分鐘\n• 湯布苑雙人溪景湯屋平日 NT$600（每1小時）\n• 老街午餐及點心兩人 NT$600，未確認\n"
+                 "• 油錢來回估算 NT$120，未確認\n• 立體停車場停車費 NT$120（NT$30×4），未確認\n📞 02-2661-8001")
+        fixed = check.corrected_costs(reply, [output])
+        self.assertEqual(fixed, "12/7 烏來 兩人\n" + output.replace("\r", "") +
+                         "\nMEDIA:x.jpg\n📷 溪景湯屋（www.spa.example）\n騎車或開車約 50–60 分鐘\n📞 02-2661-8001")
+        self.assertNotIn("（每1小時）（未確認）", fixed)
+        self.assertEqual(fixed.count("溪景湯屋平日"), 1)
+
+    def test_nothing_unconfirmed_goes_out_when_the_user_wants_only_confirmed(self):
+        # 2026-11-19: 「未確認就不要傳給我，傳給我確認過的就好」.
+        output = "總計 NT$600，預算剩 NT$1,400\n• 溪景湯屋 1小時 NT$600（平日價）"
+        home = home_with(output)
+        shared = home / "shared" / "travel-workflow"
+        shared.mkdir(parents=True)
+        (shared / "preferences.json").write_text(json.dumps({"show_unconfirmed": False}), encoding="utf-8")
+        reply = ("12/07（一）烏來一日遊（2人）\n總計 NT$600，預算剩 NT$1,400\n• 溪景湯屋 1小時 NT$600（平日價）\n"
+                 "• 油錢（估算） NT$120，未確認\n老街餐食大約 NT$760\n📷 溪景湯屋（www.spa.example）\n"
+                 "📞 02-2661-8001\n待確認：自備毛巾省備品費、湯屋現場候位狀況")
+        old = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(home)
+        try:
+            self.assertEqual(check.transform_llm_output(response_text=reply, session_id="s1", turn_id="t1"),
+                             "12/07（一）烏來一日遊（2人）\n總計 NT$600，預算剩 NT$1,400\n• 溪景湯屋 1小時 NT$600（平日價）\n"
+                             "📷 溪景湯屋（www.spa.example）\n📞 02-2661-8001")
+            # Without the preference nothing is dropped.
+            (shared / "preferences.json").write_text(json.dumps({}), encoding="utf-8")
+            self.assertIn("待確認", check.transform_llm_output(response_text=reply, session_id="s1", turn_id="t1")
+                          or reply)
+        finally:
+            if old is None:
+                del os.environ["HERMES_HOME"]
+            else:
+                os.environ["HERMES_HOME"] = old
+
     def test_hooks_are_declared(self):
         manifest = (REPO / "plugins/travel-reply-check/plugin.yaml").read_text(encoding="utf-8")
         for hook in ("pre_tool_call", "transform_tool_result", "transform_llm_output"):

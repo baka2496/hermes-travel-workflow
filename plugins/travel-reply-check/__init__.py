@@ -363,6 +363,15 @@ def timeout_reply(reply, pending):
 TOTAL_AMOUNT = re.compile(r"總計\s*(NT\$[\d,]+)")
 
 
+ITEM_LINE = re.compile(r"^\s*[•・\-*]\s*(?P<name>.+?)\s*(?P<amount>NT\$[\d,]+)")
+
+
+def item_key(line):
+    """「• 溪景湯屋平日 NT$600（每1小時）」 -> ("溪景湯屋平日", "NT$600"); None for other lines."""
+    found = ITEM_LINE.match(line or "")
+    return (re.sub(r"\s+", "", found["name"]), found["amount"]) if found else None
+
+
 def corrected_costs(text, outputs):
     """text with each 總計 line set to the headline of the trip-cost.py run with that same total,
     and those runs' unconfirmed amounts marked. A total no run printed is left alone."""
@@ -378,7 +387,11 @@ def corrected_costs(text, outputs):
     # One pass, so "NT$60（NT$30×2）" is marked once, after its unit price, and NT$30 is not re-marked.
     marked = re.compile("(?:" + "|".join(map(re.escape, amounts)) + r")(?![\d,])(?:（[^（）\n]*）)?") \
         if amounts else None
-    lines, items = [], None
+    # 2026-11-19 (Telegram): the reply listed the items under the photo, not under 總計; the tool's
+    # lines went in under 總計 and the reply's own copy stayed, so every item showed twice, and the
+    # confirmed 「溪景湯屋 NT$600」 was marked 未確認 because the meal was also NT$600.
+    tool_items = {item_key(item) for output in used for item in output.splitlines()[1:] if item_key(item)}
+    lines, items, placed = [], None, False
     for line in text.splitlines():
         total = TOTAL_AMOUNT.search(line)
         if items is not None:
@@ -387,18 +400,56 @@ def corrected_costs(text, outputs):
             if "NT$" in line and not total:
                 continue
             lines.extend(items)
-            items = None
+            items, placed = None, True
         if total:
             if total.group(1) in runs:
                 run = runs[total.group(1)].splitlines()
                 line = line[:total.start()] + run[0].strip()
-                items = [item.strip() for item in run[1:] if item.strip()]
+                items = [item.strip() for item in run[1:] if item.strip().startswith("•")]
+        elif item_key(line) in tool_items:
+            if placed:
+                continue  # the tool's line is already under 總計
         elif marked and "未確認" not in line:
             line = marked.sub(lambda m: m.group(0) + "（未確認）", line)
         lines.append(line)
     if items is not None:
         lines.extend(items)
     return "\n".join(lines)
+
+
+# 2026-11-19: 「未確認就不要傳給我，傳給我確認過的就好」. With "show_unconfirmed": false in
+# preferences.json, lines about anything unconfirmed are left out of the reply.
+UNSURE_LINE = re.compile(r"未確認|待確認|估算|未取得|約\s*NT\$|NT\$[\d,]+\s*起?左右")
+
+
+def confirmed_only(home):
+    home = Path(home)
+    for root in (home, home.parent.parent):
+        path = root / "shared" / "travel-workflow" / "preferences.json"
+        try:
+            prefs = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        return isinstance(prefs, dict) and prefs.get("show_unconfirmed") is False
+    return False
+
+
+def without_unconfirmed(text, outputs):
+    """text without lines that state unconfirmed things: 「未確認」, 「待確認：…」, estimates, and
+    amounts the latest trip-cost.py run did not print. The tool's own lines stay."""
+    printed = {line.strip() for output in outputs[-1:] for line in output.splitlines() if line.strip()}
+    known = {a for line in printed for a in re.findall(r"NT\$[\d,]+", line)}
+    kept = []
+    for line in text.splitlines():
+        if line.strip() in printed:
+            kept.append(line)
+            continue
+        if UNSURE_LINE.search(line):
+            continue
+        if any(a not in known for a in re.findall(r"NT\$[\d,]+", line)):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
 
 
 def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
@@ -409,13 +460,15 @@ def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
         if pending and not (pending["turn"] and turn_id and pending["turn"] != turn_id) \
                 and repeats(response_text, pending["question"]):
             return timeout_reply(response_text, pending)
-        if not re.search(r"總計\s*NT\$", response_text):
-            return None
         home = os.environ.get("HERMES_HOME") or Path.home() / ".hermes"
-        outputs = tool_outputs(session_id, home, TOOL)
-        if outputs is UNKNOWN or not outputs:
+        hide = confirmed_only(home)
+        if not hide and not re.search(r"總計\s*NT\$", response_text):
             return None
-        fixed = corrected_costs(response_text, [o for o in outputs if o.startswith("總計")])
+        outputs = tool_outputs(session_id, home, TOOL)
+        outputs = [] if outputs is UNKNOWN else [o for o in outputs if o.startswith("總計")]
+        fixed = corrected_costs(response_text, outputs) if outputs else response_text
+        if hide:
+            fixed = without_unconfirmed(fixed, outputs)
         return fixed if fixed != response_text else None
     except Exception:
         return None
