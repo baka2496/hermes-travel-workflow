@@ -51,7 +51,7 @@ def parse(text):
 def check_sources(items, records, hermes_root):
     for item in items:
         if item["confirmed"] and not page_evidence.shown(item["source"], page_evidence.price_pattern(item["unit"]),
-                                                         records, hermes_root):
+                                                         records, hermes_root, use_records=False):
             item["confirmed"] = False
             item["why"] = "來源網頁上沒看到這個價格"
 

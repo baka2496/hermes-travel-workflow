@@ -119,13 +119,20 @@ class TripCostTests(unittest.TestCase):
         status, out, err = self.cost("--budget", "6000", "客運=206x2@https://www.kamalan.com.tw", evidence=evidence)
         self.assertIn("未確認（來源網頁上沒看到這個價格）", out)
 
-    def test_an_opportunity_record_vouches_for_its_own_page(self):
-        booking = "https://www.booking.com/hotel/tw/example.zh-tw.html"
-        records = {"opportunities": [{"plan": {"name": "範例旅館", "booking_price_twd": 1100, "source": booking,
-                                               "queried_at": "2026-11-11"}}]}
-        evidence = fake_hermes(records=records)
-        status, out, err = self.cost("--budget", "6000", f"房=1100@{booking}", f"週六房=1600@{booking}", evidence=evidence)
-        self.assertEqual(out.splitlines()[0], "總計 NT$2,700，預算剩 NT$3,300（NT$1,600 未確認）")
+    def test_an_opportunity_record_does_not_vouch_for_a_price(self):
+        # 2026-11-19 (Telegram): 「捷運公車來回=120x2@<台北捷運 fare page>」 counted as confirmed. The page
+        # has no 120; the record sourced to it said 「TWD 120」 for 輔大↔台北車站, two people round trip.
+        metro = "https://www.metro.taipei/cp.aspx?n=CEF54168B23F73B4"
+        records = {"opportunities": [{"source": f"台北捷運官方票價表 {metro}", "queried_at": "2026-11-11",
+                                      "costs": {"mrt_fju_to_taipei_main_roundtrip_2p":
+                                                "TWD 120（台北捷運官方票價表：輔大 O19 ↔ 台北車站 單程全票 30 元／人 × 2人來回）"}}]}
+        status, out, err = self.cost("--budget", "2000", f"捷運公車來回=120x2@{metro}", evidence=fake_hermes(records=records))
+        self.assertEqual(out.splitlines()[0], "總計 NT$240，預算剩 NT$1,760（全部未確認）")
+        self.assertIn("未確認（來源網頁上沒看到這個價格）", out)
+        # Opened again in the last few hours, the page itself confirms what it shows.
+        opened = fake_hermes([(metro, "輔大 → 新店 單程 45 元")], records=records)
+        status, out, err = self.cost("--budget", "2000", f"捷運=45x4@{metro}", evidence=opened)
+        self.assertEqual(out.splitlines()[0], "總計 NT$180，預算剩 NT$1,820")
 
     def test_old_pages_and_our_own_commands_are_not_evidence(self):
         old = fake_hermes([(self.PAGE, "NT$1,100")], age_hours=30)
