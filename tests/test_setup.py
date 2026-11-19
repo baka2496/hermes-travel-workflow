@@ -215,6 +215,12 @@ class ProfileSettingsTests(unittest.TestCase):
                 self.assertIn("交通費算油錢（估算）、停車費、國道通行費", text)
                 # 2026-11-19 (Telegram): 「客房泡湯2小時 NT$800」 used a 假日 1-hour price.
                 self.assertIn("改用跟這次行程時長、平日或假日相符的價格再算", text)
+                # 2026-11-19: 「為甚麼要給我看不相干的圖」 — a 溪景湯屋 plan came with the lobby photo.
+                self.assertIn("不要用大廳、閱覽區、外觀或 logo 代替", text)
+                # 2026-11-19: 「未確認就不要傳給我，傳給我確認過的就好」.
+                self.assertIn("`show_unconfirmed` 是 false 時", text)
+                self.assertIn("--for \"<方案裡推薦的項目，照方案寫>\"", text)
+                self.assertNotIn("--label <房型或外觀>", text)
                 self.assertIn("（這幾小時內打開過的）", text)
                 self.assertNotIn("或機會紀錄裡的）", text)
                 self.assertNotIn("機會紀錄裡有附來源網址的也可以用那個網址", text)

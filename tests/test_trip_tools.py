@@ -153,6 +153,26 @@ class TripCostTests(unittest.TestCase):
                                                 "• 湯屋60分鐘 NT$600（平日價）",  # 60分鐘 is the page's 1小時
                                                 "• 方案 NT$1,234，未確認（來源網頁上沒看到這個價格）"])
 
+    def test_only_confirmed_prices_when_the_user_wants_only_those(self):
+        # 2026-11-19: 「未確認就不要傳給我，傳給我確認過的就好」.
+        folder = Path(tempfile.mkdtemp(prefix="hermes-prefs-"))  # retained: no recursive cleanup
+        prefs = folder / "preferences.json"
+        prefs.write_text(json.dumps({"show_unconfirmed": False}), encoding="utf-8")
+        page = "https://www.yufuinspring.com.tw/"
+        records, root = fake_hermes([(page, "平日特價　$600 / 1小時")])
+        status, out, err = run("trip-cost.py", "--budget", "2000", f"溪景湯屋 1小時=600@{page}", "油錢=120",
+                               "停車費=30x2", f"套房=2500@{page}", "--records", records, "--hermes-root", root,
+                               "--preferences", str(prefs))
+        self.assertEqual(status, 0, err)
+        self.assertEqual(out.splitlines(), ["總計 NT$600，預算剩 NT$1,400", "• 溪景湯屋 1小時 NT$600（平日價）"])
+        self.assertNotIn("未確認", out)
+        for name in ("油錢", "停車費", "套房（來源網頁上沒看到這個價格）"):
+            self.assertIn(name, err)  # the agent still learns what was left out
+        status, out, err = run("trip-cost.py", "--budget", "2000", "油錢=120", "--records", records,
+                               "--hermes-root", root, "--preferences", str(prefs))
+        self.assertEqual(status, 0, err)
+        self.assertEqual(out.strip(), "沒有確認過的價格：不要在回覆裡寫價格或總計。")
+
     def test_no_public_transport_for_a_rider_or_driver(self):
         # 2026-11-19: 「我都是騎車或開車所以不要再給我大眾運輸了」.
         folder = Path(tempfile.mkdtemp(prefix="hermes-prefs-"))  # retained: no recursive cleanup

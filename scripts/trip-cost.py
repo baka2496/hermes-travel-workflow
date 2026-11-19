@@ -16,6 +16,9 @@ unconfirmed, and the total says how much of it is. Include every cost of the tri
 the reply exactly as shown; never add numbers up by hand. The first printed line is ready to
 use as the reply's conclusion.
 
+When preferences.json says "show_unconfirmed": false, only confirmed items are printed and
+counted in the total; the others are named on stderr for the agent and must stay out of the reply.
+
 When preferences.json says "public_transit": false (the user rides a scooter or drives), an item
 for 捷運, 公車, 客運, trains or similar is refused: price fuel, parking and tolls instead.
 """
@@ -137,6 +140,16 @@ def main():
     if refused:
         parser.error(refused)
     check_sources(args.items, args.records, args.hermes_root)
+    # 2026-11-19: 「未確認就不要傳給我，傳給我確認過的就好」 — with "show_unconfirmed": false only
+    # confirmed items are printed and counted; the rest go to stderr, for the agent only.
+    hidden = []
+    if not args.json and confirmed_only(args.preferences):
+        hidden = [item for item in args.items if not item["confirmed"]]
+        args.items = [item for item in args.items if item["confirmed"]]
+        if not args.items:
+            print("沒有確認過的價格：不要在回覆裡寫價格或總計。")
+            report_hidden(hidden)
+            return 0
     total = sum(item["amount"] for item in args.items)
     left = args.budget - total
     verdict = f"預算剩 {money(left)}" if left >= 0 else f"超出預算 {money(-left)}"
@@ -154,7 +167,25 @@ def main():
             parts = [day, f"{money(item['unit'])}{per}×{item['count']}"] if item["count"] > 1 else [day, per]
             each = "（" + "・".join(p for p in parts if p) + "）"
         print(f"• {item['name']} {money(item['amount'])}{each}" + ("" if item["confirmed"] else f"，未確認（{item['why']}）" if item.get("why") else "，未確認"))
+    report_hidden(hidden)
     return 0
+
+
+def confirmed_only(preferences):
+    try:
+        prefs = json.loads(Path(preferences).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(prefs, dict) and prefs.get("show_unconfirmed") is False
+
+
+def report_hidden(hidden):
+    """Tell the agent, not the user, which items were left out and why."""
+    if hidden:
+        sys.stdout.flush()
+        names = "、".join(f"{item['name']}（{item.get('why') or '沒有網頁確認'}）" for item in hidden)
+        print(f"給小居，不要貼進回覆：使用者只要確認過的價格，這些沒列出也沒算進總計：{names}。"
+              "回覆裡不要提它們、不要寫估算金額或「待確認」。", file=sys.stderr)
 
 
 if __name__ == "__main__":
