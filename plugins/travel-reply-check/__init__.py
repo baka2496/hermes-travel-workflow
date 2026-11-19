@@ -282,7 +282,8 @@ def links_problem(text, outputs):
 # page_evidence.py to make the price pass; the failed patch's warning reached the user's phone.
 # The checkers' verdict is final: the workflow's own scripts, this plugin and the session
 # databases are off limits to the bot.
-GUARDED = re.compile(r"(?:shared[\\/]+travel-workflow[\\/]+[\w.-]+\.py|travel-reply-check[\\/]|travel[-_]rules"
+# travel-workflow/pages holds page-prices.py's snapshots of what pages showed: the evidence itself.
+GUARDED = re.compile(r"(?:shared[\\/]+travel-workflow[\\/]+(?:[\w.-]+\.py|pages\b)|travel-reply-check[\\/]|travel[-_]rules"
                      r"|\.db\b|sqlite3|profiles[\\/]+[\w-]+[\\/]+cache\b|page_cache|sys\.path\.(?:append|insert)|spec_from_file_location"
                      r"|\bimport\s+(?:page_evidence|trip_cost|place_photo|booking_links|phone_check))", re.I)
 WRITES = ("patch", "write_file")
@@ -291,8 +292,9 @@ RUN_TOOL = re.compile(r"""((?:^|[\s;&|(])["']?[^\s"';&|]*python[\w.]*["']?\s+)["
                       r"""shared[\\/]+travel-workflow[\\/]+[\w.-]+\.py["']?(?=\s|$)""", re.I)
 TAMPER_PROBLEM = ("不能查或改檢查程式（shared/travel-workflow 的 .py、travel-reply-check 外掛、state.db）。"
                   "檢查結果就是結論：價格沒通過，就表示開過的官網上沒有這個價格。"
+                  "要知道網頁上實際寫什麼價格，就跑 page-prices.py <官網網址>；"
                   "直接照工具輸出寫回覆：改推薦官網上有標價的地方，或不寫這個價格。"
-                  "要看工具用法就跑它的 --help。")
+                  "工具用法照說明書寫的跑。")
 
 
 def tamper_problem(tool_name, args):
@@ -357,7 +359,34 @@ TIMEOUT_NOTE = ("使用者還沒選，按鈕已失效。最後回覆不要重貼
                 "只說一句按鈕已失效、想繼續就直接回覆編號或打字，並列出選項。")
 
 
+# 2026-11-19 (Telegram): the record said 「礁溪春和泡湯官網：雙人湯屋 40 分鐘 250 元」; 小居 planned on
+# it, and the plan, its button question and two context summaries carried it on. The official
+# page now says 699元 for 60 minutes in winter. A recorded price tells where to look, not the price.
+RECORD_PRICE = re.compile(r"(?:NT\$|TWD|\$)\s*\d[\d,]*|\d[\d,]*\s*元")
+RECORD_NOTE = ("\n\n[旅遊紀錄提醒] 上面紀錄裡的價格只是去哪裡查的線索，可能已經過期"
+               "（2026-11-19：紀錄寫春和雙人湯屋 40 分鐘 250 元，官網現在是冬季 60 分鐘 699 元）。"
+               "排方案、比便宜之前，先跑 page-prices.py <官網網址> 看現在的價格，只用它印出的價格。"
+               "紀錄裡的設施（例如要不要自備毛巾）也一樣，要以官網現在寫的為準。")
+
+
+def record_note(tool_name, args, result):
+    """The reminder to add to a read of opportunities.json that shows prices, else None."""
+    if tool_name not in ("read_file", "search_files") or not isinstance(args, dict):
+        return None
+    where = str(args.get("path") or args.get("file_path") or "") + " " + str(args.get("file_glob") or "")
+    if RECORDS not in where.replace("\\", "/") or not RECORD_PRICE.search(result) or RECORD_NOTE in result:
+        return None
+    return result + RECORD_NOTE
+
+
 def transform_tool_result(tool_name="", args=None, result=None, session_id="", turn_id="", **kwargs):
+    if isinstance(result, str):
+        try:
+            noted = record_note(tool_name, args, result)
+        except Exception:
+            noted = None
+        if noted:
+            return noted
     if tool_name != "clarify" or not session_id or not isinstance(result, str):
         return None
     try:

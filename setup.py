@@ -154,7 +154,8 @@ def install(root, delivery):
     required = [PACKAGE / "roles" / f"{p}.md" for p in PROFILES]
     required += [PACKAGE / "prompts" / f"{p}.md" for p in ("weekly", "alert")]
     required += [PACKAGE / "scripts" / f"{p}.py" for p in ("travel-scout", "scan-trip", "phone-check", "booking-links",
-                                                                "trip-cost", "calendar-check", "place-photo", "page_evidence")]
+                                                                "trip-cost", "calendar-check", "place-photo", "page_evidence",
+                                                                "page-prices")]
     required += [PACKAGE / "state" / f"{p}.json" for p in ("calendar", "preferences", "opportunities")]
     required += [PACKAGE / "skills" / "travel-planning" / "SKILL.md"]
     required += [PACKAGE / "plugins" / REPLY_CHECK / f for f in REPLY_CHECK_FILES]
@@ -204,6 +205,7 @@ def install(root, delivery):
         ("scripts/page_evidence.py", "shared/travel-workflow/page_evidence.py"),
         ("scripts/calendar-check.py", "shared/travel-workflow/calendar-check.py"),
         ("scripts/place-photo.py", "shared/travel-workflow/place-photo.py"),
+        ("scripts/page-prices.py", "shared/travel-workflow/page-prices.py"),
         ("skills/travel-planning/SKILL.md", "profiles/travel-commander/skills/travel-planning/SKILL.md"),
     ]:
         same_or_create(root / target, rendered(PACKAGE / source, root))
