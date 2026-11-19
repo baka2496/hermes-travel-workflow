@@ -216,6 +216,72 @@ class ButtonQuestionTests(unittest.TestCase):
         home = home_with()
         self.assertIsNone(ask(home, "📍 集合：台北車站東三門\n來源：https://www.metro.taipei/\n要哪天？"))
 
+    def test_information_is_not_a_choice(self):
+        # 2026-11-19: 「看費用明細」「看烏來一日來回交通動線」 were buttons, so seeing the costs took a press.
+        for choice in ("看費用明細", "看烏來一日來回交通動線", "查看完整行程"):
+            result = check.pre_tool_call("clarify", {"questions": [{"question": "要哪天？",
+                                                                    "choices": ["12/6", choice]}]}, session_id="s5")
+            self.assertEqual(result["action"], "block")
+            self.assertIn(f"「{choice}」", result["message"])
+        self.assertIsNone(check.pre_tool_call("clarify", {"questions": [{"question": "要哪天？", "choices": [
+            "改看礁溪兩天一夜", "維持 12/7 烏來"]}]}, session_id="s5"))
+
+    def test_one_button_question_per_message(self):
+        # 2026-11-19: after 「維持烏來一日首選」 was pressed, the same turn asked again (「等到 11/30 提醒
+        # 再確認」…), and after that answer asked a third time.
+        question = {"questions": [{"question": "已鎖定 12/07 烏來\n下一步？", "choices": ["等 11/30 提醒", "改礁溪"]}]}
+        self.assertIsNone(check.pre_tool_call("clarify", question, session_id="s6", turn_id="t1"))
+        answered = json.dumps({"responses": [{"question": "x", "status": "answered", "user_response": "維持"}],
+                               "outcome": "submitted"})
+        self.assertIsNone(check.transform_tool_result("clarify", {}, answered, session_id="s6", turn_id="t1"))
+        result = check.pre_tool_call("clarify", question, session_id="s6", turn_id="t1")
+        self.assertEqual(result["action"], "block")
+        self.assertIn("不要再用按鈕問下一步", result["message"])
+        # The user's next message may get a button question again.
+        self.assertIsNone(check.pre_tool_call("clarify", question, session_id="s6", turn_id="t2"))
+
+    def test_the_question_mark_is_not_doubled(self):
+        # 2026-11-19: the phone showed "❓ ❓ 12/07（一）烏來…" — Telegram adds its own ❓.
+        result = check.pre_tool_call("clarify", {"questions": [{"question": "❓ 12/07 烏來\n要哪個？",
+                                                                "choices": ["a", "b"]}]})
+        self.assertEqual(result["args"]["questions"][0]["question"], "12/07 烏來\n要哪個？")
+
+    def test_an_ordinary_reply_gets_the_tools_total_and_unconfirmed_marks(self):
+        # 2026-11-19 (Telegram, after the button change): the plan went out as an ordinary reply that
+        # the clarify checks never saw, with its own total wording and no 未確認 on 公車 or 餐飲.
+        output = ("總計 NT$1,600，預算剩 NT$400（NT$820 未確認）\n• 捷運輔大至新店來回 NT$180（NT$90×2）\n"
+                  "• 新店客運849來回 NT$60（NT$30×2），未確認\n• 烏來湯布苑雙人溪景湯屋平日 NT$600\n"
+                  "• 老街餐飲估算 NT$760（NT$380×2），未確認")
+        home = home_with(output)
+        reply = ("2026-12-07 烏來溫泉一日遊（2人）\n總計 NT$1,600（預算剩 NT$400；含未確認 NT$820）\n"
+                 "交通：捷運來回 NT$180、公車來回 NT$60（NT$30×2）\n泡湯：烏來湯布苑溪景湯屋平日 NT$600\n"
+                 "餐飲：老街小吃估算 NT$760\n待確認：現場候位狀況")
+        old = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(home)
+        try:
+            fixed = check.transform_llm_output(response_text=reply, session_id="s1", turn_id="t1")
+            self.assertEqual(fixed, "2026-12-07 烏來溫泉一日遊（2人）\n" + output + "\n待確認：現場候位狀況")
+            # 2026-11-19, second run: 「捷運及公車 NT$240」 hid the unconfirmed NT$60 inside a merged line.
+            merged = ("12/7（一）烏來一日遊（兩人）\n總計 NT$1,600，預算剩 NT$400（NT$820 未確認）\n"
+                      "• 交通：捷運及公車 NT$240\n• 泡湯：雙人溪景湯屋 NT$600\n• 餐飲：老街餐食估算 NT$760（未確認）\n"
+                      "照片：未取得\n📞 02-2661-8001")
+            self.assertEqual(check.transform_llm_output(response_text=merged, session_id="s1", turn_id="t1"),
+                             "12/7（一）烏來一日遊（兩人）\n" + output + "\n照片：未取得\n📞 02-2661-8001")
+            # Amounts mentioned elsewhere in the reply still get their mark.
+            later = "總計 NT$1,600，預算剩 NT$400\n照片：未取得\n提醒：餐飲 NT$760 現場付"
+            self.assertTrue(check.transform_llm_output(response_text=later, session_id="s1", turn_id="t1")
+                            .endswith("提醒：餐飲 NT$760（未確認） 現場付"))
+            # Already right: left alone.
+            self.assertIsNone(check.transform_llm_output(response_text=fixed, session_id="s1", turn_id="t1"))
+            # A total no run printed (say, a backup plan priced earlier) is not touched.
+            other = "備案：礁溪\n總計 NT$2,332，超出預算 NT$332\n餐飲 NT$760"
+            self.assertIsNone(check.transform_llm_output(response_text=other, session_id="s1", turn_id="t1"))
+        finally:
+            if old is None:
+                del os.environ["HERMES_HOME"]
+            else:
+                os.environ["HERMES_HOME"] = old
+
     def test_hooks_are_declared(self):
         manifest = (REPO / "plugins/travel-reply-check/plugin.yaml").read_text(encoding="utf-8")
         for hook in ("pre_tool_call", "transform_tool_result", "transform_llm_output"):

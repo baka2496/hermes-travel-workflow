@@ -198,6 +198,17 @@ class ProfileSettingsTests(unittest.TestCase):
                 # stopped, following the earlier one-line rule; it must carry on with the choice.
                 self.assertIn("就照選的那個繼續做完", text)
                 self.assertNotIn("最後的回覆只寫一句結果", text)
+                # 2026-11-19: one message took three button questions — keep the plan already set,
+                # "看費用明細", then "下一步" again — because every reply had to end with buttons.
+                self.assertIn("按鈕只在使用者真的要在不同做法之間選一個時用", text)
+                self.assertIn("不放「看費用明細」「看交通動線」這種資訊", text)
+                self.assertIn("已經決定或暫定的事不要再問要不要維持", text)
+                self.assertIn("使用者每傳一則訊息，最多問一次按鈕", text)
+                self.assertIn("總計下面原樣貼上 trip-cost.py 印的每一行明細，不要合併或改寫", text)
+                self.assertIn("不要再接著用按鈕問下一步", text)
+                for old in ("下一步用 `clarify` 按鈕給 2–4 個選項", "再用按鈕問下一步）", "用按鈕提供「看費用明細」",
+                            "費用明細等使用者要看再列"):
+                    self.assertNotIn(old, text)
 
     def test_commands_are_written_for_the_bash_terminal(self):
         # 2026-11-14: every turn's first command failed with "/usr/bin/bash: syntax error near `&'":
