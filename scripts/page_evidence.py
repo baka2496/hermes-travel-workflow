@@ -6,6 +6,8 @@ only if that page, as opened (web_extract or the browser, in the last few hours)
 opportunities.json, shows the value. Used by trip-cost.py (prices) and booking-links.py (phones).
 """
 from contextlib import closing
+import hashlib
+from html.parser import HTMLParser
 import json
 from pathlib import Path
 import re
@@ -48,9 +50,12 @@ def opened_pages_show(hermes_root, key, pattern, now):
 
 
 def opened_page_text(hermes_root, key, pattern, now):
-    """The text of the latest page-tool result for that page, in the last few hours, that shows the
-    value; None if there is none."""
+    """The text of the latest page read for that page, in the last few hours, that shows the
+    value: a page-prices.py snapshot, else a page-tool result. None if there is none."""
     since = now - RECENT_HOURS * 3600
+    snapshot = snapshot_text(hermes_root, key, since)
+    if snapshot is not None and pattern.search(snapshot):
+        return snapshot
     found = None
     for db_path in sorted((hermes_root / "profiles").glob("*/state.db")):
         try:
@@ -61,6 +66,213 @@ def opened_page_text(hermes_root, key, pattern, now):
         except sqlite3.Error:  # a busy or foreign database is no evidence either way
             continue
     return found
+
+
+# 2026-11-19 (Telegram): trip-cost.py said only 「來源網頁上沒看到這個價格」 for 春和's 「雙人池 40分鐘
+# NT$250」 (a price from an old record), and 小居 spent half an hour in state.db and the checkers'
+# code to find out why. page-prices.py opens the page itself, keeps what a visitor sees as a
+# snapshot here, and prints its prices (「冬季(10-4月)：699元 / 60分鐘」); trip-cost.py checks a
+# price against that snapshot and, when it is not there, names the prices the page does show.
+def snapshot_dir(hermes_root):
+    return Path(hermes_root) / "shared" / "travel-workflow" / "pages"
+
+
+def snapshot_path(hermes_root, key):
+    return snapshot_dir(hermes_root) / f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]}.json"
+
+
+def save_snapshot(hermes_root, url, text, headings=(), now=None):
+    path = snapshot_path(hermes_root, page_key(url))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"url": url, "fetched_at": now or time.time(), "text": text,
+                                "headings": list(headings)},
+                               ensure_ascii=False, indent=1), encoding="utf-8")
+    return path
+
+
+def snapshot_text(hermes_root, key, since):
+    """The page's text as page-prices.py last read it, if that was after `since`."""
+    try:
+        data = json.loads(snapshot_path(hermes_root, key).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or page_key(str(data.get("url", ""))) != key:
+        return None
+    if float(data.get("fetched_at") or 0) < since:
+        return None
+    return str(data.get("text") or "")
+
+
+ANY = re.compile(r".", re.S)
+
+
+def latest_page_text(hermes_root, source, now=None):
+    """What the page `source` showed when last read in the last few hours, whatever it showed."""
+    return opened_page_text(Path(hermes_root), page_key(source), ANY, now or time.time())
+
+
+PRICE = re.compile(r"(?:NT\$|NTD|TWD|\$)\s*\d[\d,]*|\d[\d,]*\s*(?:元|TWD)")
+
+
+def price_lines(text, headings=(), limit=40):
+    """The lines of a page's text that show a price, each once and in page order, each after the
+    heading it sits under: 「溪景湯屋｜平日特價 $600 / 1小時」 (湯布苑 lists four rooms' prices
+    under their names)."""
+    seen, lines, heading, names = set(), [], "", set(headings)
+    for line in (text or "").splitlines():
+        line = re.sub(r"\s+", " ", line).strip()
+        if line in names:
+            heading = line
+            continue
+        if not line or not PRICE.search(line) or len(line) > 160:
+            continue
+        shown = f"{heading}｜{line}" if heading and heading not in line else line
+        if shown not in seen:
+            seen.add(shown)
+            lines.append(shown)
+    return lines[:limit]
+
+
+class _Visible(HTMLParser):
+    """What a visitor reads: block elements become lines; table cells are written out with their
+    row and column headers, rowspan and colspan included, so 「699元」 reads
+    「冬季(10-4月)：699元 / 60分鐘」. Scripts, styles, comments and hidden elements are left out."""
+    BLOCK = {"p", "div", "br", "li", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "tr",
+             "dt", "dd", "header", "footer", "ul", "ol", "table", "form", "label"}
+    SKIP = {"script", "style", "noscript", "template", "svg", "head", "select", "option"}
+
+    VOID = {"br", "img", "input", "meta", "link", "hr", "source", "area", "base", "col", "embed", "wbr", "track"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.out, self.skipping, self.tables = [], [], []  # skipping: the open skipped tags
+        self.headings, self.heading_at = [], None
+
+    @property
+    def skip(self):
+        return bool(self.skipping)
+
+    def handle_startendtag(self, tag, attrs):
+        if tag == "br" and not self.skip:
+            self.write("\n")
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        hidden = "hidden" in attrs or re.search(r"display\s*:\s*none", attrs.get("style") or "", re.I)
+        if tag in self.VOID:
+            if tag == "br" and not self.skip:
+                self.write("\n")
+            return
+        if self.skip or tag in self.SKIP or hidden:
+            self.skipping.append(tag)  # every tag inside a skipped one, so the end tags pair up
+            return
+        if tag in ("h1", "h2", "h3", "h4") and not self.tables:
+            self.write("\n")
+            self.heading_at = len(self.out)
+            return
+        if tag == "table":
+            self.tables.append({"rows": [], "row": None, "cell": None})
+        elif self.tables and tag == "tr":
+            self.tables[-1]["row"] = []
+        elif self.tables and tag in ("td", "th"):
+            span = lambda name: max(1, min(20, int(re.sub(r"\D", "", attrs.get(name) or "") or 1)))
+            self.tables[-1]["cell"] = {"text": [], "rows": span("rowspan"), "cols": span("colspan")}
+        elif tag in self.BLOCK:
+            self.write("\n")
+
+    def handle_endtag(self, tag):
+        if self.skipping:
+            if tag in self.skipping:  # close it and anything left unclosed inside it (<option>)
+                del self.skipping[len(self.skipping) - 1 - self.skipping[::-1].index(tag):]
+            return
+        if tag in ("h1", "h2", "h3", "h4") and self.heading_at is not None:
+            name = re.sub(r"\s+", " ", "".join(self.out[self.heading_at:])).strip()
+            if name and not re.fullmatch(r"B?\d+F|[|｜/\d\s./-]*", name):
+                self.headings.append(name)
+            self.heading_at = None
+            self.write("\n")
+            return
+        if self.tables and tag in ("td", "th"):
+            table = self.tables[-1]
+            if table["cell"] is not None:
+                if table["row"] is None:
+                    table["row"] = []
+                table["row"].append(table["cell"])
+                table["cell"] = None
+        elif self.tables and tag == "tr":
+            table = self.tables[-1]
+            if table["row"] is not None:
+                table["rows"].append(table["row"])
+            table["row"] = None
+        elif self.tables and tag == "table":
+            self.write("\n" + "\n".join(table_lines(self.tables.pop()["rows"])) + "\n")
+        elif tag in self.BLOCK:
+            self.write("\n")
+
+    def handle_data(self, data):
+        if not self.skip:
+            self.write(data)
+
+    def write(self, text):
+        if self.tables and self.tables[-1]["cell"] is not None:
+            self.tables[-1]["cell"]["text"].append(text)
+        elif self.tables and text.strip():
+            self.tables[-1].setdefault("loose", []).append(text)
+        else:
+            self.out.append(text)
+
+
+def table_lines(rows):
+    """Lay out a table's cells on a grid (rowspan, colspan), then write each priced cell with its
+    row label and column header: 「冬季(10-4月)：699元 / 60分鐘」. Other rows are joined with ｜."""
+    grid, pending = [], {}  # pending: (row, column) -> text of a cell spanning down into it
+    for r, row in enumerate(rows):
+        line, c = {}, 0
+        for cell in row:
+            while (r, c) in pending:
+                line[c] = pending.pop((r, c))
+                c += 1
+            text = re.sub(r"\s+", " ", "".join(cell["text"])).strip()
+            for dr in range(cell["rows"]):
+                for dc in range(cell["cols"]):
+                    if dr == 0:
+                        line[c + dc] = text
+                    else:
+                        pending[(r + dr, c + dc)] = text
+            c += cell["cols"]
+        for spot in sorted(k for k in pending if k[0] == r):
+            line[spot[1]] = pending.pop(spot)
+        grid.append([line.get(i, "") for i in range(max(line) + 1)] if line else [])
+    if not grid:
+        return []
+    header = grid[0] if not any(PRICE.search(t) for t in grid[0]) else []
+    lines = [" ｜ ".join(t for t in header if t)] if header else []
+    for line in grid[1 if header else 0:]:
+        label = line[0] if line and not PRICE.search(line[0]) else ""
+        priced = [(i, t) for i, t in enumerate(line) if PRICE.search(t)]
+        if not priced:
+            lines.append(" ｜ ".join(t for t in line if t))
+            continue
+        for i, text in priced:
+            column = header[i] if i < len(header) else ""
+            lines.append(f"{label + '：' if label else ''}{text}{' / ' + column if column else ''}")
+    return [l for l in lines if l.strip()]
+
+
+def visible_text(html):
+    """The text a visitor reads on a page, one block per line, tables written out cell by cell."""
+    return read_page(html)[0]
+
+
+def read_page(html):
+    """(visible text, its headings)."""
+    parser = _Visible()
+    parser.feed(re.sub(r"(?s)<!--.*?-->", " ", html))
+    parser.close()
+    while parser.tables:  # an unclosed table
+        parser.out.append("\n" + "\n".join(table_lines(parser.tables.pop()["rows"])) + "\n")
+    lines = (re.sub(r"[ \t\r\f\v　]+", " ", l).strip() for l in "".join(parser.out).split("\n"))
+    return "\n".join(l for l in lines if l), parser.headings
 
 
 def shows(db, since, key, pattern):
@@ -106,9 +318,22 @@ def price_details(text, pattern):
         line = re.split(r"[\n|｜]", before)[-1]
         days = DAY.findall(line)
         day = ("平日" if days[-1] == "平日" else "假日") if days else None
-        if unit or day:
-            return {"unit": unit, "day": day}
-    return {"unit": None, "day": None}
+        # 2026-11-20: 春和 「夏季 (5-9月) 599元 / 冬季 (10-4月) 699元」 for 60 minutes.
+        label = text[text.rfind("\n", 0, match.start()) + 1:match.start()]
+        season = MONTHS.search(label)
+        months = (int(season["a"]), int(season["b"])) if season else None
+        if unit or day or months:
+            return {"unit": unit, "day": day, "months": months}
+    return {"unit": None, "day": None, "months": None}
+
+
+MONTHS = re.compile(r"(?P<a>1[0-2]|0?[1-9])\s*月?\s*[-–~至到]\s*(?P<b>1[0-2]|0?[1-9])\s*月")
+
+
+def in_months(month, months):
+    """True when `month` is inside a range like (5, 9) or the wrap-around (10, 4)."""
+    a, b = months
+    return a <= month <= b if a <= b else month >= a or month <= b
 
 
 def price_unit(text, pattern):

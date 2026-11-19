@@ -180,21 +180,24 @@ class ProfileSettingsTests(unittest.TestCase):
                 self.assertIn("不要把不同專案或分項分數混在一起", text)
                 # Same test, after pressing a button: a day trip listed "湯屋 NT$800" as confirmed and a
                 # phone number with no page opened in that turn. The tools now need the page.
-                self.assertIn("@<顯示這個價格的網頁>", text)
+                self.assertIn("@<page-prices.py 查過的網址>", text)
                 self.assertIn("--phone-source <寫著這支電話的網頁>", text)
                 # Same test: a weekend price of NT$1,600 was tagged with a Booking page that showed
                 # NT$1,100. The tool now checks the page; the reply must keep its verdict.
-                self.assertIn("重新打開那個網頁看清楚實際價格再算；網頁上真的沒有，就照原樣當未確認寫，不要只換個網址或改數字去湊", text)
+                self.assertIn("照那些改，不要換網址或改數字去湊", text)
                 # Test 11: a meal estimate of NT$1,348 made the total exactly the NT$6,000 budget.
-                self.assertIn("不要為了把總計湊到剛好等於預算去調數字", text)
+                self.assertIn("不要為了湊預算調數字", text)
                 # Same tests: web_extract failed on every page (a search-only backend), so 小居 never
                 # read a price; browser_exec worked. Pages are opened one per call so each price is
                 # checked against its own page.
-                self.assertIn("打開網頁一律用 `browser_exec`", text)
-                self.assertIn("一次呼叫只開一個網址", text)
+                # 2026-11-20: page-prices.py prints only the prices a visitor sees, so 小居 no longer reads whole pages.
+                self.assertIn("查價格先跑", text)
+                self.assertIn("page-prices.py\" <官網網址>", text)
+                self.assertIn("才用 `browser_exec`", text)
+                self.assertIn("一次只開一個網址", text)
                 # Test 13b: a MEDIA line inside a clarify question showed up as a file path.
                 self.assertIn("照片（MEDIA 那行）例外：不能放進 question", text)
-                self.assertIn("`web_extract` 在這台電腦讀不到網頁內容", text)
+                self.assertIn("`web_extract` 在這台電腦讀不到網頁", text)
                 # Same test: after "改排 12/12–12/13" was pressed, 小居 replied only "已為你調整…" and
                 # stopped, following the earlier one-line rule; it must carry on with the choice.
                 self.assertIn("就照選的那個繼續做完", text)
@@ -209,23 +212,24 @@ class ProfileSettingsTests(unittest.TestCase):
                 self.assertIn("不要再接著用按鈕問下一步", text)
                 # 2026-11-19: a record's 「TWD 120」 for another route confirmed a fare; records no longer
                 # vouch for prices, so reusing one means opening its page again.
-                self.assertIn("紀錄本身不算", text)
+                self.assertIn("紀錄裡的價格只是去哪裡查的線索", text)
                 # 2026-11-19: 「湯屋 NT$600」 was 「$600 / 1小時」; and 「我都是騎車或開車，不要再給我大眾運輸了」.
-                self.assertIn("網頁寫「/ 1小時」「每人」「起」就照寫", text)
+                self.assertIn("項目名稱照網頁寫時長或人數", text)
+                self.assertIn("它會寫「（每1小時）」「（假日價）」這類說明，照留", text)
                 self.assertIn("`public_transit` 是 false", text)
                 self.assertIn("交通費算油錢（估算）、停車費、國道通行費", text)
                 # 2026-11-19 (Telegram): 「客房泡湯2小時 NT$800」 used a 假日 1-hour price.
-                self.assertIn("改用跟這次行程時長、平日或假日相符的價格再算", text)
+                self.assertIn("--date <出發日 YYYY-MM-DD>", text)  # trip-cost.py now checks the day and season
                 # 2026-11-19: 「為甚麼要給我看不相干的圖」 — a 溪景湯屋 plan came with the lobby photo.
                 self.assertIn("不要用大廳、閱覽區、外觀或 logo 代替", text)
                 # 2026-11-19: 「未確認就不要傳給我，傳給我確認過的就好」.
                 self.assertIn("`show_unconfirmed` 是 false 時", text)
                 # 2026-11-19: 42 minutes and a patch to page_evidence.py to make one price pass.
                 self.assertIn("的結果就是結論", text)
-                self.assertIn("一定要重開官網看", text)
+                self.assertIn("要用就用 page-prices.py 重開那個網址", text)
+                self.assertIn("只推薦 page-prices.py 確認比原方案便宜的地方", text)
                 self.assertIn("--for \"<方案裡推薦的項目，照方案寫>\"", text)
                 self.assertNotIn("--label <房型或外觀>", text)
-                self.assertIn("（這幾小時內打開過的）", text)
                 self.assertNotIn("或機會紀錄裡的）", text)
                 self.assertNotIn("機會紀錄裡有附來源網址的也可以用那個網址", text)
                 for old in ("下一步用 `clarify` 按鈕給 2–4 個選項", "再用按鈕問下一步）", "用按鈕提供「看費用明細」",
