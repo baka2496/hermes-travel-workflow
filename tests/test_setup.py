@@ -142,12 +142,16 @@ class ProfileSettingsTests(unittest.TestCase):
 
     def test_a_fresh_conversation_starts_each_day_and_picks_up_open_questions(self):
         # 2026-11-12: one Telegram chat grew past 100K tokens and kept compressing.
-        self.assertIn(("session_reset.mode", "daily"), setup.PROFILE_SETTINGS)
+        # 2026-11-20: a chat open all day compressed twice in one 6-minute reply.
+        self.assertIn(("session_reset.mode", "both"), setup.PROFILE_SETTINGS)
         self.assertIn(("session_reset.at_hour", "4"), setup.PROFILE_SETTINGS)
+        self.assertIn(("session_reset.idle_minutes", "60"), setup.PROFILE_SETTINGS)
+        self.assertIn(("auxiliary.compression.model", "gemini-3.8-flash-low"), setup.PROFILE_SETTINGS)
+        self.assertIn(("auxiliary.vision.provider", "openai-codex"), setup.PROFILE_SETTINGS)  # antigravity drops images
         for role in ("travel-commander", "trip", "schedule-manager"):
             with self.subTest(role=role):
                 text = (Path(setup.__file__).parent / "roles" / f"{role}.md").read_text(encoding="utf-8")
-                self.assertIn("04:00", text)
+                self.assertIn("04:00 或閒置超過 1 小時後，會自動開新對話", text)
                 self.assertIn("pending_question", text)
                 self.assertIn("不要猜", text)
         commander = (Path(setup.__file__).parent / "roles" / "travel-commander.md").read_text(encoding="utf-8")
@@ -214,7 +218,7 @@ class ProfileSettingsTests(unittest.TestCase):
                 # vouch for prices, so reusing one means opening its page again.
                 self.assertIn("紀錄裡的價格只是去哪裡查的線索", text)
                 # 2026-11-19: 「湯屋 NT$600」 was 「$600 / 1小時」; and 「我都是騎車或開車，不要再給我大眾運輸了」.
-                self.assertIn("項目名稱照網頁寫時長或人數", text)
+                self.assertIn("項目名稱寫推薦的是什麼（湯屋、房型），加時長或人數", text)
                 self.assertIn("它會寫「（每1小時）」「（假日價）」這類說明，照留", text)
                 self.assertIn("`public_transit` 是 false", text)
                 self.assertIn("交通費算油錢（估算）、停車費、國道通行費", text)
@@ -222,6 +226,7 @@ class ProfileSettingsTests(unittest.TestCase):
                 self.assertIn("--date <出發日 YYYY-MM-DD>", text)  # trip-cost.py now checks the day and season
                 # 2026-11-19: 「為甚麼要給我看不相干的圖」 — a 溪景湯屋 plan came with the lobby photo.
                 self.assertIn("不要用大廳、閱覽區、外觀或 logo 代替", text)
+                self.assertIn("用 `vision_analyze` 一張一張看，只用真的拍到推薦項目本身的那張", text)
                 # 2026-11-19: 「未確認就不要傳給我，傳給我確認過的就好」.
                 self.assertIn("`show_unconfirmed` 是 false 時", text)
                 # 2026-11-19: 42 minutes and a patch to page_evidence.py to make one price pass.

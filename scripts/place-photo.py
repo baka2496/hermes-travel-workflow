@@ -1,9 +1,12 @@
 """Save a place's photo from the place's own page and print the MEDIA line for the reply.
 
 Example (a made-up place; never copy it into a reply):
-  place-photo.py "範例溫泉旅館" --page https://www.example.com/ --list
-  place-photo.py "範例溫泉旅館" --page https://www.example.com/ \
-      --image https://www.example.com/images/room.jpg --label 範例湯屋 --for "範例湯屋平日 1 小時"
+  place-photo.py "範例溫泉旅館" --page https://www.example.com/ --for "範例湯屋 1 小時"
+
+With --for alone it saves up to three photos that may show that item (captioned with its name
+first, then uncaptioned ones) and says how to pick one: look at each with vision_analyze and use
+only a photo that shows the item itself. It prints 照片：未取得 when the page has none. --list
+prints the page's photos; --image with --label saves a chosen one.
 
 --list prints every photo on the page (background pictures too) with the words the page puts
 beside it. The photo must appear on --page: the page is fetched and must contain the image's
@@ -102,19 +105,30 @@ def compact(text):
     return re.sub(r"[\s　]+", "", text or "")
 
 
-def related(label, recommended):
-    """True when the label and the recommended item name the same kind of thing: the label's last
-    word (湯屋, 套房, 大廳, 雙人房) is in the recommended item. 「溪景套房」 shares 「溪景」 with
-    「溪景湯屋」 but is another room."""
-    a, b = compact(label), compact(recommended)
+def related_name(name, recommended):
+    a, b = compact(name), compact(recommended)
     if not a or not b:
         return False
     return a in b or b in a or a[-2:] in b
 
 
+def related(label, recommended):
+    """The name the label gives (see `names`) that is the same kind of thing as the recommended
+    item, else None: its last word (湯屋, 套房, 大廳, 雙人房) is in the recommended item.
+    「溪景套房」 shares 「溪景」 with 「溪景湯屋」 but is another room."""
+    return next((name for name in names(label) if related_name(name, recommended)), None)
+
+
+def names(caption):
+    """The name at the head of a caption, as a list. Only the first word counts: 2026-11-20, a
+    photo of 玫瑰園's corridor and shop sat right before the section 「提供服務 溫泉湯屋 …」."""
+    words = [w for w in re.split(r"[\s/|｜，,、:：。]+", caption or "") if w and not re.fullmatch(r"B?\d+F", w)]
+    return words[:1]
+
+
 def first_words(caption):
     """The name at the head of a caption: 「1F 休憩大廳 時尚的…」 -> 「休憩大廳」."""
-    words = [w for w in re.split(r"[\s/|｜，,、:：。]+", caption or "") if w and not re.fullmatch(r"B?\d+F", w)]
+    words = names(caption)
     return words[0] if words else ""
 
 
@@ -129,53 +143,107 @@ def main():
     parser.add_argument("--out", type=Path, default=DEFAULT_DIR)
     args = parser.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
-    if not args.list and not (args.image and args.label and args.recommended):
-        parser.error("give --image, --label and --for (or --list to see the page's photos)")
+    if not args.list and not args.recommended:
+        parser.error("give --for (what the plan recommends), or --list to see the page's photos")
+    if args.image and not args.label:
+        parser.error("--image needs --label (the words the page puts beside it)")
     for url in (args.page, args.image or args.page):
         if urlsplit(url).scheme != "https":
             parser.error(f"https addresses only: {url}")
     try:
         html, _ = fetch(args.page, 3_000_000)
     except Exception as error:  # network or HTTP error: report it, do not fall back to another picture
-        print(f"cannot open --page ({error}); write 照片：未取得", file=sys.stderr)
-        return 1
+        print(f"cannot open --page ({error})", file=sys.stderr)
+        print(NONE)
+        return 0
     html = html.decode("utf-8", "replace")
     photos = photos_on_page(html, args.page)
     if args.list:
         for url, words in photos.items():
             print(f"{url}｜{' / '.join(words) or '（旁邊沒有說明）'}")
         return 0
+    if not args.image:
+        return candidates(args, photos)
     if not image_on_page(html, args.page, args.image):
         print("this image is not on --page; use a photo the place's own page shows, or write 照片：未取得", file=sys.stderr)
         return 1
     caption = caption_of(html, args.page, args.image)
     fitting = [f"{url}｜{' / '.join(words)}" for url, words in photos.items()
-               if any(related(first_words(w), args.recommended) for w in words)]
+               if any(related(w, args.recommended) for w in words)]
     hint = ("網頁上跟它有關的照片：\n" + "\n".join(fitting)) if fitting else "網頁上沒有它的照片，寫「照片：未取得」"
     if compact(args.label) not in compact(caption):
         print(f"網頁上這張照片旁邊寫的是「{caption or '（沒有說明）'}」，不是「{args.label}」；"
               f"--label 要用網頁上的字。{hint}", file=sys.stderr)
         return 1
-    if not related(args.label, args.recommended):
-        print(f"這張是「{args.label}」的照片，不是推薦的「{args.recommended}」。{hint}", file=sys.stderr)
+    shown = related(args.label, args.recommended)
+    if not shown:
+        # 2026-11-20: 「兩人一間（50分鐘）」 named no room, so the 溫泉湯屋 photo could not match it.
+        print(f"這張是「{args.label}」的照片，不是推薦的「{args.recommended}」。"
+              "--for 要寫推薦的是什麼（湯屋、房型）加時長（例如「溫泉湯屋 50分鐘」）。"
+              + (hint if fitting else "照這樣寫還是沒有它的照片，就寫「照片：未取得」"), file=sys.stderr)
         return 1
+    path = save(args, args.image, args.label)
+    if not path:
+        print(f"write {NONE}", file=sys.stderr)
+        return 1
+    print(f"MEDIA:{path.as_posix()}")
+    print(f"📷 {shown}（{urlsplit(args.page).netloc}）")
+    print("送出前先用 vision_analyze 看這張，確定拍到推薦的項目本身；沒看過的照片不會送出。", file=sys.stderr)
+    return 0
+
+
+NONE = "照片：未取得"
+MAX_CANDIDATES = 3
+
+
+def candidates(args, photos):
+    """Save up to three photos that may show the recommended item, for the agent to look at.
+
+    2026-11-20: the words beside a photo do not say what it shows. On 玫瑰園's site the photo
+    captioned 「溫泉湯屋」 was the shop front and the one before 「提供服務 溫泉湯屋」 the corridor,
+    while the real hot-spring room photos had no caption at all. So the photos whose caption
+    names the item come first, then the uncaptioned ones, and the agent must look at a photo
+    (vision_analyze) before using it; the reply check drops photos nobody looked at."""
+    named = [url for url, words in photos.items() if any(related(w, args.recommended) for w in words)]
+    bare = [url for url, words in photos.items() if not words]
+    saved = []
+    for url in named + bare:
+        if len(saved) == MAX_CANDIDATES:
+            break
+        path = save(args, url, " / ".join(photos[url]) or "（旁邊沒有說明）")
+        if path:
+            saved.append((path, " / ".join(photos[url])))
+    if not saved:
+        print(f"官網這頁沒有可能是「{args.recommended}」的照片。", file=sys.stderr)
+        print(NONE)
+        return 0
+    netloc = urlsplit(args.page).netloc
+    print(f"先用 vision_analyze 一張一張看（image_url 填路徑），挑真的拍到「{args.recommended}」本身的那張；"
+          "外觀、招牌、大廳、走廊、商店或 logo 都不算。沒看過的照片不會送出。")
+    for n, (path, caption) in enumerate(saved, 1):
+        print(f"{n}. {path.as_posix()}（官網旁邊寫：{caption or '沒有說明'}）")
+    print(f"挑好後在回覆裡貼這兩行（路徑換成那張）：\nMEDIA:<路徑>\n📷 {args.recommended}（{netloc}）")
+    print(f"都不是就寫「{NONE}」。")
+    return 0
+
+
+def save(args, image, label):
+    """Download the photo and keep a record of where it came from; the saved path, or None."""
     try:
-        data, kind = fetch(args.image, 15_000_000)
+        data, kind = fetch(image, 15_000_000)
     except Exception as error:
-        print(f"cannot download --image ({error}); write 照片：未取得", file=sys.stderr)
-        return 1
+        print(f"cannot download {image} ({error})", file=sys.stderr)
+        return None
     if kind not in EXTENSIONS or len(data) < MIN_BYTES:
-        print(f"not a photo ({kind}, {len(data)} bytes); write 照片：未取得", file=sys.stderr)
-        return 1
+        print(f"{image} is not a photo ({kind}, {len(data)} bytes)", file=sys.stderr)
+        return None
     args.out.mkdir(parents=True, exist_ok=True)
     path = args.out / f"{hashlib.sha256(data).hexdigest()[:16]}{EXTENSIONS[kind]}"
     path.write_bytes(data)
-    record = {"name": args.name, "label": args.label, "page": args.page, "image": args.image,
+    record = {"name": args.name, "label": label, "page": args.page, "image": image,
               "sha256": hashlib.sha256(data).hexdigest(), "saved_at": datetime.now(timezone.utc).isoformat()}
     path.with_name(path.name + ".source.json").write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"MEDIA:{path.as_posix()}")
-    print(f"📷 {args.label}（{urlsplit(args.page).netloc}）")
-    return 0
+    return path
 
 
 if __name__ == "__main__":
