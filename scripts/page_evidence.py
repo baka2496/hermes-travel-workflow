@@ -126,11 +126,20 @@ def phone_pattern(phone):
     return re.compile(r"(?<!\d)" + r"[\s\-–()]*".join(digits) + r"(?!\d)") if digits else None
 
 
-def shown(source, pattern, records=RECORDS, hermes_root=HERMES_ROOT, now=None):
-    """True if the page `source` shows text matching `pattern`."""
-    try:
-        data = json.loads(Path(records).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        data = {}
+def shown(source, pattern, records=RECORDS, hermes_root=HERMES_ROOT, now=None, use_records=True):
+    """True if the page `source` shows text matching `pattern`.
+
+    use_records=False: only a page opened in the last few hours counts. Prices need this
+    (2026-11-19): a record sourced to the 台北捷運 fare page mentioned 「TWD 120」 for 輔大↔台北車站
+    (two people), and that confirmed 「捷運公車來回 NT$120×2」 to 烏來, which the page never showed.
+    A record summarises several fares and rooms, so a number in it does not say which item it
+    prices, and it may be days old. A phone number is specific enough for a record to vouch for it."""
     key = page_key(source)
-    return records_show(data, key, pattern) or opened_pages_show(Path(hermes_root), key, pattern, now or time.time())
+    if use_records:
+        try:
+            data = json.loads(Path(records).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        if records_show(data, key, pattern):
+            return True
+    return opened_pages_show(Path(hermes_root), key, pattern, now or time.time())

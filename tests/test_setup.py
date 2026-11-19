@@ -206,6 +206,12 @@ class ProfileSettingsTests(unittest.TestCase):
                 self.assertIn("使用者每傳一則訊息，最多問一次按鈕", text)
                 self.assertIn("總計下面原樣貼上 trip-cost.py 印的每一行明細，不要合併或改寫", text)
                 self.assertIn("不要再接著用按鈕問下一步", text)
+                # 2026-11-19: a record's 「TWD 120」 for another route confirmed a fare; records no longer
+                # vouch for prices, so reusing one means opening its page again.
+                self.assertIn("紀錄本身不算", text)
+                self.assertIn("（這幾小時內打開過的）", text)
+                self.assertNotIn("或機會紀錄裡的）", text)
+                self.assertNotIn("機會紀錄裡有附來源網址的也可以用那個網址", text)
                 for old in ("下一步用 `clarify` 按鈕給 2–4 個選項", "再用按鈕問下一步）", "用按鈕提供「看費用明細」",
                             "費用明細等使用者要看再列"):
                     self.assertNotIn(old, text)

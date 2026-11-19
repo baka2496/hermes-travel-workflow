@@ -63,6 +63,15 @@ class BookingLinksTests(unittest.TestCase):
                 self.assertNotIn("📞", out)
                 self.assertIn("leave --phone out", err)
 
+    def test_a_record_still_vouches_for_its_phone(self):
+        # 2026-11-19: records stopped vouching for prices (a number in a record does not say which fare
+        # it is); a phone number is specific enough, so a record sourced to the page still counts.
+        records = {"opportunities": [{"source": CONTACT, "queried_at": "2026-11-11", "phone": "03-9882128"}]}
+        status, out, err = run("三光礁溪溫泉旅館", "--phone", "03-9882128", "--phone-source", CONTACT,
+                               evidence=fake_hermes(records=records))
+        self.assertEqual(status, 0, err)
+        self.assertIn("📞 03-9882128", out)
+
     def test_name_only_gives_maps(self):
         status, out, err = run("烏來湯布苑")
         self.assertEqual(status, 0, err)
