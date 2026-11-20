@@ -14,6 +14,8 @@ PROFILES = ("trip", "travel-commander", "schedule-manager")
 PROFILE_NAMES = ("Trip Agent", "旅遊總指揮官 小居", "Schedule Manager")
 REPLY_CHECK = "travel-reply-check"
 REPLY_CHECK_FILES = ("plugin.yaml", "__init__.py")
+# The price format trip-cost.py prints and the plugin reads back: one source, installed in both places.
+SHARED_MONEY = "scripts/travel_money.py"
 JOBS = (("trip", "travel-workflow/scanner"),
         ("travel-commander", "travel-workflow/weekly"),
         ("travel-commander", "travel-workflow/alerts"))
@@ -168,7 +170,7 @@ def install(root, delivery):
     required = [PACKAGE / "roles" / f"{p}.md" for p in PROFILES]
     required += [PACKAGE / "prompts" / f"{p}.md" for p in ("weekly", "alert")]
     required += [PACKAGE / "scripts" / f"{p}.py" for p in ("travel-scout", "scan-trip", "phone-check", "booking-links",
-                                                                "trip-cost", "calendar-check", "place-photo", "page_evidence",
+                                                                "trip-cost", "calendar-check", "place-photo", "page_evidence", "travel_money",
                                                                 "page-prices")]
     required += [PACKAGE / "state" / f"{p}.json" for p in ("calendar", "preferences", "opportunities")]
     required += [PACKAGE / "skills" / "travel-planning" / "SKILL.md"]
@@ -217,6 +219,7 @@ def install(root, delivery):
         ("scripts/booking-links.py", "shared/travel-workflow/booking-links.py"),
         ("scripts/trip-cost.py", "shared/travel-workflow/trip-cost.py"),
         ("scripts/page_evidence.py", "shared/travel-workflow/page_evidence.py"),
+        (SHARED_MONEY, "shared/travel-workflow/travel_money.py"),
         ("scripts/calendar-check.py", "shared/travel-workflow/calendar-check.py"),
         ("scripts/place-photo.py", "shared/travel-workflow/place-photo.py"),
         ("scripts/page-prices.py", "shared/travel-workflow/page-prices.py"),
@@ -229,6 +232,8 @@ def install(root, delivery):
         for name in REPLY_CHECK_FILES:
             same_or_create(root / "profiles" / profile / "plugins" / REPLY_CHECK / name,
                            (PACKAGE / "plugins" / REPLY_CHECK / name).read_bytes())
+        same_or_create(root / "profiles" / profile / "plugins" / REPLY_CHECK / "travel_money.py",
+                       (PACKAGE / SHARED_MONEY).read_bytes())
         run(root, "-p", profile, "plugins", "enable", REPLY_CHECK)
     for name, target in [("calendar", "shared/annual-schedule/calendar.json"),
                          ("preferences", "shared/travel-workflow/preferences.json"),

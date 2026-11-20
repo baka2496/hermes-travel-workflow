@@ -14,6 +14,8 @@ import re
 import sqlite3
 import time
 
+import travel_money
+
 HERE = Path(__file__).resolve().parent
 RECORDS = HERE / "opportunities.json"  # beside the installed scripts in shared/travel-workflow
 HERMES_ROOT = HERE.parent.parent       # shared/travel-workflow -> the Hermes home with profiles/
@@ -111,7 +113,7 @@ def latest_page_text(hermes_root, source, now=None):
     return opened_page_text(Path(hermes_root), page_key(source), ANY, now or time.time())
 
 
-PRICE = re.compile(r"(?:NT\$|NTD|TWD|\$)\s*\d[\d,]*|\d[\d,]*\s*(?:元|TWD)")
+PRICE = travel_money.PRICE
 CJK = re.compile(r"[一-鿿]")
 
 
@@ -307,9 +309,9 @@ def visible(text):
 
 
 # 2026-11-19: the plan said 「雙人溪景湯屋 NT$600」; the official page said 「平日特價 $600 / 1小時」.
-UNIT_AFTER = re.compile(r"^\s*(?:元|TWD)?\s*(?:[/／]\s*|每\s*)(?P<unit>\d*\s*(?:小時|hr|分鐘|晚|人|位|次|間|房|天|日))")
+UNIT_AFTER = re.compile(rf"^\s*{travel_money.CURRENCY_AFTER}?\s*(?:[/／]\s*|每\s*)(?P<unit>\d*\s*(?:小時|hr|分鐘|晚|人|位|次|間|房|天|日))")
 STARTING = re.compile(r"^\s*(?:元)?\s*起")
-UNIT_BEFORE = re.compile(r"每\s*(?P<unit>\d*\s*(?:小時|分鐘|晚|人|位|次|間|房|天|日))\s*[:：]?\s*(?:NT\$|\$|TWD)?\s*$")
+UNIT_BEFORE = re.compile(rf"每\s*(?P<unit>\d*\s*(?:小時|分鐘|晚|人|位|次|間|房|天|日))\s*[:：]?\s*{travel_money.CURRENCY_BEFORE}?\s*$")
 
 
 DAY = re.compile(r"平日|假日|週末|周末|週六|週日|例假日")

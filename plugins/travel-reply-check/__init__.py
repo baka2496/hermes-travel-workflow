@@ -23,6 +23,7 @@ dropped a candidate date window. New findings go in their own fields with their 
 A clarify question's markdown links are rewritten as "名稱：網址" (the question is plain text on
 Telegram). When a question times out, the reply that follows must not repeat it: see TIMED_OUT.
 """
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -30,7 +31,24 @@ import re
 import sqlite3
 from urllib.parse import unquote
 
-TOTAL = re.compile(r"總計 NT\$[\d,]+[^\n]*")
+
+def _load_money():
+    """travel_money.py, the price format shared with trip-cost.py: installed beside this file,
+    or in the checkout's scripts/ folder. A missing copy fails loudly here, at load, rather than
+    leaving every later check to fail inside a hook that swallows its errors."""
+    here = Path(__file__).resolve().parent
+    for path in (here / "travel_money.py", here.parents[1] / "scripts" / "travel_money.py"):
+        if path.is_file():
+            spec = importlib.util.spec_from_file_location("travel_money", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    raise ImportError(f"travel_money.py not found beside {here}")
+
+
+money = _load_money()
+AMOUNT = money.AMOUNT_PATTERN
+TOTAL = re.compile(rf"總計 {AMOUNT}[^\n]*")
 MEDIA = re.compile(r"^\s*MEDIA:", re.M)
 MEDIA_PROBLEM = ("clarify 的問題裡不能放 MEDIA 照片行：手機上只會看到一串檔案路徑。"
                  "把 MEDIA 那行從 question 拿掉（可寫「照片：選完後附上」），照片放在 clarify 之後的最後回覆裡送出。")
@@ -138,7 +156,7 @@ def unconfirmed_amounts(output):
     amounts = set()
     for line in output.splitlines()[1:]:
         if "未確認" in line:
-            amounts.update(re.findall(r"NT\$[\d,]+", line.split("，未確認")[0]))
+            amounts.update(money.amounts(line.split("，未確認")[0]))
     return amounts
 
 
@@ -285,7 +303,7 @@ def links_problem(text, outputs):
 # travel-workflow/pages holds page-prices.py's snapshots of what pages showed: the evidence itself.
 GUARDED = re.compile(r"(?:shared[\\/]+travel-workflow[\\/]+(?:[\w.-]+\.py|pages\b)|travel-reply-check[\\/]|travel[-_]rules"
                      r"|\.db\b|sqlite3|profiles[\\/]+[\w-]+[\\/]+cache\b|page_cache|sys\.path\.(?:append|insert)|spec_from_file_location"
-                     r"|\bimport\s+(?:page_evidence|trip_cost|place_photo|booking_links|phone_check))", re.I)
+                     r"|\bimport\s+(?:page_evidence|travel_money|trip_cost|place_photo|booking_links|phone_check))", re.I)
 WRITES = ("patch", "write_file")
 # `python …/trip-cost.py …`: the script right after a Python interpreter is being run, not read.
 RUN_TOOL = re.compile(r"""((?:^|[\s;&|(])["']?[^\s"';&|]*python[\w.]*["']?\s+)["']?[^\s"']*"""
@@ -364,7 +382,7 @@ TIMEOUT_NOTE = ("使用者還沒選，按鈕已失效。最後回覆不要重貼
 # 2026-11-19 (Telegram): the record said 「礁溪春和泡湯官網：雙人湯屋 40 分鐘 250 元」; 小居 planned on
 # it, and the plan, its button question and two context summaries carried it on. The official
 # page now says 699元 for 60 minutes in winter. A recorded price tells where to look, not the price.
-RECORD_PRICE = re.compile(r"(?:NT\$|TWD|\$)\s*\d[\d,]*|\d[\d,]*\s*元")
+RECORD_PRICE = money.PRICE
 RECORD_NOTE = ("\n\n[旅遊紀錄提醒] 上面紀錄裡的價格只是去哪裡查的線索，可能已經過期"
                "（2026-11-19：紀錄寫春和雙人湯屋 40 分鐘 250 元，官網現在是冬季 60 分鐘 699 元）。"
                "排方案、比便宜之前，先跑 page-prices.py <官網網址> 看現在的價格，只用它印出的價格。"
@@ -432,10 +450,10 @@ def timeout_reply(reply, pending):
 # clarify checks never saw: it said "總計 NT$1,600（預算剩 NT$400；含未確認 NT$820）" and listed
 # 公車 NT$60 and 餐飲 NT$760 without 未確認. An ordinary reply cannot be sent back, so its total
 # line is replaced with the tool's headline and each unconfirmed amount gets "（未確認）".
-TOTAL_AMOUNT = re.compile(r"總計\s*(NT\$[\d,]+)")
+TOTAL_AMOUNT = re.compile(rf"總計\s*({AMOUNT})")
 
 
-ITEM_LINE = re.compile(r"^\s*[•・\-*]\s*(?P<name>.+?)\s*(?P<amount>NT\$[\d,]+)")
+ITEM_LINE = re.compile(rf"^\s*[•・\-*]\s*(?P<name>.+?)\s*(?P<amount>{AMOUNT})")
 
 
 def item_key(line):
@@ -491,7 +509,7 @@ def corrected_costs(text, outputs):
 
 # 2026-11-19: 「未確認就不要傳給我，傳給我確認過的就好」. With "show_unconfirmed": false in
 # preferences.json, lines about anything unconfirmed are left out of the reply.
-UNSURE_LINE = re.compile(r"未確認|待確認|估算|未取得|約\s*NT\$|NT\$[\d,]+\s*起?左右")
+UNSURE_LINE = re.compile(rf"未確認|待確認|估算|未取得|約\s*{money.CURRENCY_BEFORE}|{AMOUNT}\s*起?左右")
 
 
 def confirmed_only(home):
@@ -510,7 +528,7 @@ def without_unconfirmed(text, outputs):
     """text without lines that state unconfirmed things: 「未確認」, 「待確認：…」, estimates, and
     amounts the latest trip-cost.py run did not print. The tool's own lines stay."""
     printed = {line.strip() for output in outputs[-1:] for line in output.splitlines() if line.strip()}
-    known = {a for line in printed for a in re.findall(r"NT\$[\d,]+", line)}
+    known = {a for line in printed for a in money.amounts(line)}
     kept = []
     for line in text.splitlines():
         if line.strip() in printed:
@@ -518,7 +536,7 @@ def without_unconfirmed(text, outputs):
             continue
         if UNSURE_LINE.search(line):
             continue
-        if any(a not in known for a in re.findall(r"NT\$[\d,]+", line)):
+        if any(a not in known for a in money.amounts(line)):
             continue
         kept.append(line)
     return "\n".join(kept)
@@ -566,7 +584,7 @@ def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
         fixed = without_unseen_photos(response_text, session_id)
         home = os.environ.get("HERMES_HOME") or Path.home() / ".hermes"
         hide = confirmed_only(home)
-        if hide or re.search(r"總計\s*NT\$", fixed):
+        if hide or TOTAL_AMOUNT.search(fixed):
             outputs = tool_outputs(session_id, home, TOOL)
             outputs = [] if outputs is UNKNOWN else [o for o in outputs if o.startswith("總計")]
             fixed = corrected_costs(fixed, outputs) if outputs else fixed
