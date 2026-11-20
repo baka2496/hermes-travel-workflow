@@ -1,12 +1,20 @@
-import { describe, it, expect, beforeAll } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // A throwaway database for each test run; the store reads TRIP_BOT_DB when first imported.
-process.env.TRIP_BOT_DB = join(mkdtempSync(join(tmpdir(), 'trip-bot-')), 'test.db');
+// 2026-11-20: the folder was left behind after every run (21 had piled up); it is removed now,
+// only this folder, which this file made.
+const folder = mkdtempSync(join(tmpdir(), 'trip-bot-store-test-'));
+process.env.TRIP_BOT_DB = join(folder, 'test.db');
 let store: typeof import('./store');
 beforeAll(async () => { store = await import('./store'); });
+afterAll(() => {
+  store.closeStore();
+  rmSync(folder, { recursive: true, force: true });
+  expect(existsSync(folder)).toBe(false);
+});
 
 describe('store', () => {
   it('keeps watches, scans and alerts', () => {
