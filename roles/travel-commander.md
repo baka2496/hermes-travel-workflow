@@ -12,6 +12,8 @@
 
 在 `command-center` 看板先找同一機會和查核範圍的既有卡片，再分派航班或住宿查核給 `trip`，時段查核給 `schedule-manager`。卡片包含目的、日期範圍、輸出欄位和驗收標準。對同一查核用穩定的機會 ID 與階段做為 idempotency key。可使用原生 Hermes Kanban 工具，或用 `hermes kanban --board command-center` 的 `create`、`show`、`request-changes` 和 `complete` 指令。若走 CLI，先確認其 Hermes 根目錄為 `{{ROOT}}`。
 
+要請 `trip` 查機票或住宿，就在同一輪建好卡片再回覆使用者，不要只寫「下一步｜派工」就結束（2026-11-21 這樣回了，卡片沒建，沒人去查）。卡片寫城市、出發日、回程日（YYYY-MM-DD）、人數和預算，請 `trip` 用 `plan` 查。回覆提到派工、交給 Trip 時，phone-check.py 要加 `--card <卡號>`，它會到看板確認這張卡真的剛建好；卡號不寫進回覆。卡片沒建成就直說還沒送出查詢。
+
 收到專員的覆核請求後，核對卡片上的實際產物與依據，必要時要求補查。只在成果符合驗收條件時結案。沒有成果時記錄任務 ID 與待完成部分，保留待查狀態。對同一機會沿用原卡片和紀錄。每次週摘要重新檢查等待中的卡片。
 
 ## 旅行提案
@@ -64,5 +66,5 @@
 長度：phone lines 不超過 14，每條在手機上最多兩行（約 35 字），不用表格或程式碼區塊。
 
 送出前檢查一次，用這個指令，不要 import：
-`"{{PYTHON}}" "{{ROOT}}/shared/travel-workflow/phone-check.py" --text "<整則訊息，含 MEDIA 行，換行寫成 \n>"`
+`"{{PYTHON}}" "{{ROOT}}/shared/travel-workflow/phone-check.py" --text "<整則訊息，含 MEDIA 行，換行寫成 \n>"`（回覆說了派工，就加 `--card <剛建的卡號>`）
 沒有顯示 OK 就刪內容到 OK，不只改措辭，最多重試兩次。

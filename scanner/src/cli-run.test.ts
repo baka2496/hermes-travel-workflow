@@ -3,7 +3,7 @@
 import { afterAll, test } from 'vitest';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,4 +68,29 @@ test('--check keeps the message for the rule check and prints only the verdict',
   const run = deals(data, 'watches', '--check');
   assert.equal(run.stdout, '✓');
   assert.equal(run.status, 0);
+});
+
+// Another agent's Kanban card asks for prices with `plan` (2026-11-21: a card answered from airline home
+// pages because `trip` replaces the user's Telegram list). Bad input stops before any lookup.
+test('plan: checks the city, dates and party size before looking anything up', { timeout: 60_000 }, () => {
+  const data = fresh('plan');
+  for (const args of [['plan'], ['plan', '大阪', '2027-01-24', '2027-01-19'], ['plan', '大阪', '2020-01-19', '2020-01-24'],
+    ['plan', '大阪', '2027-01-19', '2027-01-24', '0'], ['plan', '大阪', '2027-01-19', '2027-01-24', 'two']]) {
+    const run = deals(data, ...args);
+    assert.equal(run.status, 1, args.join(' '));
+    assert.match(run.stderr, /用法：plan|出發日已經過了|人數請用 1 到 9/, args.join(' '));
+  }
+  assert.deepEqual(readdirSync(data).filter(name => /^last-/.test(name)), []);
+});
+
+// What `plan` must leave alone: the user's T1, hotel list and buttons, and the saved party size.
+test('plan saves no list, buttons or party size', () => {
+  const source = readFileSync(new URL('./cli.ts', import.meta.url), 'utf8');
+  const start = source.indexOf('async function planForCard');
+  const body = source.slice(start, source.indexOf('\n}\n', start));
+  assert.ok(start > 0);
+  for (const writer of ['lastTripFile.write', 'saveListedHotels', 'settingsFile.write', 'lastHotelsFile.write']) assert.ok(!body.includes(writer), writer);
+  assert.match(body, /out\.keyboard = \[\]/);
+  assert.match(source, /command === 'plan'\) await planForCard\(/);
+  assert.doesNotMatch(source.slice(source.indexOf("command === 'plan'"), source.indexOf("command === 'watch'")), /saveListedHotels/);
 });

@@ -6,6 +6,8 @@ import sys
 import tempfile
 import unittest
 
+import scratch
+
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts/phone-check.py"
 
@@ -120,6 +122,59 @@ class PhoneCheckTests(unittest.TestCase):
         self.assertEqual(report["phone_lines"], 1)
         status, report = check("一二三四五六七八九十一二三四五六七八九十一")
         self.assertEqual(report["phone_lines"], 2)
+
+
+def board(cards):
+    """A command-center board holding *cards* (id, seconds ago, assignee)."""
+    import sqlite3
+    import time
+    path = Path(scratch.new_dir()) / "kanban.db"
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, assignee TEXT, created_at INTEGER)")
+    db.executemany("INSERT INTO tasks VALUES (?, ?, ?)", [(i, who, int(time.time()) - ago) for i, ago, who in cards])
+    db.commit()
+    db.close()
+    return path
+
+
+def check_handoff(text, db, *args):
+    import os
+    result = subprocess.run([sys.executable, str(SCRIPT), "--json", *args], input=text, capture_output=True,
+                            text=True, encoding="utf-8", env={**os.environ, "HERMES_KANBAN_DB": str(db)})
+    return result.returncode, json.loads(result.stdout)
+
+
+class HandoffTests(unittest.TestCase):
+    # 2026-11-21: 「下一步｜派工補查機票住宿」 was sent with no card made, and nobody looked.
+    REPLY = "已接單規劃大阪兩人行。\n・日期｜1/19–1/24 6天5夜\n・下一步｜派工補查機票住宿"
+
+    def kinds(self, report):
+        return [p["kind"] for p in report["problems"]]
+
+    def test_saying_it_was_handed_on_needs_a_card(self):
+        db = board([("t_3139ddb2", 60, "trip")])
+        status, report = check_handoff(self.REPLY, db)
+        self.assertEqual(status, 1)
+        self.assertEqual(self.kinds(report), ["handoff_without_card"])
+        self.assertIn("no --card", report["problems"][0]["text"])
+
+    def test_a_card_made_just_now_backs_it(self):
+        db = board([("t_3139ddb2", 60, "trip")])
+        status, report = check_handoff(self.REPLY, db, "--card", "t_3139ddb2")
+        self.assertEqual(status, 0, report)
+
+    def test_a_made_up_or_old_card_does_not(self):
+        db = board([("t_8b0f1a6e", 14 * 86400, "trip")])
+        for card, reason in (("t_deadbeef", "is not on the board"), ("t_8b0f1a6e", "is an old card"), ("trip", "not a card ID")):
+            status, report = check_handoff(self.REPLY, db, "--card", card)
+            self.assertEqual(status, 1, card)
+            self.assertIn(reason, report["problems"][0]["text"], card)
+
+    def test_other_wordings_count_and_plain_replies_need_no_card(self):
+        db = board([])
+        for text in ("已交給 Trip Agent 查", "請 Trip Agent 重查價格", "派給專員補查"):
+            self.assertEqual(self.kinds(check_handoff(text, db)[1]), ["handoff_without_card"], text)
+        self.assertEqual(check_handoff("大阪 1/19–1/24 兩人\n機票每人 NT$13,310", db)[0], 0)
 
 
 if __name__ == "__main__":
