@@ -97,6 +97,11 @@ def check(message):
     if BOOKING_LINKS in message and "照片：未取得" not in message and not any(l.strip().startswith("MEDIA:") for l in lines):
         problems.append({"kind": "missing_photo",
                          "hint": "add a photo from place-photo.py, or write 照片：未取得 when the place's own page has none"})
+    # 2026-11-20: 「電話沒附」 — a plan for 春和 left out the number its page shows.
+    if BOOKING_LINKS in message and "電話：未取得" not in message and not any(l.strip().startswith("📞") for l in lines):
+        problems.append({"kind": "missing_phone",
+                         "hint": "page-prices.py prints the page's phone numbers: pass one to booking-links.py "
+                                 "with --phone and --phone-source; write 電話：未取得 when the page has none"})
     screens = round(phone_lines / SCREEN_LINES, 2)
     if phone_lines > MAX_MESSAGE_LINES:
         problems.append({"kind": "too_long", "phone_lines": math.ceil(phone_lines),

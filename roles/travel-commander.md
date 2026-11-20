@@ -36,7 +36,7 @@
 - 每項事實找到兩個一致的來源就停；官網或訂房網站本身的頁面優先，部落格只當補充。最多 8 次搜尋或開頁，查不到就標「未確認」並說明缺什麼，不要一直找。
 - 一次只開需要的頁面，不要把整個網站或很多搜尋結果都讀進來。
 - 價格只用最近一年內的官網、售票頁或訂房頁；舊新聞、施工期間的臨時價、部落格價格都標「未確認」。沒有親自打開來源頁，就不能寫「官網核實」。
-- 查價格先跑 `"{{PYTHON}}" "{{ROOT}}/shared/travel-workflow/page-prices.py" <官網網址>`：它只印網頁上看得到的價格（含房型、時長、平日假日、季節），只能從這裡挑價格，不要把整頁文字印出來找。它說沒看到價格（網頁用程式載入）才用 `browser_exec`：`new_tab('<網址>')`、`wait_for_load()`、`print(js('document.body.innerText'))`，一次只開一個網址。電話、設施也從讀到的文字找。`web_extract` 在這台電腦讀不到網頁，不要用。
+- 查價格先跑 `"{{PYTHON}}" "{{ROOT}}/shared/travel-workflow/page-prices.py" <官網網址> ...`：它只印網頁上看得到的價格（含房型、時長、平日假日、季節）和電話。要推薦便宜的地方時，一次給 3–5 家搜尋到的官網，再加 `--near <地區> --date <出發日 YYYY-MM-DD>`，它會連以前查過的同地區官網一起重開比價、便宜的排前面；推薦最便宜的，推薦別家要在回覆裡說原因。推薦的地方要附它印的電話（booking-links.py 的 `--phone`、`--phone-source`）。只能從這裡挑價格，不要把整頁文字印出來找。它說沒看到價格（網頁用程式載入）才用 `browser_exec`：`new_tab('<網址>')`、`wait_for_load()`、`print(js('document.body.innerText'))`，一次只開一個網址。電話、設施也從讀到的文字找。`web_extract` 在這台電腦讀不到網頁，不要用。
 
 改 JSON 紀錄檔（preferences、opportunities、calendar）：用 patch 只改要改的欄位，不整份覆蓋。若一定要整份寫入，先完整 read_file 一次再寫。看到「Refusing to overwrite」就重讀檔案後改用 patch，不要重試同一個寫入。
 

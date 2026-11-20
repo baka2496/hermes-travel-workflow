@@ -196,6 +196,8 @@ class ProfileSettingsTests(unittest.TestCase):
                 # checked against its own page.
                 # 2026-11-20: page-prices.py prints only the prices a visitor sees, so 小居 no longer reads whole pages.
                 self.assertIn("查價格先跑", text)
+                self.assertIn("--near <地區> --date <出發日 YYYY-MM-DD>", text)  # 2026-11-20: compare first
+                self.assertIn("推薦的地方要附它印的電話", text)
                 self.assertIn("page-prices.py\" <官網網址>", text)
                 self.assertIn("才用 `browser_exec`", text)
                 self.assertIn("一次只開一個網址", text)

@@ -71,6 +71,56 @@ class ReadPageTests(unittest.TestCase):
         self.assertEqual(page_evidence.price_lines(text, headings), ["價位資訊｜60分鐘 699元", "Spa｜30分鐘 500元"])
 
 
+ROSE = ["溫泉湯屋｜湯屋計價方式：兩人一間300元，加一位大人加50元，加一位小孩30元。",
+        "溫泉湯屋｜泡湯時間50分鐘。另售有湯券，10張2000元，無使用期限。",
+        "溫泉套房｜另有住宿方案：訂價3600元，假日2880元優惠。"]
+
+
+class CompareTests(unittest.TestCase):
+    # 2026-11-20: a new conversation recommended 春和's NT$699; 玫瑰園 (NT$300) was nearby.
+    def test_the_price_of_one_visit_is_picked_not_extras_or_tickets(self):
+        self.assertEqual(page_evidence.cheapest(ROSE)[0], 300)
+
+    def test_other_months_and_the_other_day_are_left_out(self):
+        import datetime
+        text, headings = page_evidence.read_page(CHUNHE)
+        lines = page_evidence.price_lines(text, headings)
+        self.assertEqual(page_evidence.cheapest(lines, datetime.date(2026, 12, 14))[0], 699)
+        self.assertEqual(page_evidence.cheapest(lines, datetime.date(2026, 7, 6))[0], 599)
+        text, headings = page_evidence.read_page(YUFUIN)
+        lines = page_evidence.price_lines(text, headings)
+        self.assertEqual(page_evidence.cheapest(lines, datetime.date(2026, 12, 14))[0], 600)  # Monday
+        self.assertEqual(page_evidence.cheapest(lines, datetime.date(2026, 12, 12))[0], 800)  # Saturday
+
+    def test_a_per_person_price_counts_for_everyone(self):
+        self.assertEqual(page_evidence.cheapest(["大眾池｜每人 250元 / 2小時"], people=2)[0], 500)
+
+    def test_pages_read_before_for_the_same_area_are_found_again(self):
+        root = snapshot(CHUNHE.replace("價位資訊", "礁溪 價位資訊"))
+        self.assertEqual(page_evidence.known_pages(root, "礁溪"), [PAGE])
+        self.assertEqual(page_evidence.known_pages(root, "烏來"), [])
+
+    def test_the_tool_ranks_several_pages(self):
+        root = tempfile.mkdtemp(prefix="hermes-page-prices-")
+        html = Path(root) / "page.html"
+        html.write_text(CHUNHE, encoding="utf-8")
+        status, out, err = run("page-prices.py", PAGE, "https://other.example/", "--date", "2026-12-14",
+                               "--html-file", str(html), "--hermes-root", root)
+        self.assertEqual(status, 0, err)
+        self.assertIn("比價（一次的價格，便宜的在前）", out)
+        self.assertIn("   699元｜春和｜價位資訊｜冬季 (10-4月)：699元 / 60分鐘", out)
+
+
+class PhonesOnPageTests(unittest.TestCase):
+    def test_the_pages_phones_are_listed_without_the_fax(self):
+        # 2026-11-20: 「電話沒附」; 春和's page shows 電話, 傳真 and the big bath's own number.
+        text = "營業時間：平日 8:00 電話：03-9881892#3 LINE ID：@sh026 傳真：03-9889151\n日式大浴池：03-9889715"
+        self.assertEqual(page_evidence.phones_on_page(text), ["電話 03-9881892#3", "日式大浴池 03-9889715"])
+        self.assertEqual(page_evidence.phones_on_page("TEL：039883364 手機 0966-677299"),
+                         ["TEL 039883364", "手機 0966-677299"])
+        self.assertEqual(page_evidence.phones_on_page("2026-11-20 訂價3600元"), [])
+
+
 class PagePricesToolTests(unittest.TestCase):
     def test_it_prints_the_prices_and_keeps_a_snapshot(self):
         root = tempfile.mkdtemp(prefix="hermes-page-prices-")
