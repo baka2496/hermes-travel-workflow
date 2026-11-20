@@ -132,7 +132,8 @@ export function parseHotelList(text: string): HotelListQuote[] {
 
 const DAY_MS = 86_400_000;
 
-export interface RoomOffer { name: string; nightly: number }
+/** beds: what the panel says under the room ("1 single bed"), when it says it. */
+export interface RoomOffer { name: string; nightly: number; beds?: string[] }
 export type RoomCheck =
   | { status: 'private'; room: RoomOffer; options: RoomOffer[]; alsoShared: boolean } // room: cheapest one you do not share; options: every private room listed, cheapest first; alsoShared: dorm beds listed too
   | { status: 'shared' } // every listed room is a bed in a shared room
@@ -149,6 +150,9 @@ export function isDormBed(roomName: string): boolean {
   return /dorm|capsule|bed in|shared room|mixed|ドミトリー|カプセル|相部屋|床位/i.test(roomName);
 }
 
+const BED_COUNT = /(\d+ [a-z-]+(?: [a-z-]+)? (?:bed|futon)s?)/gi;
+const BED_LINE = /^\d+ [a-z- ]*(?:bed|futon)s?\b/i;
+
 /**
  * Room offers named in a Google Hotels prices panel ("Featured options").
  * A room is a room-like line followed, past at most two condition lines, by
@@ -163,11 +167,17 @@ export function parseRoomOffers(panelText: string): RoomOffer[] {
   const rooms: RoomOffer[] = [];
   for (let index = 0; index < section.length; index++) {
     const name = section[index]!;
-    if (!ROOM_NAME.test(name) || PRICE.test(name) || name.length > 140) continue;
+    // A bed line ("1 single bed · Free cancellation…") describes the room above it; it is no room itself.
+    if (!ROOM_NAME.test(name) || PRICE.test(name) || name.length > 140 || BED_LINE.test(name)) continue;
     for (let next = index + 1; next <= index + 3 && next < section.length; next++) {
       const price = PRICE.exec(section[next]!);
-      if (price) { rooms.push({ name, nightly: Number(price[1]!.replace(/,/g, '')) }); break; }
-      if (ROOM_NAME.test(section[next]!) && !/cancellation|guests?|breakfast|balcony/i.test(section[next]!)) break;
+      if (price) {
+        // The bed line between name and price ("1 single bed · Free cancellation until Jan 16").
+        const beds = section.slice(index + 1, next).flatMap(line => [...line.matchAll(BED_COUNT)].map(match => match[1]!));
+        rooms.push({ name, nightly: Number(price[1]!.replace(/,/g, '')), ...(beds.length ? { beds } : {}) });
+        break;
+      }
+      if (ROOM_NAME.test(section[next]!) && !/cancellation|guests?|breakfast|balcony/i.test(section[next]!) && !BED_LINE.test(section[next]!)) break;
     }
   }
   return rooms;

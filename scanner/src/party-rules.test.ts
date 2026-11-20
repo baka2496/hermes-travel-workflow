@@ -3,8 +3,8 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import type { BookingRoom } from './deals/booking-rooms';
-import type { RoomCheck } from './deals/hotel-page';
-import { bookingRoomsForParty, nightsOf, partyCost, roomForParty, roomTypeLabel, roomsNeeded, sortRooms } from './party-rules';
+import type { RoomCheck, RoomOffer } from './deals/hotel-page';
+import { bedsSleep, bedsTooFew, bookingRoomsForParty, nightsOf, partyCost, roomForParty, roomTypeLabel, roomsNeeded, sortRooms } from './party-rules';
 
 const two = { travelers: 2, nonSmoking: true };
 const one = { travelers: 1, nonSmoking: false };
@@ -13,7 +13,7 @@ const room = (name: string, extra: Partial<BookingRoom> = {}): BookingRoom => ({
   name, guests: null, stayTotal: null, freeCancelUntil: null, sizeM2: null, beds: [], bathroom: null, photos: [],
   bunkInPhotos: false, resale: false, ...extra,
 });
-const privateCheck = (options: { name: string; nightly: number }[], alsoShared = false): RoomCheck =>
+const privateCheck = (options: RoomOffer[], alsoShared = false): RoomCheck =>
   ({ status: 'private', room: options[0]!, options, alsoShared });
 
 test('rooms and costs for the party', () => {
@@ -25,7 +25,7 @@ test('rooms and costs for the party', () => {
 
 test('two people are never given a single room, priced as one (2026-10-18)', () => {
   const check = privateCheck([{ name: 'Single Room', nightly: 1200 }, { name: 'Double Room', nightly: 2100 }]);
-  assert.deepEqual(roomForParty(check, 1200, two), { room: { name: 'Double Room', nightly: 2100 }, nightly: 2100 });
+  assert.deepEqual(roomForParty(check, 1200, two), { room: { name: 'Double Room', nightly: 2100 }, nightly: 2100, bedsUnconfirmed: false });
   assert.equal(roomForParty(privateCheck([{ name: 'Single Room', nightly: 1200 }]), 1200, two), null);
 });
 
@@ -79,4 +79,29 @@ test("a hotel whose Booking rooms for two are all bunks or shared bathrooms is l
   // Booking showing no room that fits says nothing: the hotel stays.
   assert.equal(bookingRoomsForParty([], two).keep, true);
   assert.equal(bookingRoomsForParty([room('Single Room', { guests: 1 })], two).keep, true);
+});
+
+// 2026-11-20: Google listed Enka Nanba 1's "Basic Twin Room" with "1 single bed" and the list told two
+// people ✅ 雙床房. A room whose stated beds sleep fewer than the party is not confirmed.
+test('beds that sleep fewer than the party are not confirmed', () => {
+  assert.equal(bedsSleep(['1 single bed']), 1);
+  assert.equal(bedsSleep(['2 single beds']), 2);
+  assert.equal(bedsSleep(['1 double bed']), 2);
+  assert.equal(bedsSleep(['1 semi-double bed']), 2);
+  assert.equal(bedsSleep(['1 bunk bed']), 2);
+  assert.equal(bedsSleep(['1 single bed', '1 sofa bed']), 2);
+  assert.equal(bedsSleep(undefined), null);
+  assert.equal(bedsSleep(['1 large bed']), null); // an unknown size says nothing
+  assert.equal(bedsTooFew(['1 single bed'], 2), true);
+  assert.equal(bedsTooFew(['1 single bed'], 1), false);
+  assert.equal(bedsTooFew(['1 single bed', '1 single bed'], 4), false); // a room for two is the most needed
+  assert.equal(bedsTooFew(undefined, 2), false);
+
+  const enka = privateCheck([{ name: 'Basic Twin Room', nightly: 1130, beds: ['1 single bed'] }]);
+  assert.deepEqual(roomForParty(enka, 1130, two), { room: { name: 'Basic Twin Room', nightly: 1130, beds: ['1 single bed'] }, nightly: 1130, bedsUnconfirmed: true });
+  // A room whose beds do sleep two is taken over the cheaper contradicting one.
+  const both = privateCheck([{ name: 'Basic Twin Room', nightly: 1130, beds: ['1 single bed'] }, { name: 'Standard Twin Room', nightly: 1300, beds: ['2 single beds'] }]);
+  assert.deepEqual(roomForParty(both, 1130, two)?.room.name, 'Standard Twin Room');
+  assert.equal(roomForParty(both, 1130, two)?.bedsUnconfirmed, false);
+  assert.equal(roomForParty(enka, 1130, one)?.bedsUnconfirmed, false);
 });

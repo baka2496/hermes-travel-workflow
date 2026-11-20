@@ -250,6 +250,17 @@ describe('booking sites', () => {
 });
 
 describe('room checks', () => {
+  // Enka Nanba 1 Hotel, 2027-01-19 to 01-24 for two, as Google showed it on 2026-11-20.
+  it('keeps the bed line under a room', () => {
+    const panel = 'Sponsored · Featured options\nHotels.com\nNT$1,130\nVisit site\nBasic Twin Room\n1 single bed · Free cancellation until Jan 16\nNT$1,130\nVisit site\n'
+      + 'Semi Double Room\n1 semi-double bed\nNT$1,400\nVisit site\nAll options\nHotels.com\nNT$1,130\nVisit site';
+    expect(parseRoomOffers(panel)).toEqual([
+      { name: 'Basic Twin Room', nightly: 1130, beds: ['1 single bed'] },
+      // A bed line on its own no longer ends the room before its price.
+      { name: 'Semi Double Room', nightly: 1400, beds: ['1 semi-double bed'] },
+    ]);
+  });
+
   it('reads the named rooms and their nightly prices from a prices panel', () => {
     expect(parseRoomOffers(DORM_PANEL)).toEqual([
       { name: 'Bunk Bed in Female Dormitory Room', nightly: 2158 },

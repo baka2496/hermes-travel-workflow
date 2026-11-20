@@ -2,7 +2,7 @@
 // Each case is a mistake that reached the user once, or a rule the user set.
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { airlineName, flightLines, listPhoto, PHONE_WIDTH, phoneWidth, pickFlights, recommendedSite, roomType, siteForPrice, tooWide, withAdults } from './format';
+import { airlineName, flightLines, listPhoto, noPlanReason, PHONE_WIDTH, phoneWidth, pickFlights, recommendedSite, roomType, siteForPrice, tooWide, withAdults } from './format';
 import { callbackData, chunks } from './telegram';
 import type { FlightOption } from './deals/flight-list';
 
@@ -98,4 +98,11 @@ test('an airline link asks for the whole party', () => {
   const scoot = 'https://booking.flyscoot.com/book/flight/one-way/TPE/2026-10-29/NRT?adult=1&child=0&infant=0';
   assert.equal(withAdults(scoot, 2), 'https://booking.flyscoot.com/book/flight/one-way/TPE/2026-10-29/NRT?adult=2&child=0&infant=0');
   assert.equal(withAdults('not a url', 2), 'not a url');
+});
+
+// 2026-11-20: Google did not answer and the trip said "沒選到符合時段的航班", read as no suitable flight.
+test('no flight plan says why', () => {
+  assert.equal(noPlanReason(true), '沒有符合時段的航班');
+  assert.equal(noPlanReason(false), '這次沒讀到訂票頁，可以稍後再試');
+  assert.deepEqual([noPlanReason(true), noPlanReason(false)].flatMap(tooWide), []);
 });

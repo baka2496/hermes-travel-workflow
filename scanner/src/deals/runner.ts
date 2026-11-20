@@ -101,12 +101,18 @@ export async function captureHotelList(watch: Pick<DealWatch, 'currency' | 'coun
     }
     // Each hotel's "View prices for …" link opens its prices panel for the stay, from any page of results.
     const links = new Map<string, string>();
+    // Google's "N% less than usual", and the rating in layouts that omit it, live in element labels.
+    // Read on every page: read once at the end, only the last page's hotels kept them, and a list whose
+    // cheapest hotel was "51% less than usual" said every price was usual (2026-11-20).
+    const labels: string[] = [];
     const readLinks = async () => {
       for (const { label, href } of await page.evaluate(() => [...document.querySelectorAll('a[aria-label^="View prices for "]')]
         .map(anchor => ({ label: anchor.getAttribute('aria-label') ?? '', href: (anchor as HTMLAnchorElement).href })))) {
         const name = label.replace(/^View prices for /, '').replace(/\s+/g, ' ').trim();
         if (!links.has(name)) links.set(name, href);
       }
+      labels.push(...await page.evaluate(() => [...document.querySelectorAll('[aria-label]')]
+        .map(element => element.getAttribute('aria-label') ?? '').filter(label => /less than usual|out of 5 stars/.test(label))));
     };
     await readLinks();
     // More pages: the first holds 15 of some 60 hotels, too few to find the best value among
@@ -128,9 +134,6 @@ export async function captureHotelList(watch: Pick<DealWatch, 'currency' | 'coun
       hotels = [...hotels, ...added];
       await readLinks();
     }
-    // Google's "N% less than usual", and the rating in layouts that omit it, live in element labels.
-    const labels = await page.evaluate(() => [...document.querySelectorAll('[aria-label]')]
-      .map(element => element.getAttribute('aria-label') ?? '').filter(label => /less than usual|out of 5 stars/.test(label)));
     const below = parseBelowUsual(labels);
     const ratings = parseLabelRatings(labels);
     hotels = hotels.map(hotel => ({ ...hotel, rating: hotel.rating ?? ratings.get(hotel.name) ?? null, belowUsualPct: below.get(hotel.name) ?? null, link: links.get(hotel.name) }));
@@ -199,9 +202,22 @@ export interface FlightBooking {
 }
 
 /**
+ * Google listed flights for a leg but none fits the user's times. Thrown rather than returned as null,
+ * since null means the page was not read: the user was told "no flight at a suitable time" when Google
+ * had simply not answered (2026-11-20).
+ */
+export class NoFittingFlight extends Error {
+  constructor(readonly leg: 'outbound' | 'inbound') {
+    super(`no ${leg} flight fits the preferred times`);
+    this.name = 'NoFittingFlight';
+  }
+}
+
+/**
  * Pick an outbound and a return on Google Flights (clicking them, as a person would) and return
  * the booking page they lead to, so the link opens that exact itinerary with its booking options
- * instead of a search the user has to work through. Null when the page or a choice is missing.
+ * instead of a search the user has to work through. Null when the page or a choice is missing;
+ * NoFittingFlight when flights were read and none fits.
  */
 export async function bookFlight(origin: string, stay: Pick<ExploreQuote, 'city' | 'outboundDate' | 'returnDate'>, currency: string, country: string,
   choose: { outbound: (flights: FlightOption[]) => FlightOption | null; inbound: (flights: FlightOption[], outboundAirline: string) => FlightOption | null }):
@@ -235,11 +251,16 @@ export async function bookFlight(origin: string, stay: Pick<ExploreQuote, 'city'
     });
 
     const outboundLabels = await readRows([]);
-    const outbound = choose.outbound(parseFlightLabels(outboundLabels));
+    const outboundFlights = parseFlightLabels(outboundLabels);
+    const outbound = choose.outbound(outboundFlights);
+    // Flights were read and none suits the user's times: say that, not "try again" (2026-11-20).
+    if (outboundFlights.length && !outbound) throw new NoFittingFlight('outbound');
     const outboundLabel = pick(outboundLabels, outbound);
     if (!outbound || !outboundLabel || !(await clickRow(outboundLabel))) return null;
     const returnLabels = await readRows(outboundLabels);
-    const inbound = choose.inbound(parseFlightLabels(returnLabels.filter(label => !outboundLabels.includes(label))), outbound.airline);
+    const returnFlights = parseFlightLabels(returnLabels.filter(label => !outboundLabels.includes(label)));
+    const inbound = choose.inbound(returnFlights, outbound.airline);
+    if (returnFlights.length && !inbound) throw new NoFittingFlight('inbound');
     const inboundLabel = pick(returnLabels, inbound);
     if (!inbound || !inboundLabel || !(await clickRow(inboundLabel))) return null;
     const booked = await page.waitForURL(/\/travel\/flights\/booking/, { timeout: 30_000 }).then(() => true, () => false);

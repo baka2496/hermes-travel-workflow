@@ -15,7 +15,7 @@
 import { CITY_NAMES, cityLabel } from './deals/message';
 import { TRIP_LENGTHS, buildCardSearchUrl, isTripLength, type TripLength } from './deals/explore-page';
 import { buildHotelNameUrl, hotelArea, inTown, isNonSmokingRoom, isPrivateHotel, isSmokingRoom, nearbyAreas, parseGoogleRoomRow, roomKey, type HotelListQuote, type SiteOffer, type HotelPhotos } from './deals/hotel-page';
-import { bookFlight, captureHotelList, checkHotelRooms, deliverDealAlerts, runDueDealWatches, searchFlights } from './deals/runner';
+import { bookFlight, captureHotelList, checkHotelRooms, deliverDealAlerts, NoFittingFlight, runDueDealWatches, searchFlights } from './deals/runner';
 import type { FlightOption } from './deals/flight-list';
 import { SHORT_TRIP_NIGHTS, chooseBookingOption, chooseFlight, chooseReturn, hotelTimes, readPrefs, type Prefs } from './prefs';
 import { createWatch, findWatch, listWatches as listRegionWatches, observations, pruneObservations, recentAlerts, scheduleAllNow, setRegionActive, updateWatch, type AlertMessage } from './store';
@@ -23,7 +23,7 @@ import { bookingSearchUrl, bookingUrlFromGoogle, fetchBookingRooms, type Booking
 import { fetchTripRooms, tripHotelIdFromGoogle } from './deals/trip-rooms';
 import type { MarketLevel } from './google/market-insight';
 import { sendToTelegram } from './telegram';
-import { airlineName, bedText, flightLines, phoneLines, shortDuration, withAdults, listPhoto, money, recommendedSite, roomType, siteForPrice, siteName } from './format';
+import { airlineName, bedText, flightLines, noPlanReason, phoneLines, shortDuration, withAdults, listPhoto, money, recommendedSite, roomType, siteForPrice, siteName } from './format';
 import { readdirSync, readFileSync } from 'node:fs';
 import { auditFlights, auditStays, type AuditPick } from './audit';
 import { createHash } from 'node:crypto';
@@ -32,7 +32,7 @@ import { spawnSync } from 'node:child_process';
 import { checkOutput } from './rules';
 import { Output } from './output';
 import { JsonFile, dataFile, objectOf, writeAtomic, DATA_DIR } from './state';
-import { bookingRoomsForParty, nightsOf, partyCost as costForParty, roomForParty, roomTypeLabel, roomsNeeded as roomsNeededFor, sortRooms, type Party } from './party-rules';
+import { bedsTooFew, bookingRoomsForParty, nightsOf, partyCost as costForParty, roomForParty, roomTypeLabel, roomsNeeded as roomsNeededFor, sortRooms, type Party } from './party-rules';
 import { join } from 'node:path';
 import { FLIGHT_DROP, HOTEL_DROP, checkFlight, checkHotel, findOrAddWatch as addWatch, upcoming, watchesFile, type TripWatch, type WatchStay } from './trip-watches';
 
@@ -276,7 +276,7 @@ async function verifiedStays(watch: { currency: string; country: string }, stay:
   const areaOf = (name: string) => { const address = addresses.get(name); return address ? hotelArea(address).label : '位置未確認'; };
   const unconfirmed = rated.filter(hotel => checks.get(hotel.name)?.status === 'unknown');
   const picks: Pick[] = [
-    ...verified.map(({ hotel, room, nightly }) => ({ hotel, nightly, note: `✅ ${roomType(room.name)}`, sites: sites.get(hotel.name) ?? [], photos: photos.get(hotel.name), area: areaOf(hotel.name) })),
+    ...verified.map(({ hotel, room, nightly, bedsUnconfirmed }) => ({ hotel, nightly, note: `${bedsUnconfirmed ? '❔' : '✅'} ${roomType(room.name)}${bedsUnconfirmed ? BEDS_UNCONFIRMED : ''}`, sites: sites.get(hotel.name) ?? [], photos: photos.get(hotel.name), area: areaOf(hotel.name) })),
     ...unconfirmed.filter(hotel => { const address = addresses.get(hotel.name); return !address || inTown(stay.city, hotelArea(address).postcode); })
       .map(hotel => ({ hotel, nightly: hotel.nightly, note: '❔ 房型未確認', sites: sites.get(hotel.name) ?? [], photos: photos.get(hotel.name), area: areaOf(hotel.name) })),
   // Cheapest first, confirmed or not: everything listed has passed the bars (own bathroom, no bunk, rating,
@@ -284,6 +284,9 @@ async function verifiedStays(watch: { currency: string; country: string }, stay:
   ].sort((a, b) => shownNightly(a) - shownNightly(b)).slice(0, limit);
   return { picks, shared };
 }
+
+/** Marks a listed room whose stated beds sleep fewer than the party (src/party-rules.ts bedsTooFew). */
+const BEDS_UNCONFIRMED = '（床數未確認）';
 
 /** Two lines per hotel: name, class, rating and room; then the money. */
 function printPicks(picks: readonly Pick[], stay: Stay, nights: number, flightPrice: number, currency: string, country: string, start = 1) {
@@ -300,13 +303,13 @@ function printPicks(picks: readonly Pick[], stay: Stay, nights: number, flightPr
     const url = buildHotelNameUrl({ name: hotel.name, city: stay.city, checkIn: stay.outboundDate, checkOut: stay.returnDate, currency, country });
     // Google states "N% less than usual" for the list price; show it as money per night.
     const saving = hotel.belowUsualPct ? Math.round(hotel.nightly / (1 - hotel.belowUsualPct / 100) - hotel.nightly) : 0;
-    const album = photos ? listPhoto(photos, note.replace(/^[✅❔] /, '')) : [];
+    const album = photos ? listPhoto(photos, note.replace(/^[✅❔] /, '').replace(BEDS_UNCONFIRMED, '')) : [];
     beginSegment(album, true);
     listHotel(start + index, hotel.name, sites, nights, currency, hotel.nightly, photos, url, nightly);
     // Flush-left short lines: a caption under a photo is narrow on a phone and indents read as ragged.
     say(`${start + index}. [${hotel.name}](${url})`);
     // "私人房" only means the site named no type; it says nothing, so leave it out.
-    const type = note.replace(/^✅ /, '');
+    const type = note.replace(/^[✅❔] (?!房型未確認)/, '');
     for (const line of phoneLines([hotel.rating !== null ? `⭐${hotel.rating.toFixed(1)}` : null, type === '私人房' ? null : type,
       hotel.publicBath ? '♨️大浴場' : null, area ? `📍${area}` : null])) say(line);
     // Say so when no bathroom photo could be found anywhere, rather than leave one photo unexplained (2026-10-19).
@@ -506,7 +509,7 @@ async function ownBathrooms(picks: readonly Pick[], stay: Stay, currency: string
     if (pick.note.startsWith('❔') && cheapest) pick = { ...pick, note: `✅ ${roomType(cheapest.name)}` };
     // The room's own bathroom from Booking where Google's "Bathroom" photos cannot be used (a public
     // bath files its baths there) or are missing (2026-10-19: an APA went out with no bathroom photo).
-    const listed = pick.note.replace(/^[✅❔] /, '');
+    const listed = pick.note.replace(/^[✅❔] /, '').replace(BEDS_UNCONFIRMED, '');
     const ownBathroom = [...forParty.filter(room => roomType(room.name) === listed), ...forParty].map(room => room.bathroomPhoto).find(Boolean);
     const photos = pick.photos ?? { rooms: [], bedroom: [], bathroom: [] };
     if (pick.hotel.publicBath) pick = { ...pick, photos: { ...photos, bathroom: ownBathroom ? [ownBathroom] : [] } };
@@ -538,11 +541,13 @@ async function planFare(watch: TripOption['watch'], row: TripOption['row'], stay
 
 async function printFlightPlan(watch: TripOption['watch'], row: TripOption['row'], stay: Stay, prefs: Prefs): Promise<number> {
   const currency = row.currency;
+  let noFit = false;
   const [verdictPage, booking] = await Promise.all([
     cachedFlights(watch.origin, stay, currency, watch.country).catch(() => null),
     cachedBooking(watch.origin, stay, currency, watch.country, prefs).catch(error => {
       if (isBlocked(error)) throw error;
-      console.error('[deals] flight booking failed:', String(error).slice(0, 300));
+      if (error instanceof NoFittingFlight) noFit = true;
+      else console.error('[deals] flight booking failed:', String(error).slice(0, 300));
       return null;
     }),
   ]);
@@ -551,7 +556,7 @@ async function printFlightPlan(watch: TripOption['watch'], row: TripOption['row'
   if (market) say(`📊 機票 Google ${MARKET_TEXT[market.level].replace(/（.*）/, '')}${amount ? `\n${amount}` : ''}`);
   const buy = booking ? chooseBookingOption(booking.options, prefs.oneTicketPremium) : null;
   if (!booking || !buy) {
-    say(`✈️ [${cityLabel(row.city)} 來回每人 ${money(row.price, currency)}](${buildCardSearchUrl(watch.origin, stay, currency)})\n沒選到符合時段的航班`);
+    say(`✈️ [${cityLabel(row.city)} 來回每人 ${money(row.price, currency)}](${buildCardSearchUrl(watch.origin, stay, currency)})\n${noPlanReason(noFit)}`);
     return row.price;
   }
   // Times are local (Japan is an hour ahead of Taiwan), so the time in the air goes with them
@@ -782,6 +787,8 @@ async function roomsFor(which: string | undefined) {
     for (const line of phoneLines(facts)) say(line);
     // The hotel's own photos outrank its bed list: say so when they disagree.
     if (room.bunkInPhotos && !room.beds.some(bed => /bunk/i.test(bed))) say('⚠️ 照片是上下鋪\n（一張床在上層，要爬梯子）');
+    // The beds named sleep fewer than the party ("Basic Twin Room", "1 single bed"): say so, do not guess.
+    if (room.guests === null && bedsTooFew(room.beds, travelers)) say(`⚠️ 床數和房型對不上\n${travelers} 人住得下嗎：未確認`);
     if (room.guests !== null) say(`可住 ${room.guests} 人${room.guests < travelers ? `　⚠️ 你們 ${travelers} 人住不下` : ''}`);
     if (room.stayTotal !== null) say(`${nights} 晚 ${money(room.stayTotal, currency)}（每晚 ${money(Math.round(room.stayTotal / nights), currency)}）`);
     if (samePhotos) say('（照片和上一個房型相同）');
