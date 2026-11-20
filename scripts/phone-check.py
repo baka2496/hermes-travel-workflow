@@ -58,6 +58,7 @@ def card_problem(card, now=None):
         db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
         try:
             row = db.execute("SELECT created_at, assignee FROM tasks WHERE id = ?", (card,)).fetchone()
+            watched = db.execute("SELECT 1 FROM kanban_notify_subs WHERE task_id = ?", (card,)).fetchone()
         finally:
             db.close()
     except sqlite3.Error as exc:
@@ -66,6 +67,10 @@ def card_problem(card, now=None):
         return f"{card} is not on the board"
     if (now or time.time()) - row[0] > CARD_MAX_AGE_S:
         return f"{card} is an old card ({row[1]})"
+    # 2026-11-21: a card made with `hermes kanban create` finished and nobody told the user: only the
+    # native tool subscribes on its own, so the card needs notify-subscribe to wake whoever made it.
+    if watched is None:
+        return f"{card} has no notify-subscribe, so nobody is told when it is done"
     return None
 
 

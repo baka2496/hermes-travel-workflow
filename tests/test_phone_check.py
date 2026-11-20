@@ -124,14 +124,17 @@ class PhoneCheckTests(unittest.TestCase):
         self.assertEqual(report["phone_lines"], 2)
 
 
-def board(cards):
-    """A command-center board holding *cards* (id, seconds ago, assignee)."""
+def board(cards, watched=None):
+    """A command-center board holding *cards* (id, seconds ago, assignee); *watched* have notify subs (default all)."""
     import sqlite3
     import time
     path = Path(scratch.new_dir()) / "kanban.db"
     db = sqlite3.connect(path)
     db.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, assignee TEXT, created_at INTEGER)")
     db.executemany("INSERT INTO tasks VALUES (?, ?, ?)", [(i, who, int(time.time()) - ago) for i, ago, who in cards])
+    db.execute("CREATE TABLE kanban_notify_subs (task_id TEXT, platform TEXT)")
+    subs = [i for i, _, _ in cards] if watched is None else watched
+    db.executemany("INSERT INTO kanban_notify_subs VALUES (?, 'telegram')", [(i,) for i in subs])
     db.commit()
     db.close()
     return path
@@ -169,6 +172,13 @@ class HandoffTests(unittest.TestCase):
             status, report = check_handoff(self.REPLY, db, "--card", card)
             self.assertEqual(status, 1, card)
             self.assertIn(reason, report["problems"][0]["text"], card)
+
+    def test_a_card_nobody_is_told_about_does_not(self):
+        # 2026-11-21: a card made with `hermes kanban create` finished and the user was never told.
+        db = board([("t_3ded90ad", 60, "trip")], watched=[])
+        status, report = check_handoff(self.REPLY, db, "--card", "t_3ded90ad")
+        self.assertEqual(status, 1)
+        self.assertIn("no notify-subscribe", report["problems"][0]["text"])
 
     def test_other_wordings_count_and_plain_replies_need_no_card(self):
         db = board([])
