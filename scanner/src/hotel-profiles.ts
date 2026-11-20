@@ -2,8 +2,9 @@
 // do not change from one stay to the next. The user asked for every hotel's photos to be ready before
 // a list is shown rather than looked up then (2026-10-20), so the background jobs fill this in a few
 // hotels at a time and the lists read it.
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import type { BookingRoom } from './deals/booking-rooms';
+import { dataFile, writeAtomic } from './state';
 
 export interface HotelProfile {
   name: string;
@@ -13,7 +14,8 @@ export interface HotelProfile {
   fetchedAt: string;
 }
 
-const PROFILES_FILE = new URL('../data/hotel-profiles.json', import.meta.url);
+// A cache: an unreadable file is fetched again rather than reported (src/state.ts).
+const PROFILES_FILE = dataFile('hotel-profiles.json');
 export const PROFILE_DAYS = 30;
 // A hotel Booking did not show (or a visit Booking challenged) is tried again after this long.
 export const RETRY_MISSING_DAYS = 2;
@@ -36,5 +38,5 @@ export function freshProfile(name: string, now = Date.now(), profiles = readProf
 export function saveProfile(profile: HotelProfile): void {
   const profiles = readProfiles();
   profiles[profileKey(profile.name)] = profile;
-  writeFileSync(PROFILES_FILE, `${JSON.stringify(profiles)}\n`);
+  writeAtomic(PROFILES_FILE, `${JSON.stringify(profiles)}\n`);
 }
