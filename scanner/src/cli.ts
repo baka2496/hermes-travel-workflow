@@ -684,6 +684,8 @@ async function tripSearch(cityArg: string | undefined, outboundDate: string | un
  * reads the same prices and saves nothing: no T1, no hotel list, no buttons, and the party size is for
  * this lookup only.
  */
+const PLAN_TOTAL_NOTE = '「含機票」總價＝住宿＋每人機票\n（上面寫了托運行李就已加進去，不要再加）';
+
 async function planForCard(cityArg: string | undefined, outboundDate: string | undefined, returnDate: string | undefined, people: string | undefined) {
   const { watch, origin, currency, country, stay } = await datedStay('plan', cityArg, outboundDate, returnDate);
   if (people !== undefined) {
@@ -704,6 +706,9 @@ async function planForCard(cityArg: string | undefined, outboundDate: string | u
     row: { ...stay, price: cheapest.price, stops: cheapest.stops, currency }, label: `${nightsOf(stay)}晚` });
   say(`\n[在 Google Flights 看全部航班](${buildCardSearchUrl(origin, stay, currency)})`);
   say(`${travelers} 人・${roomsNeeded} 間房・查詢時間 ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC`);
+  // 2026-11-21: a card read "＋托運行李約" above "2人含機票 NT$35,825" as not yet counted and added the
+  // bags again (NT$39,425). The total already holds them.
+  say(PLAN_TOTAL_NOTE);
 }
 
 /**

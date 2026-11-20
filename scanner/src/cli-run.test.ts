@@ -94,3 +94,11 @@ test('plan saves no list, buttons or party size', () => {
   assert.match(source, /command === 'plan'\) await planForCard\(/);
   assert.doesNotMatch(source.slice(source.indexOf("command === 'plan'"), source.indexOf("command === 'watch'")), /saveListedHotels/);
 });
+
+// 2026-11-21: a card added the bags to a total that already held them (NT$35,825 → NT$39,425).
+test('plan says its totals already hold the bags', () => {
+  const source = readFileSync(new URL('./cli.ts', import.meta.url), 'utf8');
+  const start = source.indexOf('async function planForCard');
+  assert.match(source.slice(start, source.indexOf('\n}\n', start)), /say\(PLAN_TOTAL_NOTE\)/);
+  assert.ok(source.includes('PLAN_TOTAL_NOTE = ') && source.includes('不要再加'));
+});
