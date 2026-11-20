@@ -4,6 +4,8 @@ import subprocess
 import sys
 import unittest
 
+import scratch
+
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts/place-photo.py"
 spec = importlib.util.spec_from_file_location("place_photo", SCRIPT)
@@ -88,7 +90,7 @@ class CandidatesTests(unittest.TestCase):
         place_photo.fetch = lambda url, limit: (b"x" * place_photo.MIN_BYTES, "image/jpeg")
         try:
             args = types.SimpleNamespace(name="湯布苑", page=SPA, recommended="溪景湯屋 1小時",
-                                         out=Path(tempfile.mkdtemp(prefix="place-photo-")))
+                                         out=Path(scratch.new_dir("place-photo-")))
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 status = place_photo.candidates(args, place_photo.photos_on_page(YUFUIN, SPA))
@@ -106,7 +108,7 @@ class CandidatesTests(unittest.TestCase):
     def test_no_candidates_prints_the_line_for_the_reply(self):
         import contextlib, io, tempfile, types
         args = types.SimpleNamespace(name="x", page=SPA, recommended="溪景湯屋",
-                                     out=Path(tempfile.mkdtemp(prefix="place-photo-")))
+                                     out=Path(scratch.new_dir("place-photo-")))
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             place_photo.candidates(args, {"https://cdn.spa.example/lobby.jpg": ["休憩大廳"]})

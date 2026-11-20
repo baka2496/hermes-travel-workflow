@@ -4,8 +4,9 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
+
+import scratch
 
 REPO = Path(__file__).resolve().parents[1]
 NODE = shutil.which("node")
@@ -14,7 +15,7 @@ NODE = shutil.which("node")
 @unittest.skipUnless(NODE, "Node required")
 class ScanWrapperTests(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp(prefix="hermes-wrapper-test-")).resolve()
+        self.root = Path(scratch.new_dir("hermes-wrapper-test-")).resolve()
         self.scanner = self.root / "scanner with spaces"
         (self.scanner / "src").mkdir(parents=True)
         (self.scanner / "src/cli.ts").write_text("", encoding="utf-8")

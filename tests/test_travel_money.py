@@ -9,12 +9,13 @@ from pathlib import Path
 import re
 import shutil
 import sys
-import tempfile
 import unittest
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts"))
 import travel_money  # noqa: E402
+
+import scratch
 
 PLUGIN = REPO / "plugins" / "travel-reply-check" / "__init__.py"
 SHARED = REPO / "scripts" / "travel_money.py"
@@ -65,8 +66,7 @@ class InstalledPluginTests(unittest.TestCase):
     """setup.py copies travel_money.py into the plugin folder; the plugin must load from there."""
 
     def installed(self, with_money):
-        # Retain fixtures: the user's policy forbids recursive cleanup.
-        folder = Path(tempfile.mkdtemp(prefix="hermes-plugin-load-")) / "profiles" / "p" / "plugins" / "travel-reply-check"
+        folder = Path(scratch.new_dir("hermes-plugin-load-")) / "profiles" / "p" / "plugins" / "travel-reply-check"
         folder.mkdir(parents=True)
         shutil.copyfile(PLUGIN, folder / "__init__.py")
         shutil.copyfile(REPO / "scripts" / "hermes_sessions.py", folder / "hermes_sessions.py")

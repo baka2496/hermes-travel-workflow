@@ -2,16 +2,16 @@
 import json
 from pathlib import Path
 import sqlite3
-import tempfile
 import time
+
+import scratch
 
 
 def fake_hermes(pages=(), records=None, tool="browser_exec", age_hours=0):
     """pages: (url, text) pairs, each opened by a browser call whose result names no address,
     the way a script that reads the current page returns only its text.
     Returns (records_path, hermes_root) for --records and --hermes-root."""
-    # Retain fixtures: the user's policy forbids recursive cleanup.
-    root = Path(tempfile.mkdtemp(prefix="hermes-evidence-test-"))
+    root = Path(scratch.new_dir("hermes-evidence-test-"))
     db_path = root / "profiles" / "trip" / "state.db"
     db_path.parent.mkdir(parents=True)
     db = sqlite3.connect(db_path)
