@@ -30,9 +30,10 @@ import re
 import sys
 
 import page_evidence
+import travel_money
 
 # "?" may follow the price or the count: "餐飲=800?x1" failed once and the agent added up by hand (2026-11-14).
-ITEM = re.compile(r"^(?P<name>.+?)=\s*(?:NT\$)?(?P<price>[\d,]+)\s*(?P<unsure1>[?？])?\s*(?:[x*×]\s*(?P<count>\d+))?\s*(?P<unsure2>[?？])?\s*$")
+ITEM = re.compile(rf"^(?P<name>.+?)=\s*(?:{travel_money.CURRENCY_BEFORE}\s*)?(?P<price>[\d,]+)\s*(?P<unsure1>[?？])?\s*(?:[x*×]\s*(?P<count>\d+))?\s*(?P<unsure2>[?？])?\s*$")
 # A price counts as confirmed only with the page that shows it (2026-11-14: a day-trip plan listed
 # "湯屋 NT$800" as confirmed though no page had been opened that turn).
 SOURCE = re.compile(r"\s*@\s*(?P<source>https://\S+)\s*$")
@@ -146,8 +147,7 @@ def minutes(text):
     return float(match["n"]) * (1 if match["unit"].startswith("分") else 60)
 
 
-def money(value):
-    return f"NT${value:,}"
+money = travel_money.money
 
 
 def main():
