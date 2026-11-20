@@ -66,3 +66,12 @@ test('hotels are listed cheapest first', () => {
   const problems = checkOutput([plan, good, pricier], [['📷 第1間房型', '📷 第2間房型']], context).join('\n');
   assert.match(problems, /沒有照價格排/);
 });
+
+// 2026-11-21: the Osaka list said "5 間比平常便宜" and marked four hotels.
+test('the count of hotels below their usual price matches the list', () => {
+  const marked = hotel(['1. [Enka](https://g)', '⭐3.9・雙人房・📍浪速區', '每晚含稅 NT$1,130', '在 [Hotels](https://h) 訂', '🏷 比平常省 NT$1,176／晚',
+    '5晚 NT$5,650', '2人含機票 NT$24,568', '每人 NT$12,284']);
+  const head = (count: number) => ({ text: `🏷 住宿：${count} 間比平常便宜`, photos: [] });
+  assert.deepEqual(checkOutput([plan, head(1), marked], keyboard, context), []);
+  assert.match(checkOutput([plan, head(2), marked], keyboard, context).join('\n'), /寫 2 間，列出 1 間/);
+});

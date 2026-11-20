@@ -98,6 +98,9 @@ export function isPrivateHotel(hotel: Pick<HotelListQuote, 'name' | 'stars'>): b
  * either a rating or "View prices". Requiring that trailing line keeps filter
  * chips such as "Under $1,500" from being read as hotels.
  */
+// "for a 3-star hotel", "with excellent reviews", "62% less than usual" (2026-11-21).
+const PRICE_NOTE = /^for an? [1-5]-star hotel$|^with [a-z ]*reviews$|^\d+% less than usual$/i;
+
 export function parseHotelList(text: string): HotelListQuote[] {
   const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
   const hotels: HotelListQuote[] = [];
@@ -105,7 +108,10 @@ export function parseHotelList(text: string): HotelListQuote[] {
   for (let index = 1; index < lines.length; index++) {
     const price = PRICE.exec(lines[index]!);
     if (!price) continue;
-    const after = lines[index + 1] ?? '';
+    // A badged card has a note under its price ("for a 3-star hotel", "62% less than usual"); the
+    // rating follows the note. These cards were dropped, the cheapest of a list among them (2026-11-21).
+    const noted = PRICE_NOTE.test(lines[index + 1] ?? '');
+    const after = lines[index + (noted ? 2 : 1)] ?? '';
     // Two list layouts: price then rating, or price then the amenities/class lines.
     if (!RATING.test(after) && after !== 'View prices' && !/^Amenities for |^[1-5]-star hotel/.test(after)) continue;
     let nameIndex = index - 1;

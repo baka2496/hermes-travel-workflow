@@ -75,6 +75,25 @@ Amenities for Tora Hotel Asakusa, a 1-star hotel.: Free Wi-Fi, Bar,
 View prices`;
 
 describe('parseHotelList', () => {
+  // 2026-11-21, Osaka by lowest price: the three cheapest cards carry a note under the price and were
+  // all dropped, so the list started at NT$1,081 instead of NT$846.
+  it('keeps a badged card whose price has a note under it', () => {
+    const page = ['Osaka · 561 results',
+      'BAKURO - DOYANEN HOTELS', 'GREAT PRICE', 'NT$846', 'for a 3-star hotel', '4.4', '(720)',
+      'Amenities for BAKURO - DOYANEN HOTELS, a 3-star hotel.: Free Wi-Fi, Parking, Kid-friendly,', '3-star hotel', 'View prices',
+      'Hotel LiVEMAX Umeda WEST', 'GREAT DEAL', 'NT$917', '62% less than usual', '3.6', '(266)',
+      'Amenities for Hotel LiVEMAX Umeda WEST, a 3-star hotel.: Free Wi-Fi, Restaurant,', '3-star hotel', 'View prices',
+      'TENGACHAYA INN', 'NT$1,081', '3.5', '(33)', 'Amenities for TENGACHAYA INN, a 3-star hotel.: Free Wi-Fi,', '3-star hotel', 'View prices',
+      'FAWN HOTEL Shimodera', 'GREAT PRICE', 'NT$1,120', 'with excellent reviews', '4.6', '(158)',
+      'Amenities for FAWN HOTEL Shimodera, a 3-star hotel.: Free Wi-Fi, Parking, Accessible, Kid-friendly,', '3-star hotel', 'View prices'].join('\n');
+    expect(parseHotelList(page).map(hotel => [hotel.name, hotel.nightly, hotel.rating, hotel.stars, hotel.badge])).toEqual([
+      ['BAKURO - DOYANEN HOTELS', 846, 4.4, 3, 'GREAT PRICE'],
+      ['Hotel LiVEMAX Umeda WEST', 917, 3.6, 3, 'GREAT DEAL'],
+      ['TENGACHAYA INN', 1081, 3.5, 3, null],
+      ['FAWN HOTEL Shimodera', 1120, 4.6, 3, 'GREAT PRICE'],
+    ]);
+  });
+
   it('reads hotel cards, ratings, hotel class and Google deal badges from live text', () => {
     const hotels = parseHotelList(LIVE);
     expect(hotels.map(hotel => hotel.name)).toEqual([

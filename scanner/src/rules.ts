@@ -30,6 +30,12 @@ export function checkOutput(segments: readonly CheckedSegment[], keyboard: reado
     if (!SHOWN_NAME.test(line) && !roomName && phoneWidth(line) > PHONE_WIDTH) problems.push(`手機會折行：${shown[index]}`);
   });
 
+  // The headline count of hotels below their usual price matches the hotels marked so (2026-11-21:
+  // "5 間比平常便宜" over a list with four, the fifth dropped by Booking's room check).
+  const counted = /🏷 住宿：(\d+) 間比平常便宜/.exec(text);
+  const marked = lines.filter(line => /^🏷 比平常省 /.test(line)).length;
+  if (counted && Number(counted[1]) !== marked) problems.push(`比平常便宜的間數對不上：寫 ${counted[1]} 間，列出 ${marked} 間`);
+
   // Amounts, not percentages (2026-10-17).
   for (const line of shown) if (/\d\s?%/.test(line)) problems.push(`用了百分比：${line}`);
 

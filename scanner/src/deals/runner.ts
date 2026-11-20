@@ -15,6 +15,7 @@ import { dealMessage, digestMessage, scanFailingMessage, scanRecoveredMessage, t
 const DIGEST_SIZE = 10;
 const MIN_CARDS = 5;
 const STEADY_POLLS = 3; // 4.5 seconds without a new priced card
+const PRICE_PAGES = 2; // pages of the same list in lowest-price order, merged in
 const LIST_PAGES = 3; // pages of Google Hotels results read per list, some 15 hotels each
 const MAX_HOTEL_LOOKUPS = 3; // hotel pages per scan, for the deepest promotions
 const FAILURE_ALERT_AFTER = 3; // consecutive failed scans (retried hourly) before telling the user
@@ -113,6 +114,45 @@ export async function lookupHotels(watch: Pick<DealWatch, 'currency' | 'country'
  * Every hotel card Google Hotels lists for a city and stay, or null when the
  * page did not apply the requested dates (prices would be for other nights).
  */
+/**
+ * Google lists hotels by its own relevance, so cheap ones can be missing from the pages read
+ * (2026-11-21: Enka Nanba 1, NT$1,130 and 51% below usual, was on none of three relevance lists).
+ * 'price' asks Google for lowest price first; the bars (class, rating) are applied afterwards.
+ */
+export type HotelOrder = 'price' | 'relevance';
+
+/** Whether Google's sort control says the list is in lowest-price order. */
+export const sortedByLowestPrice = (label: string | null) => /^Lowest price\b.*\bSelected\b/i.test(label ?? '');
+
+/** Switch the list to "Lowest price"; the list as it was when the switch does not take. */
+async function sortByLowestPrice(page: Page, shown: HotelListQuote[]): Promise<HotelListQuote[]> {
+  // The control is "Sort by, Not selected" and becomes "Lowest price, Sort by, Selected" (2026-11-21).
+  const sortButton = page.locator('button[aria-label*="Sort by"]').first();
+  try {
+    await sortButton.click({ timeout: 5_000 });
+    await page.locator('label', { hasText: 'Lowest price' }).filter({ visible: true }).first().click({ timeout: 5_000 });
+    const before = shown.map(hotel => hotel.name).join('|');
+    // Read once the new list stops changing: read at its first change, the cheapest cards were still
+    // without prices and three hotels under NT$1,000 were left out (2026-11-21).
+    let last = '';
+    for (let waited = 0; waited < 15_000; waited += 1500) {
+      await page.waitForTimeout(1500);
+      const sorted = await sortButton.getAttribute('aria-label', { timeout: 2_000 }).catch(() => null);
+      const hotels = parseHotelList(await page.evaluate(() => document.body.innerText));
+      const names = hotels.map(hotel => `${hotel.name}:${hotel.nightly}`).join('|');
+      const settled = names === last;
+      last = names;
+      if (sortedByLowestPrice(sorted) && hotels.length >= MIN_CARDS && hotels.map(hotel => hotel.name).join('|') !== before && settled) {
+        await page.keyboard.press('Escape').catch(() => undefined);
+        return hotels;
+      }
+    }
+  } catch { /* the sort control moved or did not open */ }
+  await page.keyboard.press('Escape').catch(() => undefined);
+  console.error('[deals] hotel list: could not sort by lowest price; using Google order');
+  return shown;
+}
+
 /** Whether the page's check-in/check-out inputs show the requested stay; Google silently falls back to default dates. */
 async function stayApplied(page: Page, stay: Pick<ExploreQuote, 'outboundDate' | 'returnDate'>): Promise<boolean> {
   const dates = await page.evaluate(() => [...document.querySelectorAll('input')]
@@ -122,7 +162,7 @@ async function stayApplied(page: Page, stay: Pick<ExploreQuote, 'outboundDate' |
 }
 
 export async function captureHotelList(watch: Pick<DealWatch, 'currency' | 'country'>,
-  quote: Pick<ExploreQuote, 'city' | 'outboundDate' | 'returnDate'>): Promise<HotelListQuote[] | null> {
+  quote: Pick<ExploreQuote, 'city' | 'outboundDate' | 'returnDate'>, order: HotelOrder = 'price'): Promise<HotelListQuote[] | null> {
   const url = buildHotelSearchUrl({ city: quote.city, checkIn: quote.outboundDate, checkOut: quote.returnDate, currency: watch.currency, country: watch.country });
   const browser = await launchBrowser();
   try {
@@ -154,22 +194,37 @@ export async function captureHotelList(watch: Pick<DealWatch, 'currency' | 'coun
     await readLinks();
     // More pages: the first holds 15 of some 60 hotels, too few to find the best value among
     // (2026-10-19, the user's aim). The page's own "Next" button (photo carousels have "Next" labels too).
-    for (let more = 1; more < LIST_PAGES; more++) {
+    const nextPage = async (): Promise<boolean> => {
       const next = await page.evaluate(() => {
         const button = [...document.querySelectorAll('button')].find(element => (element as HTMLElement).innerText?.trim() === 'Next') as HTMLElement | undefined;
         button?.click();
         return Boolean(button);
       });
-      if (!next) break;
+      if (!next) return false;
       const before = new Set(hotels.map(hotel => hotel.name));
       let added: HotelListQuote[] = [];
       for (let waited = 0; waited < 12_000 && !added.length; waited += 1500) {
         await page.waitForTimeout(1500);
         added = parseHotelList(await page.evaluate(() => document.body.innerText)).filter(hotel => !before.has(hotel.name));
       }
-      if (!added.length) break;
+      if (!added.length) return false;
       hotels = [...hotels, ...added];
       await readLinks();
+      return true;
+    };
+    for (let more = 1; more < LIST_PAGES; more++) if (!await nextPage()) break;
+    // Then the cheapest first, merged in: Google's relevance pages can leave out cheap hotels, and its
+    // price order can leave out others (2026-11-21, Osaka: price order lacked a NT$721 hotel; Tokyo:
+    // relevance lacked three at NT$1,549-1,588). Two pages, some 36 of the cheapest.
+    if (order === 'price' && hotels.length) {
+      const shown = parseHotelList(await page.evaluate(() => document.body.innerText));
+      const cheapest = await sortByLowestPrice(page, shown);
+      if (cheapest !== shown) {
+        const known = new Set(hotels.map(hotel => hotel.name));
+        hotels = [...hotels, ...cheapest.filter(hotel => !known.has(hotel.name))];
+        await readLinks();
+        for (let more = 1; more < PRICE_PAGES; more++) if (!await nextPage()) break;
+      }
     }
     const below = parseBelowUsual(labels);
     const ratings = parseLabelRatings(labels);
