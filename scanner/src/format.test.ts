@@ -23,6 +23,17 @@ test('a familiar site is recommended unless a lesser-known one saves more than N
   assert.equal(recommendedSite([]), null);
 });
 
+// 2026-11-12: an Agoda link opened Osaka's search without the hotel; Booking's lists it first.
+test('Booking is linked instead of Agoda when it costs at most NT$200 more a night', () => {
+  const sites = (entries: [string, number][]) => entries.map(([site, nightly]) => ({ site, nightly }));
+  assert.equal(recommendedSite(sites([['Agoda', 1302], ['Booking.com', 1450]]))?.site, 'Booking.com');
+  assert.equal(recommendedSite(sites([['Agoda', 1302], ['Booking.com', 1503]]))?.site, 'Agoda');
+  assert.equal(recommendedSite(sites([['Agoda', 1302], ['Trip.com', 1350]]))?.site, 'Agoda');
+  // The same when the link has to match a quoted room price (FAWN HOTEL Shimodera quoted NT$1,302).
+  assert.equal(siteForPrice(sites([['Booking.com', 1225], ['Agoda', 1280], ['Booking.com', 1400]]), 1302)?.site, 'Booking.com');
+  assert.equal(siteForPrice(sites([['Booking.com', 1225], ['Agoda', 1280]]), 1302)?.site, 'Agoda');
+});
+
 test('an oddly cheap site (dorm beds) is not taken for a room price', () => {
   // Rhodes Kagurazaka Hotel, 2026-10-18: Booking's NT$2,176 was two dorm beds.
   const sites = [['Booking.com', 2176], ['Trip.com', 3867], ['Agoda', 4047], ['Priceline', 4056], ['Hotels.com', 4331]]

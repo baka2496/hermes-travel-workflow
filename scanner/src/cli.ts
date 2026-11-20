@@ -15,7 +15,7 @@
 import { CITY_NAMES, cityLabel } from './deals/message';
 import { TRIP_LENGTHS, buildCardSearchUrl, isTripLength, type TripLength } from './deals/explore-page';
 import { buildHotelNameUrl, hotelArea, inTown, isNonSmokingRoom, isPrivateHotel, isSmokingRoom, nearbyAreas, parseGoogleRoomRow, roomKey, type HotelListQuote, type SiteOffer, type HotelPhotos } from './deals/hotel-page';
-import { bookFlight, captureHotelList, checkHotelRooms, deliverDealAlerts, NoFittingFlight, runDueDealWatches, searchFlights } from './deals/runner';
+import { bookFlight, captureHotelList, checkHotelRooms, deliverDealAlerts, NoFittingFlight, retryIfEmpty, runDueDealWatches, searchFlights } from './deals/runner';
 import type { FlightOption } from './deals/flight-list';
 import { SHORT_TRIP_NIGHTS, chooseBookingOption, chooseFlight, chooseReturn, hotelTimes, readPrefs, type Prefs } from './prefs';
 import { createWatch, findWatch, listWatches as listRegionWatches, observations, pruneObservations, recentAlerts, scheduleAllNow, setRegionActive, updateWatch, type AlertMessage } from './store';
@@ -232,10 +232,10 @@ const cachedStays = (watch: { currency: string; country: string }, stay: Stay, c
 
 // A flight page without a verdict or flights is a failed load, not worth keeping.
 const cachedFlights = (origin: string, stay: Stay, currency: string, country: string, fresh = false) =>
-  cached('flights', [origin, stay, currency, country], async () => {
+  cached('flights', [origin, stay, currency, country], () => retryIfEmpty(async () => {
     const found = await searchFlights(origin, stay, currency, country);
     return found.market || found.flights.length ? found : null;
-  }, fresh);
+  }), fresh);
 
 async function verifiedStays(watch: { currency: string; country: string }, stay: Stay, candidatesWanted: number, limit: number) {
   const hotels = await captureHotelList(watch, stay);

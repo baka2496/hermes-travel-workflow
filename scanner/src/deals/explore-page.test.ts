@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildCardSearchUrl, buildExploreUrl, pageTripLength, parseExploreDates, parseExplorePage } from './explore-page';
+import { buildCardSearchUrl, buildExploreUrl, cardsWithoutPrice, pageTripLength, parseExploreDates, parseExplorePage } from './explore-page';
 
 // Excerpt captured from a live Google Flights Explore page (Taipei to Japan, hl=en, curr=TWD) on 2026-10-15.
 const LIVE = `Skip to main content
@@ -121,4 +121,17 @@ describe('Explore URLs', () => {
     const url = new URL(buildCardSearchUrl('Taipei', { city: 'Okinawa', outboundDate: '2026-11-01', returnDate: '2026-11-07' }, 'TWD'));
     expect(url.searchParams.get('q')).toBe('flights from Taipei to Okinawa on 2026-11-01 to 2026-11-07');
   });
+});
+
+// 2026-11-21: a two-week Japan read had 20 cities; Kobe, Hiroshima and Sendai were still without a price.
+it('cards still waiting for a price are counted', () => {
+  const today = new Date('2026-11-21T00:00:00Z');
+  const partial = ['Osaka', 'Dec 26, 2026 – Jan 11, 2027', 'Nonstop', '2 hr 30 min', 'NT$6,568',
+    'Hiroshima', 'Apr 23 – May 7, 2027', 'Fukuoka', 'Dec 28, 2026 – Jan 13, 2027', 'Nonstop', '2 hr 15 min', 'NT$7,281',
+    'Kobe', 'Dec 31, 2026 – Jan 13, 2027', 'Kagoshima', 'May 20 – Jun 2, 2027', '1 stop', '11 hr 15 min', 'NT$16,185',
+    'Sendai', 'May 20 – Jun 3, 2027'].join('\n');
+  expect(cardsWithoutPrice(partial, today)).toBe(3);
+  expect(parseExplorePage(partial, today).map(quote => quote.city)).toEqual(['Osaka', 'Fukuoka', 'Kagoshima']);
+  const full = partial.replace('Kobe\nDec 31, 2026 – Jan 13, 2027', 'Kobe\nDec 31, 2026 – Jan 13, 2027\nNonstop\n2 hr 30 min\nNT$15,844');
+  expect(cardsWithoutPrice(full, today)).toBe(2);
 });
