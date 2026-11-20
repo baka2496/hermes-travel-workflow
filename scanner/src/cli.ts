@@ -14,7 +14,7 @@
 // This portable build prints locally; Hermes owns account setup and delivery.
 import { CITY_NAMES, cityLabel } from './deals/message';
 import { TRIP_LENGTHS, buildCardSearchUrl, isTripLength, type TripLength } from './deals/explore-page';
-import { buildHotelNameUrl, hotelArea, inTown, isDormBed, isNonSmokingRoom, isPrivateHotel, isSmokingRoom, nearbyAreas, parseGoogleRoomRow, roomKey, type HotelListQuote, type SiteOffer, type HotelPhotos } from './deals/hotel-page';
+import { buildHotelNameUrl, hotelArea, inTown, isNonSmokingRoom, isPrivateHotel, isSmokingRoom, nearbyAreas, parseGoogleRoomRow, roomKey, type HotelListQuote, type SiteOffer, type HotelPhotos } from './deals/hotel-page';
 import { bookFlight, captureHotelList, checkHotelRooms, deliverDealAlerts, runDueDealWatches, searchFlights } from './deals/runner';
 import type { FlightOption } from './deals/flight-list';
 import { SHORT_TRIP_NIGHTS, chooseBookingOption, chooseFlight, chooseReturn, hotelTimes, readPrefs, type Prefs } from './prefs';
@@ -22,20 +22,24 @@ import { createWatch, findWatch, listWatches as listRegionWatches, observations,
 import { bookingSearchUrl, bookingUrlFromGoogle, fetchBookingRooms, type BookingRoom } from './deals/booking-rooms';
 import { fetchTripRooms, tripHotelIdFromGoogle } from './deals/trip-rooms';
 import type { MarketLevel } from './google/market-insight';
-import { sendToTelegram, type Segment } from './telegram';
+import { sendToTelegram } from './telegram';
 import { airlineName, bedText, flightLines, phoneLines, shortDuration, withAdults, listPhoto, money, recommendedSite, roomType, siteForPrice, siteName } from './format';
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { auditFlights, auditStays, type AuditPick } from './audit';
 import { createHash } from 'node:crypto';
 import { freshProfile, saveProfile } from './hotel-profiles';
 import { spawnSync } from 'node:child_process';
 import { checkOutput } from './rules';
+import { Output } from './output';
+import { JsonFile, dataFile, objectOf, writeAtomic, DATA_DIR } from './state';
+import { bookingRoomsForParty, nightsOf, partyCost as costForParty, roomForParty, roomTypeLabel, roomsNeeded as roomsNeededFor, sortRooms, type Party } from './party-rules';
+import { join } from 'node:path';
+import { FLIGHT_DROP, HOTEL_DROP, checkFlight, checkHotel, findOrAddWatch as addWatch, upcoming, watchesFile, type TripWatch, type WatchStay } from './trip-watches';
 
-/** Preserve button labels for the upstream output checks. */
-let keyboard: string[][] = [];
-/** Group output and photos by hotel for the --check diagnostics. */
-const segments: Segment[] = [{ text: '', photos: [] }];
-function beginSegment(photos: string[] = [], own = false) { segments.push({ text: '', photos, own }); }
+/** What the command shows: printed, or with --check kept (lines, albums, buttons) for the rule check. */
+const out = new Output(process.argv.includes('--check'));
+const say = (...parts: unknown[]) => out.say(...parts);
+const beginSegment = (photos: string[] = [], own = false) => out.album(photos, own);
 const FLIGHT_LIST_BUTTON = '✈️ 機票列表';
 const NEARBY_BUTTON = '住遠一點';
 const BUTTONS_PER_ROW = 3;
@@ -45,22 +49,19 @@ const BUTTONS_PER_ROW = 3;
  * (Google's prices are for one adult); hotel prices are per room for two, so a party needs
  * ceil(people / 2) rooms.
  */
-const SETTINGS_FILE = new URL('../data/settings.json', import.meta.url);
+type Settings = { travelers?: unknown; prefs?: unknown; [key: string]: unknown };
+const settingsFile = new JsonFile<Settings>(dataFile('settings.json'), () => ({}), objectOf<Settings>('設定'));
 const MAX_TRAVELERS = 9;
 function readTravelers(): number {
-  try {
-    const value = Number((JSON.parse(readFileSync(SETTINGS_FILE, 'utf8')) as { travelers?: unknown }).travelers);
-    return Number.isInteger(value) && value >= 1 && value <= MAX_TRAVELERS ? value : 1;
-  } catch { return 1; }
+  const value = Number(settingsFile.read().travelers);
+  return Number.isInteger(value) && value >= 1 && value <= MAX_TRAVELERS ? value : 1;
 }
-const travelers = readTravelers();
-const roomsNeeded = Math.ceil(travelers / 2);
+// Read when the command starts, inside its error handling, so an unreadable settings file is reported.
+let travelers = 1;
+let roomsNeeded = 1;
+const party = (): Party => ({ travelers, nonSmoking: readUserPrefs().nonSmoking });
 /** Flight plus stay for the whole party, and each person's share. */
-function partyCost(fare: number, nightly: number, nights: number) {
-  const stay = nightly * nights * roomsNeeded;
-  const total = fare * travelers + stay;
-  return { stay, total, each: Math.round(total / travelers) };
-}
+const partyCost = (fare: number, nightly: number, nights: number) => costForParty(fare, nightly, nights, travelers);
 
 const LENGTHS: TripLength[] = ['weekend', 'week', 'two_weeks'];
 const taipei = (date: Date | null) => date
@@ -136,38 +137,38 @@ async function report(filter: string, limit: number) {
   const lengths = filter === 'all' ? LENGTHS : isTripLength(filter) ? [filter] : null;
   if (!lengths) throw new Error('行程長度請用 weekend、week、two_weeks 或 all');
   const lettered = (await activeWatches()).filter(({ watch }) => lengths.includes(watch.tripLength as TripLength));
-  if (!lettered.length) { console.log('目前沒有啟用中的掃描地區。'); return; }
+  if (!lettered.length) { say('目前沒有啟用中的掃描地區。'); return; }
   const regionsShown = new Set<string>();
   for (const { watch, letter } of lettered) {
     if (!regionsShown.has(watch.region)) {
       regionsShown.add(watch.region);
-      console.log(`${regionsShown.size > 1 ? '\n' : ''}✈️ *${watch.originLabel} → ${watch.regionLabel} 來回機票最低價*`);
+      say(`${regionsShown.size > 1 ? '\n' : ''}✈️ *${watch.originLabel} → ${watch.regionLabel} 來回機票最低價*`);
     }
     const length = watch.tripLength as TripLength;
     // Phone-width lines: two short lines per option instead of one long wrapping one.
-    console.log(`\n${LENGTH_ICON[length] ?? '•'} *${TRIP_LENGTHS[length]?.label ?? length}*`);
-    if (watch.lastError) console.log(`⚠️ 上次掃描失敗`);
+    say(`\n${LENGTH_ICON[length] ?? '•'} *${TRIP_LENGTHS[length]?.label ?? length}*`);
+    if (watch.lastError) say(`⚠️ 上次掃描失敗`);
     if (!watch.lastScanAt) continue;
     const rows = observations(watch.id, { scannedAt: watch.lastScanAt }).slice(0, limit);
     const usual = await usualPrices(watch);
     const codes = rows.map((row, index) => `${letter}${index + 1} ${cityLabel(row.city)}`);
-    for (let start = 0; start < codes.length; start += BUTTONS_PER_ROW) keyboard.push(codes.slice(start, start + BUTTONS_PER_ROW));
+    for (let start = 0; start < codes.length; start += BUTTONS_PER_ROW) out.keyboard.push(codes.slice(start, start + BUTTONS_PER_ROW));
     rows.forEach((row, index) => {
       const url = buildCardSearchUrl(watch.origin, row, row.currency);
       const versus = versusUsual(row.price, usual.get(row.city), row.currency);
-      console.log(`*${letter}${index + 1}* [${cityLabel(row.city)}](${url}) ${money(row.price, row.currency)}${row.stops === 0 ? '' : ` 轉${row.stops}`}`);
-      for (const line of phoneLines([dateRange(row.outboundDate, row.returnDate), versus.replace(/^・/, '')])) console.log(line);
+      say(`*${letter}${index + 1}* [${cityLabel(row.city)}](${url}) ${money(row.price, row.currency)}${row.stops === 0 ? '' : ` 轉${row.stops}`}`);
+      for (const line of phoneLines([dateRange(row.outboundDate, row.returnDate), versus.replace(/^・/, '')])) say(line);
     });
   }
   const since = new Date(Date.now() - 7 * 86_400_000);
   const deals = recentAlerts({ kind: 'deal', since, tripLengths: lengths, limit: 10 });
   if (deals.length) {
-    console.log(`\n🔥 *最近的促銷*`);
+    say(`\n🔥 *最近的促銷*`);
     for (const deal of deals) {
       const message = deal.message as { title?: string; url?: string; body?: string };
       // Alerts saved before 2026-10-19 carry the older, wider title "日本促銷（週末）：帶廣 NT$16,359".
       const title = (message.title ?? '促銷').replace(/^.+促銷（(.+)）：(.+)$/, '$2・$1促銷');
-      console.log(`• ${message.url ? `[${title}](${message.url})` : title}`);
+      say(`• ${message.url ? `[${title}](${message.url})` : title}`);
       // Its dates, from the alert's second line ("10/30–11/02・直飛"): a promotion is for certain days.
       const when = /(\d\d)\/(\d\d)–(\d\d)\/(\d\d)/.exec(message.body ?? '');
       if (when) {
@@ -177,13 +178,13 @@ async function report(filter: string, limit: number) {
           const thisYear = `${year}-${month}-${day}`;
           return Date.parse(`${thisYear}T00:00:00Z`) >= Date.now() - 86_400_000 ? thisYear : `${year + 1}-${month}-${day}`;
         };
-        console.log(dateRange(iso(when[1]!, when[2]!), iso(when[3]!, when[4]!)));
+        say(dateRange(iso(when[1]!, when[2]!), iso(when[3]!, when[4]!)));
       }
     }
   }
-  keyboard.push([FLIGHT_LIST_BUTTON]);
-  console.log('\n🏨 點按鈕看住宿');
-  console.log(travelers > 1
+  out.keyboard.push([FLIGHT_LIST_BUTTON]);
+  say('\n🏨 點按鈕看住宿');
+  say(travelers > 1
     ? `每人來回價（${travelers} 人同行）\n行李另計・直飛不另標示`
     : '1 人來回價\n行李另計・直飛不另標示');
 }
@@ -208,11 +209,11 @@ const shownNightly = (pick: { nightly: number; sites: readonly SiteOffer[] }) =>
  * Results kept for a few hours in cache/, so a hotel list the background job already fetched
  * ("deals prefetch") opens in seconds instead of a minute or two of page loads.
  */
-const CACHE_DIR = new URL('../data/cache/', import.meta.url);
+const CACHE_DIR = join(DATA_DIR, 'cache');
 const CACHE_HOURS = 6;
 
 async function cached<T>(kind: string, key: readonly unknown[], compute: () => Promise<T | null>, fresh = false): Promise<T | null> {
-  const file = new URL(`${kind}-${createHash('sha1').update(JSON.stringify(key)).digest('hex').slice(0, 16)}.json`, CACHE_DIR);
+  const file = join(CACHE_DIR, `${kind}-${createHash('sha1').update(JSON.stringify(key)).digest('hex').slice(0, 16)}.json`);
   if (!fresh) {
     try {
       const saved = JSON.parse(readFileSync(file, 'utf8')) as { savedAt: string; value: T };
@@ -221,8 +222,7 @@ async function cached<T>(kind: string, key: readonly unknown[], compute: () => P
   }
   const value = await compute();
   if (value !== null) {
-    mkdirSync(CACHE_DIR, { recursive: true });
-    writeFileSync(file, JSON.stringify({ savedAt: new Date().toISOString(), key, value }));
+    writeAtomic(file, JSON.stringify({ savedAt: new Date().toISOString(), key, value }));
   }
   return value;
 }
@@ -269,22 +269,9 @@ async function verifiedStays(watch: { currency: string; country: string }, stay:
     // Out of town is too far; an unread address is kept and marked (the user wants the best value, and
     // dropping such hotels could drop it), so an out-of-town hotel no longer passes as in town unmarked.
     if (address && !inTown(stay.city, hotelArea(address).postcode)) return [];
-    // Smoking rooms are left out when the user minds the smell; a hotel with nothing else goes.
-    const options = check.options.filter(option => !(nonSmoking && isSmokingRoom(option.name)));
-    if (!options.length) return [];
-    // Two or more travellers need a room for two: skip single rooms, and price no lower than the
-    // cheapest room that fits (2026-10-18: three lists offered a single room to two people, priced
-    // as one). A hotel with only singles is left out.
-    if (travelers >= 2) {
-      // A room with its own bathroom: a shared bathroom is poor value for two (the user asked whether
-      // it meant bathing with strangers, 2026-10-18), so a hotel with only those is left out.
-      const fits = options.filter(option => roomType(option.name) !== '單人房');
-      const forTwo = fits.find(option => !/共用衛浴/.test(roomType(option.name)));
-      if (!forTwo) return [];
-      return [{ hotel, room: forTwo, nightly: Math.max(forTwo.nightly, quoted) }];
-    }
-    const room = options[0]!;
-    return [{ hotel, room, nightly: check.alsoShared || room !== check.room ? Math.max(room.nightly, quoted) : quoted }];
+    // The room for the party (no smoking, no single or shared bathroom for two): src/party-rules.ts.
+    const chosen = roomForParty(check, quoted, { travelers, nonSmoking });
+    return chosen ? [{ hotel, ...chosen }] : [];
   });
   const areaOf = (name: string) => { const address = addresses.get(name); return address ? hotelArea(address).label : '位置未確認'; };
   const unconfirmed = rated.filter(hotel => checks.get(hotel.name)?.status === 'unknown');
@@ -317,21 +304,21 @@ function printPicks(picks: readonly Pick[], stay: Stay, nights: number, flightPr
     beginSegment(album, true);
     listHotel(start + index, hotel.name, sites, nights, currency, hotel.nightly, photos, url, nightly);
     // Flush-left short lines: a caption under a photo is narrow on a phone and indents read as ragged.
-    console.log(`${start + index}. [${hotel.name}](${url})`);
+    say(`${start + index}. [${hotel.name}](${url})`);
     // "私人房" only means the site named no type; it says nothing, so leave it out.
     const type = note.replace(/^✅ /, '');
     for (const line of phoneLines([hotel.rating !== null ? `⭐${hotel.rating.toFixed(1)}` : null, type === '私人房' ? null : type,
-      hotel.publicBath ? '♨️大浴場' : null, area ? `📍${area}` : null])) console.log(line);
+      hotel.publicBath ? '♨️大浴場' : null, area ? `📍${area}` : null])) say(line);
     // Say so when no bathroom photo could be found anywhere, rather than leave one photo unexplained (2026-10-19).
-    if (album.length === 1) console.log('🚿 找不到浴室照片');
+    if (album.length === 1) say('🚿 找不到浴室照片');
     // Every hotel gets a link to book or compare: Google's own page when it named no site for it.
     const booking = site ? `\n在 [${siteName(site.site)}](${site.url ?? url}) 訂` : `\n在 [Google](${url}) 看價格`;
-    console.log(`每晚含稅 ${money(nightly, currency)}${booking}${saving > 0 ? `\n🏷 比平常省 ${money(saving, currency)}／晚` : ''}`);
-    if (travelers === 1) console.log(`${nights}晚 ${money(cost.stay, currency)}・含機票 ${money(cost.total, currency)}`);
+    say(`每晚含稅 ${money(nightly, currency)}${booking}${saving > 0 ? `\n🏷 比平常省 ${money(saving, currency)}／晚` : ''}`);
+    if (travelers === 1) say(`${nights}晚 ${money(cost.stay, currency)}・含機票 ${money(cost.total, currency)}`);
     else {
       // Party totals: rooms for everyone plus every person's fare, then each person's share.
-      console.log(`${nights}晚${roomsNeeded > 1 ? ` ${roomsNeeded}間` : ''} ${money(cost.stay, currency)}`);
-      console.log(`${travelers}人含機票 ${money(cost.total, currency)}\n每人 ${money(cost.each, currency)}`);
+      say(`${nights}晚${roomsNeeded > 1 ? ` ${roomsNeeded}間` : ''} ${money(cost.stay, currency)}`);
+      say(`${travelers}人含機票 ${money(cost.total, currency)}\n每人 ${money(cost.each, currency)}`);
     }
   });
   beginSegment(); // what follows the hotels is plain text again
@@ -350,14 +337,15 @@ type TripOption = {
   row: { city: string; outboundDate: string; returnDate: string; price: number; stops: number; currency: string };
   label: string;
 };
-const LAST_TRIP_FILE = new URL('../data/last-trip.json', import.meta.url);
+type SavedTrip = TripOption['row'] & { origin: string; country: string };
+const lastTripFile = new JsonFile<SavedTrip | null>(dataFile('last-trip.json'), () => null, objectOf<SavedTrip>('行程'));
 const DATED_TRIP_CODE = 'T1';
 
 async function resolveOption(code: string | undefined): Promise<TripOption> {
   const wanted = (code ?? '').trim().toUpperCase();
   if (wanted === DATED_TRIP_CODE) {
-    let trip: TripOption['row'] & { origin: string; country: string };
-    try { trip = JSON.parse(readFileSync(LAST_TRIP_FILE, 'utf8')); } catch { throw new Error('還沒有指定日期的行程，請先說日期和城市查一次機票。'); }
+    const trip = lastTripFile.read();
+    if (!trip) throw new Error('還沒有指定日期的行程，請先說日期和城市查一次機票。');
     return { watch: { origin: trip.origin, currency: trip.currency, country: trip.country, id: null, lastScanAt: null },
       row: trip, label: `${nightsOf(trip)}晚` };
   }
@@ -372,9 +360,6 @@ async function resolveOption(code: string | undefined): Promise<TripOption> {
   return { watch, row, label: (TRIP_LENGTHS[watch.tripLength as TripLength]?.label ?? watch.tripLength).replace('約', '') };
 }
 
-const nightsOf = (stay: { outboundDate: string; returnDate: string }) =>
-  Math.round((Date.parse(`${stay.returnDate}T00:00:00Z`) - Date.parse(`${stay.outboundDate}T00:00:00Z`)) / 86_400_000);
-
 /** Hotels the user's preferences allow (class and rating); unrated hotels pass the rating test. */
 const fitsPrefs = (pick: Pick, prefs: Prefs) =>
   (pick.hotel.stars ?? 0) >= prefs.minStars && (pick.hotel.rating === null || pick.hotel.rating >= prefs.minRating);
@@ -385,15 +370,15 @@ async function hotelsFor(code: string | undefined, nearby = false) {
   const nights = nightsOf(row);
   lastStayFor = { ...stay, currency: row.currency, country: watch.country, origin: watch.origin };
   const watchButton = `🔔 ${code!.toUpperCase()} 降價通知我`;
-  keyboard = !nearby && nearbyAreas(row.city).length
+  out.keyboard = !nearby && nearbyAreas(row.city).length
     ? [[`${code!.toUpperCase()} ${NEARBY_BUTTON}`], [watchButton], [FLIGHT_LIST_BUTTON]] : [[watchButton], [FLIGHT_LIST_BUTTON]];
 
   if (nearby) {
     const areas = nearbyAreas(row.city);
     const perFare = await planFare(watch, row, stay, readUserPrefs());
-    console.log(`🏨 *${cityLabel(row.city)} 周邊住宿*\n${dateRange(row.outboundDate, row.returnDate)}・${nights} 晚\n✈️ 建議的機票每人 ${money(perFare, row.currency)}`);
+    say(`🏨 *${cityLabel(row.city)} 周邊住宿*\n${dateRange(row.outboundDate, row.returnDate)}・${nights} 晚\n✈️ 建議的機票每人 ${money(perFare, row.currency)}`);
     if (!areas.length) {
-      console.log(`\n${cityLabel(row.city)} 沒有設定周邊住宿區域，市區的選擇已經是主要選項。`);
+      say(`\n${cityLabel(row.city)} 沒有設定周邊住宿區域，市區的選擇已經是主要選項。`);
       return;
     }
     // Staying farther out is for paying less: only hotels cheaper than the cheapest in town (2026-10-19:
@@ -402,22 +387,22 @@ async function hotelsFor(code: string | undefined, nearby = false) {
     const town = await cachedStays(watch, stay, ROOM_CHECK_CANDIDATES, MAX_HOTELS).catch(error => { if (isBlocked(error)) throw error; return null; });
     const townPicks = (town?.picks ?? []).filter(pick => fitsPrefs(pick, prefs));
     const townCheapest = townPicks.length ? Math.min(...townPicks.map(shownNightly)) : null;
-    if (townCheapest !== null) console.log(`市區最便宜每晚 ${money(townCheapest, row.currency)}`);
+    if (townCheapest !== null) say(`市區最便宜每晚 ${money(townCheapest, row.currency)}`);
     let number = 1;
     for (const area of areas) {
       const areaStay: Stay = { ...stay, city: area.area };
       const result = await cachedStays(watch, areaStay, NEARBY_CANDIDATES, NEARBY_PER_AREA);
-      console.log(`\n📍 *${area.label}*\n${area.ride.replace('到', '🚃 到')}`);
+      say(`\n📍 *${area.label}*\n${area.ride.replace('到', '🚃 到')}`);
       const cheaper = (result?.picks ?? []).filter(pick => townCheapest === null || shownNightly(pick) < townCheapest);
-      if (!result?.picks.length) { console.log('這次沒查到確認過的私人房。'); continue; }
-      if (!cheaper.length) { console.log('沒有比市區便宜的'); continue; }
+      if (!result?.picks.length) { say('這次沒查到確認過的私人房。'); continue; }
+      if (!cheaper.length) { say('沒有比市區便宜的'); continue; }
       printPicks(await ownBathrooms(cheaper, areaStay, row.currency), areaStay, nights, perFare, row.currency, watch.country, number);
       number += cheaper.length;
     }
     return;
   }
 
-  console.log(`🏨 *${cityLabel(row.city)} 住宿*\n${dateRange(row.outboundDate, row.returnDate)}・${nights} 晚`);
+  say(`🏨 *${cityLabel(row.city)} 住宿*\n${dateRange(row.outboundDate, row.returnDate)}・${nights} 晚`);
   const prefs = readUserPrefs();
   // The flights are worked out beside the hotel checks, so they add no wait.
   const [result, perFare] = await Promise.all([
@@ -426,30 +411,30 @@ async function hotelsFor(code: string | undefined, nearby = false) {
   ]);
   const allLink = buildHotelNameUrl({ city: row.city, checkIn: row.outboundDate, checkOut: row.returnDate, currency: row.currency, country: watch.country });
   if (!result) {
-    console.log('\n這次沒查到這段日期的住宿價格，\n可以稍後再試。\n（Google Hotels 可能沒套用日期\n或暫時擋住了）');
+    say('\n這次沒查到這段日期的住宿價格，\n可以稍後再試。\n（Google Hotels 可能沒套用日期\n或暫時擋住了）');
     return;
   }
   if (!result.picks.length) {
-    console.log(`\n這次沒找到確認過的私人房。[在 Google Hotels 看全部住宿](${allLink})`);
+    say(`\n這次沒找到確認過的私人房。[在 Google Hotels 看全部住宿](${allLink})`);
     return;
   }
   // The user's preferences decide what is shown; when nothing fits, show what there is rather than nothing.
   const fitting = result.picks.filter(pick => fitsPrefs(pick, prefs));
   const shown = fitting.length ? fitting : result.picks;
   const cheaper = shown.filter(pick => pick.hotel.belowUsualPct);
-  console.log(cheaper.length ? `\n🏷 住宿：${cheaper.length} 間比平常便宜` : '\n🏷 住宿：都是一般價');
-  if (!fitting.length) console.log(`沒有評分 ${prefs.minRating} 以上的，先列全部`);
-  console.log('');
+  say(cheaper.length ? `\n🏷 住宿：${cheaper.length} 間比平常便宜` : '\n🏷 住宿：都是一般價');
+  if (!fitting.length) say(`沒有評分 ${prefs.minRating} 以上的，先列全部`);
+  say('');
   printPicks(await ownBathrooms(shown, stay, row.currency), stay, nights, perFare, row.currency, watch.country);
   // Only the link: the user found the explanations under the list noise (2026-10-18). A public bath
   // keeps one short line, since its photos read as a shared bathroom.
-  console.log(`\n[看全部住宿](${allLink})`);
-  if (shown.some(pick => pick.hotel.publicBath)) console.log('♨️ 大浴場＝公共澡堂，房內有衛浴');
+  say(`\n[看全部住宿](${allLink})`);
+  if (shown.some(pick => pick.hotel.publicBath)) say('♨️ 大浴場＝公共澡堂，房內有衛浴');
 }
 
 /** The user's preferences (data/settings.json "prefs"), over the defaults. */
 function readUserPrefs(): Prefs {
-  try { return readPrefs((JSON.parse(readFileSync(SETTINGS_FILE, 'utf8')) as { prefs?: unknown }).prefs); } catch { return readPrefs(undefined); }
+  return readPrefs(settingsFile.read().prefs);
 }
 
 const cachedBooking = (origin: string, stay: Stay, currency: string, country: string, prefs: Prefs) =>
@@ -492,7 +477,7 @@ async function profileHotels(limit = PROFILES_PER_RUN): Promise<number> {
   try { files = readdirSync(CACHE_DIR).filter(file => file.startsWith('stays-')); } catch { return 0; }
   for (const file of files) {
     let saved: { key: [Stay, string, ...unknown[]]; value: { picks: Pick[] } | null };
-    try { saved = JSON.parse(readFileSync(new URL(file, CACHE_DIR), 'utf8')); } catch { continue; }
+    try { saved = JSON.parse(readFileSync(join(CACHE_DIR, file), 'utf8')); } catch { continue; }
     const [stay, currency] = saved.key;
     for (const pick of saved.value?.picks ?? []) {
       if (fetched >= limit) return fetched;
@@ -513,10 +498,8 @@ async function ownBathrooms(picks: readonly Pick[], stay: Stay, currency: string
     // Google's room names hide bunk beds and shared bathrooms (Minn Kamata's "Quadruple Room" is bunks,
     // DOYANEN BAKURO's twin a bunk with a shared bathroom): a hotel whose rooms for the party on Booking
     // are all smoking, bunks or shared-bathroom is poor value for two and is left out.
-    const fits = rooms.filter(room => !isDormBed(room.name) && (room.guests === null || room.guests >= Math.min(travelers, 2)));
-    const bunk = (room: BookingRoom) => room.bunkInPhotos || room.beds.some(bed => /bunk/i.test(bed));
-    const forParty = fits.filter(room => !(nonSmoking && isSmokingRoom(room.name)) && !bunk(room) && room.bathroom !== 'shared');
-    if (fits.length && !forParty.length) continue;
+    const { forParty, keep } = bookingRoomsForParty(rooms, { travelers, nonSmoking });
+    if (!keep) continue;
     // Google's panel names no room for some hotels (APA's own rates): Booking's cheapest room that
     // suits the party says what it is.
     const cheapest = [...forParty].sort((a, b) => (a.stayTotal ?? Infinity) - (b.stayTotal ?? Infinity))[0];
@@ -565,10 +548,10 @@ async function printFlightPlan(watch: TripOption['watch'], row: TripOption['row'
   ]);
   const market = verdictPage?.market ?? null;
   const amount = market?.versusUsual?.replace(/^(\S+) cheaper$/, '比平常便宜 $1').replace(/^(\S+) more expensive$/, '比平常貴 $1');
-  if (market) console.log(`📊 機票 Google ${MARKET_TEXT[market.level].replace(/（.*）/, '')}${amount ? `\n${amount}` : ''}`);
+  if (market) say(`📊 機票 Google ${MARKET_TEXT[market.level].replace(/（.*）/, '')}${amount ? `\n${amount}` : ''}`);
   const buy = booking ? chooseBookingOption(booking.options, prefs.oneTicketPremium) : null;
   if (!booking || !buy) {
-    console.log(`✈️ [${cityLabel(row.city)} 來回每人 ${money(row.price, currency)}](${buildCardSearchUrl(watch.origin, stay, currency)})\n沒選到符合時段的航班`);
+    say(`✈️ [${cityLabel(row.city)} 來回每人 ${money(row.price, currency)}](${buildCardSearchUrl(watch.origin, stay, currency)})\n沒選到符合時段的航班`);
     return row.price;
   }
   // Times are local (Japan is an hour ahead of Taiwan), so the time in the air goes with them
@@ -582,32 +565,32 @@ async function printFlightPlan(watch: TripOption['watch'], row: TripOption['row'
   // When the party reaches the hotel and must leave it, against its usual check-in and check-out:
   // early means dropping the bags first, a later return means checking out on time and leaving later.
   const times = hotelTimes(booking.outbound, booking.inbound, prefs, row.city);
-  console.log(`✈️ [去 ${legs(booking.outbound)}](${separate ? legLink(booking.legLinks?.outbound) : booking.url})`);
-  console.log(`${times.late ? '⚠️ ' : ''}飛 ${shortDuration(booking.outbound.duration)}・約 ${times.arrive} 到飯店`);
-  if (times.beforeCheckIn) console.log(`${prefs.hotelCheckIn} 才能入住・可先寄放行李`);
-  console.log(separate ? `[回 ${legs(booking.inbound)}](${legLink(booking.legLinks?.inbound)})` : `回 ${legs(booking.inbound)}`);
+  say(`✈️ [去 ${legs(booking.outbound)}](${separate ? legLink(booking.legLinks?.outbound) : booking.url})`);
+  say(`${times.late ? '⚠️ ' : ''}飛 ${shortDuration(booking.outbound.duration)}・約 ${times.arrive} 到飯店`);
+  if (times.beforeCheckIn) say(`${prefs.hotelCheckIn} 才能入住・可先寄放行李`);
+  say(separate ? `[回 ${legs(booking.inbound)}](${legLink(booking.legLinks?.inbound)})` : `回 ${legs(booking.inbound)}`);
   if (times.afterCheckOut) {
-    console.log(`飛 ${shortDuration(booking.inbound.duration)}・${prefs.hotelCheckOut} 退房`);
-    console.log(`${times.leave} 出發去機場・可寄放行李`);
+    say(`飛 ${shortDuration(booking.inbound.duration)}・${prefs.hotelCheckOut} 退房`);
+    say(`${times.leave} 出發去機場・可寄放行李`);
   } else {
-    console.log(`${times.tooEarly ? '⚠️ ' : ''}飛 ${shortDuration(booking.inbound.duration)}・${times.leave} 就要離開飯店`);
+    say(`${times.tooEarly ? '⚠️ ' : ''}飛 ${shortDuration(booking.inbound.duration)}・${times.leave} 就要離開飯店`);
   }
   const bagged = prefs.checkedBag && (booking.outbound.lowCost || booking.inbound.lowCost);
-  console.log(`來回每人 ${money(buy.chosen.price, currency)}${bagged ? `\n＋托運行李約 ${money(prefs.bagFeeEstimate, currency)}（估算）` : ''}`);
+  say(`來回每人 ${money(buy.chosen.price, currency)}${bagged ? `\n＋托運行李約 ${money(prefs.bagFeeEstimate, currency)}（估算）` : ''}`);
   // A short trip may buy more time there: say what it costs over the cheapest fare for those dates.
   const forTime = buy.chosen.price - row.price;
-  if (nightsOf(stay) <= SHORT_TRIP_NIGHTS && forTime > 0) console.log(`早去晚回・比最便宜多 ${money(forTime, currency)}`);
+  if (nightsOf(stay) <= SHORT_TRIP_NIGHTS && forTime > 0) say(`早去晚回・比最便宜多 ${money(forTime, currency)}`);
   const difference = buy.other ? Math.abs(buy.other.price - buy.chosen.price) : 0;
-  if (separate) console.log(`分開訂兩張票${difference ? `・省 ${money(difference, currency)}` : ''}`);
+  if (separate) say(`分開訂兩張票${difference ? `・省 ${money(difference, currency)}` : ''}`);
   // One ticket is one booking: say the one link covers both legs (only the outbound line is linked).
-  else for (const line of phoneLines(['去回同一張票・去程連結一次訂', buy.other?.separateTickets && difference ? `分開訂可省 ${money(difference, currency)}` : null])) console.log(line);
+  else for (const line of phoneLines(['去回同一張票・去程連結一次訂', buy.other?.separateTickets && difference ? `分開訂可省 ${money(difference, currency)}` : null])) say(line);
   return buy.chosen.price + (bagged ? prefs.bagFeeEstimate : 0);
 }
 
 function regions() {
   for (const watch of listRegionWatches()) {
     const label = TRIP_LENGTHS[watch.tripLength as TripLength]?.label ?? watch.tripLength;
-    console.log(`${watch.active ? '啟用' : '停用'}｜${watch.originLabel} → ${watch.regionLabel}（${watch.region}）｜${label}｜每 ${watch.intervalHours} 小時｜每日排行：${watch.sendDigest ? '開' : '關'}｜最後掃描：${taipei(watch.lastScanAt)}${watch.failureCount ? `｜連續失敗 ${watch.failureCount} 次` : ''}`);
+    say(`${watch.active ? '啟用' : '停用'}｜${watch.originLabel} → ${watch.regionLabel}（${watch.region}）｜${label}｜每 ${watch.intervalHours} 小時｜每日排行：${watch.sendDigest ? '開' : '關'}｜最後掃描：${taipei(watch.lastScanAt)}${watch.failureCount ? `｜連續失敗 ${watch.failureCount} 次` : ''}`);
   }
 }
 
@@ -618,17 +601,17 @@ function addRegion(region: string | undefined, regionLabel: string | undefined) 
     if (existing) updateWatch(existing.id, { active: true, regionLabel, nextScanAt: new Date() });
     else createWatch({ origin: 'Taipei', originLabel: '台北', region, regionLabel, tripLength, sendDigest: tripLength === 'week', digestHour: 14 });
   }
-  console.log(`已開始掃描 台北 → ${regionLabel}（${region}）的週末、一週、兩週行程。15 分鐘內會進行第一次掃描。`);
+  say(`已開始掃描 台北 → ${regionLabel}（${region}）的週末、一週、兩週行程。15 分鐘內會進行第一次掃描。`);
 }
 
 function removeRegion(region: string | undefined) {
   if (!region) throw new Error('用法：remove-region <英文名稱>');
   const count = setRegionActive(region, false);
-  console.log(count ? `已停止掃描 ${region}（共 ${count} 個行程長度），歷史價格保留。` : `找不到地區 ${region}。`);
+  say(count ? `已停止掃描 ${region}（共 ${count} 個行程長度），歷史價格保留。` : `找不到地區 ${region}。`);
 }
 
 function scanNow() {
-  console.log(`已排入 ${scheduleAllNow()} 個掃描，15 分鐘內會執行。`);
+  say(`已排入 ${scheduleAllNow()} 個掃描，15 分鐘內會執行。`);
 }
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -658,10 +641,10 @@ async function tripSearch(cityArg: string | undefined, outboundDate: string | un
   const stay: Stay = { city, outboundDate, returnDate };
   const found = await cachedFlights(origin, stay, currency, country);
   const nights = nightsOf(stay);
-  console.log(`✈️ *${watch?.originLabel ?? '台北'} → ${cityLabel(city)}*\n${dateRange(outboundDate, returnDate)}・${nights} 晚・來回`);
+  say(`✈️ *${watch?.originLabel ?? '台北'} → ${cityLabel(city)}*\n${dateRange(outboundDate, returnDate)}・${nights} 晚・來回`);
   if (!found?.flights.length) {
-    console.log('\n這次沒讀到航班，可以稍後再試。\n（Google 可能暫時擋住，\n或這條航線沒有航班）');
-    keyboard = [[FLIGHT_LIST_BUTTON]];
+    say('\n這次沒讀到航班，可以稍後再試。\n（Google 可能暫時擋住，\n或這條航線沒有航班）');
+    out.keyboard = [[FLIGHT_LIST_BUTTON]];
     return;
   }
   // The same plan as for a scanned option (2026-10-19: this list had no pair, no booking links, no
@@ -670,17 +653,22 @@ async function tripSearch(cityArg: string | undefined, outboundDate: string | un
   const cheapest = found.flights[0]!;
   await printFlightPlan({ origin, currency, country, id: null, lastScanAt: null },
     { city, outboundDate, returnDate, price: cheapest.price, stops: cheapest.stops, currency }, stay, readUserPrefs());
-  writeFileSync(LAST_TRIP_FILE, `${JSON.stringify({ origin, currency, country, city, outboundDate, returnDate, price: cheapest.price, stops: cheapest.stops }, null, 2)}\n`);
-  console.log(`\n[在 Google Flights 看全部航班](${buildCardSearchUrl(origin, { city, outboundDate, returnDate }, currency)})`);
-  console.log(travelers > 1 ? `每人來回價（${travelers} 人同行）・行李另計` : '1 人來回價・行李另計');
-  keyboard = [[`🏨 ${DATED_TRIP_CODE} 這趟的住宿`], [`🔔 ${DATED_TRIP_CODE} 降價通知我`], [FLIGHT_LIST_BUTTON]];
+  lastTripFile.write({ origin, currency, country, city, outboundDate, returnDate, price: cheapest.price, stops: cheapest.stops });
+  say(`\n[在 Google Flights 看全部航班](${buildCardSearchUrl(origin, { city, outboundDate, returnDate }, currency)})`);
+  say(travelers > 1 ? `每人來回價（${travelers} 人同行）・行李另計` : '1 人來回價・行李另計');
+  out.keyboard = [[`🏨 ${DATED_TRIP_CODE} 這趟的住宿`], [`🔔 ${DATED_TRIP_CODE} 降價通知我`], [FLIGHT_LIST_BUTTON]];
 }
 
 /**
  * The last hotel list, so "rooms <n>" knows which hotel and stay the user means. Each hotel keeps
  * its Booking.com page (from Google's price link) when Booking sold it.
  */
-const LAST_HOTELS_FILE = new URL('../data/last-hotels.json', import.meta.url);
+type SavedHotels = { savedAt?: string; stay: { nights: number; currency: string } | null;
+  trip: (Stay & { currency: string; country: string; origin: string }) | null; hotels: ListedHotel[] };
+const lastHotelsFile = new JsonFile<SavedHotels | null>(dataFile('last-hotels.json'), () => null, value => {
+  const saved = objectOf<SavedHotels>('住宿清單')(value);
+  return typeof saved === 'string' || Array.isArray(saved.hotels) ? saved : '缺少 hotels 清單';
+});
 type ListedHotel = { n: number; name: string; bookingUrl: string | null; tripHotelId?: string | null; nightly?: number;
   /** Google's room photos and its page: the room types of a hotel neither Booking nor Trip.com sells. */
   googlePhotos?: HotelPhotos; googleUrl?: string;
@@ -709,24 +697,24 @@ const ROOM_PHOTO_BUTTON = (n: number) => `📷 第${n}間房型`;
 /** Remember the list and offer a room-photo button for each hotel with room types to show (Booking, Trip.com or Google). */
 function saveListedHotels() {
   if (!listedHotels.length) return;
-  writeFileSync(LAST_HOTELS_FILE, `${JSON.stringify({ savedAt: new Date().toISOString(), stay: listedStay, trip: lastStayFor, hotels: listedHotels }, null, 2)}\n`);
+  lastHotelsFile.write({ savedAt: new Date().toISOString(), stay: listedStay, trip: lastStayFor, hotels: listedHotels });
   // Every hotel with anything to show gets its button (2026-10-19: one with only Google's bedroom photos had none).
   const showable = (hotel: ListedHotel) => hotel.bookingUrl || hotel.tripHotelId || hotel.googlePhotos?.rooms.length
     || hotel.googlePhotos?.bedroom.length || hotel.googlePhotos?.bathroom.length;
   const buttons = listedHotels.filter(showable).map(hotel => ROOM_PHOTO_BUTTON(hotel.n));
   const rows: string[][] = [];
   for (let start = 0; start < buttons.length; start += BUTTONS_PER_ROW) rows.push(buttons.slice(start, start + BUTTONS_PER_ROW));
-  keyboard = [...rows, ...keyboard];
+  out.keyboard = [...rows, ...out.keyboard];
 }
 
 /** One message per room type of a hotel from the last list: its photos, size, beds, bathroom, guests and price. */
 async function roomsFor(which: string | undefined) {
   const n = Number(/\d+/.exec(which ?? '')?.[0]);
-  let saved: { stay: { nights: number; currency: string } | null; trip: Stay | null; hotels: ListedHotel[] };
-  try { saved = JSON.parse(readFileSync(LAST_HOTELS_FILE, 'utf8')); } catch { throw new Error('還沒有住宿清單，請先查一次住宿。'); }
+  const saved = lastHotelsFile.read();
+  if (!saved) throw new Error('還沒有住宿清單，請先查一次住宿。');
   const hotel = saved.hotels.find(entry => entry.n === n);
   if (!hotel) throw new Error(`上一份住宿清單沒有第 ${which} 間。`);
-  keyboard = [[`🔔 第${n}間降價通知`], [FLIGHT_LIST_BUTTON]];
+  out.keyboard = [[`🔔 第${n}間降價通知`], [FLIGHT_LIST_BUTTON]];
   const currency = saved.stay?.currency ?? 'TWD';
   const nights = saved.stay?.nights ?? 1;
   // Booking first (its photos say which room they show); Trip.com when Booking does not sell the hotel,
@@ -764,26 +752,21 @@ async function roomsFor(which: string | undefined) {
   // Nothing names its room types: show the hotel's room and bathroom photos Google has, and say so.
   if (!result?.rooms.length && (hotel.googlePhotos?.bedroom.length || hotel.googlePhotos?.bathroom.length)) {
     beginSegment([...hotel.googlePhotos.bedroom, ...hotel.googlePhotos.bathroom].slice(0, 4), true);
-    console.log(`📷 *${n}. ${hotel.name}*\n房間和浴室照片（Google）\n訂房網站沒有列出房型`);
+    say(`📷 *${n}. ${hotel.name}*\n房間和浴室照片（Google）\n訂房網站沒有列出房型`);
     beginSegment();
-    console.log(`[在 Google 看房型和價格](${hotel.googleUrl ?? ''})`);
+    say(`[在 Google 看房型和價格](${hotel.googleUrl ?? ''})`);
     return;
   }
   if (!result?.rooms.length) {
     const link = hotel.bookingUrl ? `\n[直接在 Booking 看這間](${hotel.bookingUrl})` : '';
-    console.log(`${n}. ${hotel.name}：Booking 和 Trip.com 這次都沒有顯示房型（可能暫時擋住或已客滿）。${link}`);
+    say(`${n}. ${hotel.name}：Booking 和 Trip.com 這次都沒有顯示房型（可能暫時擋住或已客滿）。${link}`);
     return;
   }
   // Beds in shared dorms are no room for the user; say the hotel sells them, list only private rooms.
-  const dormBeds = result.rooms.filter(room => isDormBed(room.name));
-  // Smoking rooms are left out too when the user minds the smell (they were shown one, 2026-10-19).
-  const { nonSmoking } = readUserPrefs();
-  const smoking = nonSmoking ? result.rooms.filter(room => isSmokingRoom(room.name)) : [];
-  // Rooms too small for the party are left out as well: two people are never offered a single (2026-10-18).
-  const tooSmall = result.rooms.filter(room => room.guests !== null && room.guests < Math.min(travelers, 2));
-  const privateRooms = result.rooms.filter(room => !isDormBed(room.name) && !smoking.includes(room) && !tooSmall.includes(room));
-  console.log(`📷 *${n}. ${hotel.name}*\n各房型照片和資料（${source}）${dormBeds.length ? '\n⚠️ 這間也賣宿舍床位，已排除' : ''}`);
-  if (!privateRooms.length) { console.log(smoking.length ? '只有吸菸房，沒有禁菸房。' : '只有宿舍床位，沒有私人房。'); return; }
+  // So are smoking rooms when the user minds the smell, and rooms too small for the party: src/party-rules.ts.
+  const { shown: privateRooms, dormBeds, smoking } = sortRooms(result.rooms, party());
+  say(`📷 *${n}. ${hotel.name}*\n各房型照片和資料（${source}）${dormBeds.length ? '\n⚠️ 這間也賣宿舍床位，已排除' : ''}`);
+  if (!privateRooms.length) { say(smoking.length ? '只有吸菸房，沒有禁菸房。' : '只有宿舍床位，沒有私人房。'); return; }
   let previousPhotos = '';
   for (const room of privateRooms) {
     const samePhotos = room.photos.length > 0 && room.photos.join() === previousPhotos;
@@ -792,54 +775,32 @@ async function roomsFor(which: string | undefined) {
     const facts = [room.sizeM2 ? `${room.sizeM2} m²` : null, ...room.beds.map(bedText),
       room.bathroom === 'private' ? '私人衛浴' : room.bathroom === 'shared' ? '共用衛浴' : null,
       isSmokingRoom(room.name) ? '🚬 吸菸房' : isNonSmokingRoom(room.name) ? '🚭 禁菸' : null].filter(Boolean);
-    // Booking says who a room is for ("Standard Room (for 1 Adult)"); a one-guest room is a single whatever its name.
-    // A name like "Standard Room (for 2 Adults)" says no type; the beds do.
-    // Two or more beds of any size ("2 small double beds") is a twin; one big bed a double.
-    const bedCount = room.beds.reduce((sum, bed) => sum + Number(/^\d+/.exec(bed)?.[0] ?? 1), 0);
-    const byBeds = bedCount >= 2 ? '雙床房' : room.beds.some(bed => /\b(double|queen|king)\b/i.test(bed)) ? '雙人房' : null;
-    const named = roomType(room.name);
-    // Bunk beds decide the type over the name ("Superior Twin Room" with "1 bunk bed").
-    const bunk = room.beds.some(bed => /bunk/i.test(bed)) || room.bunkInPhotos;
-    const type = room.guests === 1 ? '單人房' : bunk ? '上下鋪房' : named === '私人房' && byBeds ? byBeds : named;
-    console.log(`🛏 *${type}*\n${room.name}`);
+    // Who it is for, bunks, then its name or beds: src/party-rules.ts.
+    const type = roomTypeLabel(room);
+    say(`🛏 *${type}*\n${room.name}`);
     // Short lines: a room with four kinds of beds did not fit a phone on one line (2026-10-19).
-    for (const line of phoneLines(facts)) console.log(line);
+    for (const line of phoneLines(facts)) say(line);
     // The hotel's own photos outrank its bed list: say so when they disagree.
-    if (room.bunkInPhotos && !room.beds.some(bed => /bunk/i.test(bed))) console.log('⚠️ 照片是上下鋪\n（一張床在上層，要爬梯子）');
-    if (room.guests !== null) console.log(`可住 ${room.guests} 人${room.guests < travelers ? `　⚠️ 你們 ${travelers} 人住不下` : ''}`);
-    if (room.stayTotal !== null) console.log(`${nights} 晚 ${money(room.stayTotal, currency)}（每晚 ${money(Math.round(room.stayTotal / nights), currency)}）`);
-    if (samePhotos) console.log('（照片和上一個房型相同）');
-    else if (room.resale) console.log('（第三方轉售方案，\nBooking 沒有這個方案的房間照）');
-    else if (!room.photos.length) console.log(`（${source} 沒有這個房型的房間照）`);
+    if (room.bunkInPhotos && !room.beds.some(bed => /bunk/i.test(bed))) say('⚠️ 照片是上下鋪\n（一張床在上層，要爬梯子）');
+    if (room.guests !== null) say(`可住 ${room.guests} 人${room.guests < travelers ? `　⚠️ 你們 ${travelers} 人住不下` : ''}`);
+    if (room.stayTotal !== null) say(`${nights} 晚 ${money(room.stayTotal, currency)}（每晚 ${money(Math.round(room.stayTotal / nights), currency)}）`);
+    if (samePhotos) say('（照片和上一個房型相同）');
+    else if (room.resale) say('（第三方轉售方案，\nBooking 沒有這個方案的房間照）');
+    else if (!room.photos.length) say(`（${source} 沒有這個房型的房間照）`);
   }
   beginSegment();
-  console.log(`[在 ${source} 看這間、訂房](${result.hotelUrl})\n${privateRooms.some(room => room.stayTotal) ? `價格是 ${source} 含稅總價` : '房價看清單上的每晚價'}`);
+  say(`[在 ${source} 看這間、訂房](${result.hotelUrl})\n${privateRooms.some(room => room.stayTotal) ? `價格是 ${source} 含稅總價` : '房價看清單上的每晚價'}`);
 }
 
-/**
- * Trips the user asked to watch ("11 月東京降價叫我"): the cheapest flight for the dates and,
- * optionally, a hotel from a hotel list. "deals jobs" checks them every few hours and sends an
- * alert when either drops by a real amount of money.
- */
-const WATCHES_FILE = new URL('../data/trip-watches.json', import.meta.url);
-const FLIGHT_DROP = 300; // whole round trip, list currency
-const HOTEL_DROP = 200; // per night
-type TripWatch = {
-  id: number; origin: string; currency: string; country: string; city: string; outboundDate: string; returnDate: string;
-  flight: number | null; hotel: { name: string; nightly: number; shown?: number } | null; createdAt: string; lastCheckedAt: string | null;
-};
-const readWatches = (): TripWatch[] => { try { return JSON.parse(readFileSync(WATCHES_FILE, 'utf8')); } catch { return []; } };
-const writeWatches = (watches: TripWatch[]) => writeFileSync(WATCHES_FILE, `${JSON.stringify(watches, null, 2)}\n`);
+// Watched trips: the saved list and the drop rules are in src/trip-watches.ts.
+const tripWatches = watchesFile();
+const readWatches = () => tripWatches.read();
+const writeWatches = (watches: TripWatch[]) => tripWatches.write(watches);
 const watchTitle = (watch: TripWatch) => `${cityLabel(watch.city)} ${dateRange(watch.outboundDate, watch.returnDate)}`;
 
-function findOrAddWatch(stay: { origin: string; currency: string; country: string } & Stay): { watches: TripWatch[]; watch: TripWatch; added: boolean } {
+function findOrAddWatch(stay: WatchStay): { watches: TripWatch[]; watch: TripWatch; added: boolean } {
   const watches = readWatches();
-  const same = watches.find(watch => watch.city === stay.city && watch.outboundDate === stay.outboundDate && watch.returnDate === stay.returnDate);
-  if (same) return { watches, watch: same, added: false };
-  const watch: TripWatch = { id: Math.max(0, ...watches.map(entry => entry.id)) + 1, origin: stay.origin, currency: stay.currency, country: stay.country,
-    city: stay.city, outboundDate: stay.outboundDate, returnDate: stay.returnDate, flight: null, hotel: null, createdAt: new Date().toISOString(), lastCheckedAt: null };
-  watches.push(watch);
-  return { watches, watch, added: true };
+  return { watches, ...addWatch(watches, stay) };
 }
 
 /** Watch an option's flight ("B4", "T1"): the alert baseline is today's cheapest fare for its dates. */
@@ -850,34 +811,34 @@ async function watchTrip(code: string | undefined) {
   const found = await cachedFlights(watch.origin, watch, watch.currency, watch.country).catch(() => null);
   watch.flight = found?.flights[0]?.price ?? row.price;
   writeWatches(watches);
-  console.log(`🔔 ${added ? '開始盯' : '已經在盯'}\n${watchTitle(watch)}`);
+  say(`🔔 ${added ? '開始盯' : '已經在盯'}\n${watchTitle(watch)}`);
   // The cheapest fare of those days, any flight: not the suggested pair, whose price differs (2026-10-19).
-  console.log(`這幾天最便宜的機票\n每人 ${money(watch.flight, watch.currency)}（不限班次）\n便宜 ${money(FLIGHT_DROP, watch.currency)} 以上就通知你`);
-  console.log('想一起盯飯店：\n點房型照片下的 🔔 按鈕');
-  keyboard = [[FLIGHT_LIST_BUTTON]];
+  say(`這幾天最便宜的機票\n每人 ${money(watch.flight, watch.currency)}（不限班次）\n便宜 ${money(FLIGHT_DROP, watch.currency)} 以上就通知你`);
+  say('想一起盯飯店：\n點房型照片下的 🔔 按鈕');
+  out.keyboard = [[FLIGHT_LIST_BUTTON]];
 }
 
 /** Watch hotel n of the last hotel list for that list's stay. */
 function watchHotel(which: string | undefined) {
   const n = Number(/\d+/.exec(which ?? '')?.[0]);
-  let saved: { trip: (Stay & { currency: string; country: string; origin: string }) | null; hotels: ListedHotel[] };
-  try { saved = JSON.parse(readFileSync(LAST_HOTELS_FILE, 'utf8')); } catch { throw new Error('還沒有住宿清單，請先查一次住宿。'); }
+  const saved = lastHotelsFile.read();
+  if (!saved) throw new Error('還沒有住宿清單，請先查一次住宿。');
   const hotel = saved.hotels.find(entry => entry.n === n);
   if (!hotel || !saved.trip || !hotel.nightly) throw new Error(`上一份住宿清單沒有第 ${which} 間。`);
   const { watches, watch } = findOrAddWatch(saved.trip);
   watch.hotel = { name: hotel.name, nightly: hotel.nightly, shown: hotel.shown };
   writeWatches(watches);
-  console.log(`🔔 開始盯\n${watchTitle(watch)}\n${hotel.name}\n每晚現在 ${money(hotel.shown ?? hotel.nightly, watch.currency)}\n便宜 ${money(HOTEL_DROP, watch.currency)} 以上就通知你`);
-  keyboard = [[FLIGHT_LIST_BUTTON]];
+  say(`🔔 開始盯\n${watchTitle(watch)}\n${hotel.name}\n每晚現在 ${money(hotel.shown ?? hotel.nightly, watch.currency)}\n便宜 ${money(HOTEL_DROP, watch.currency)} 以上就通知你`);
+  out.keyboard = [[FLIGHT_LIST_BUTTON]];
 }
 
 function listWatches() {
   const watches = readWatches();
-  if (!watches.length) { console.log('目前沒有在盯的行程。'); return; }
+  if (!watches.length) { say('目前沒有在盯的行程。'); return; }
   for (const watch of watches) {
-    console.log(`${watch.id}. ${watchTitle(watch)}`);
-    if (watch.flight !== null) console.log(`最便宜機票每人 ${money(watch.flight, watch.currency)}`);
-    if (watch.hotel) console.log(`${watch.hotel.name}\n每晚 ${money(watch.hotel.shown ?? watch.hotel.nightly, watch.currency)}`);
+    say(`${watch.id}. ${watchTitle(watch)}`);
+    if (watch.flight !== null) say(`最便宜機票每人 ${money(watch.flight, watch.currency)}`);
+    if (watch.hotel) say(`${watch.hotel.name}\n每晚 ${money(watch.hotel.shown ?? watch.hotel.nightly, watch.currency)}`);
   }
 }
 
@@ -887,39 +848,37 @@ function unwatch(which: string | undefined) {
   const kept = watches.filter(watch => watch.id !== id);
   if (kept.length === watches.length) throw new Error(`沒有第 ${which} 個在盯的行程。`);
   writeWatches(kept);
-  console.log(`已停止盯第 ${id} 個行程。`);
+  say(`已停止盯第 ${id} 個行程。`);
 }
 
 /** Check every watched trip; returns the alert messages to send. Trips that have started are dropped. */
 async function checkWatches(): Promise<string[]> {
-  const today = new Date().toISOString().slice(0, 10);
-  const watches = readWatches().filter(watch => watch.outboundDate > today);
+  const watches = upcoming(readWatches(), new Date().toISOString().slice(0, 10));
   const alerts: string[] = [];
   for (const watch of watches) {
     const found = await searchFlights(watch.origin, watch, watch.currency, watch.country).catch(error => { if (isBlocked(error)) throw error; return null; });
     const fare = found?.flights[0];
-    if (fare && watch.flight !== null && fare.price <= watch.flight - FLIGHT_DROP) {
-      alerts.push(`🔔 機票降價：${watchTitle(watch)}\n${money(watch.flight, watch.currency)} → ${money(fare.price, watch.currency)}`
-        + `（便宜 ${money(watch.flight - fare.price, watch.currency)}）\n${flightLines([fare], watch.currency, 1)[0]!.replace(/^1\. /, '')}`
-        + `\n[看航班、訂票](${buildCardSearchUrl(watch.origin, watch, watch.currency)})`);
-    }
-    // Keep the lowest seen as the bar, so the next alert means a further drop.
-    if (fare) watch.flight = watch.flight === null ? fare.price : Math.min(watch.flight, fare.price);
-    if (watch.hotel) {
-      const hotels = await captureHotelList(watch, watch).catch(error => { if (isBlocked(error)) throw error; return null; });
-      const now = hotels?.find(hotel => hotel.name === watch.hotel!.name)?.nightly;
-      if (now !== undefined && now <= watch.hotel.nightly - HOTEL_DROP) {
-        const url = buildHotelNameUrl({ name: watch.hotel.name, city: watch.city, checkIn: watch.outboundDate, checkOut: watch.returnDate, currency: watch.currency, country: watch.country });
-        // Said in the price the list showed (2026-10-19: the watch quoted Google's lower list price,
-        // NT$1,386 for a hotel listed at NT$1,801), moved by the drop Google's price made.
-        const drop = watch.hotel.nightly - now;
-        const before = watch.hotel.shown ?? watch.hotel.nightly;
-        alerts.push(`🔔 飯店降價：${watchTitle(watch)}\n[${watch.hotel.name}](${url})\n每晚約 ${money(before, watch.currency)} → ${money(before - drop, watch.currency)}`
-          + `\n便宜 ${money(drop, watch.currency)}`);
+    if (fare) {
+      const { alert, bar } = checkFlight(watch.flight, fare.price);
+      if (alert) {
+        alerts.push(`🔔 機票降價：${watchTitle(watch)}\n${money(alert.from, watch.currency)} → ${money(alert.to, watch.currency)}`
+          + `（便宜 ${money(alert.from - alert.to, watch.currency)}）\n${flightLines([fare], watch.currency, 1)[0]!.replace(/^1\. /, '')}`
+          + `\n[看航班、訂票](${buildCardSearchUrl(watch.origin, watch, watch.currency)})`);
       }
-      if (now !== undefined && now < watch.hotel.nightly) {
-        if (watch.hotel.shown !== undefined) watch.hotel.shown -= watch.hotel.nightly - now;
-        watch.hotel.nightly = now;
+      watch.flight = bar;
+    }
+    if (watch.hotel) {
+      const watched = watch.hotel;
+      const hotels = await captureHotelList(watch, watch).catch(error => { if (isBlocked(error)) throw error; return null; });
+      const now = hotels?.find(hotel => hotel.name === watched.name)?.nightly;
+      if (now !== undefined) {
+        const { alert, hotel } = checkHotel(watched, now);
+        if (alert) {
+          const url = buildHotelNameUrl({ name: watched.name, city: watch.city, checkIn: watch.outboundDate, checkOut: watch.returnDate, currency: watch.currency, country: watch.country });
+          alerts.push(`🔔 飯店降價：${watchTitle(watch)}\n[${watched.name}](${url})\n每晚約 ${money(alert.from, watch.currency)} → ${money(alert.to, watch.currency)}`
+            + `\n便宜 ${money(alert.drop, watch.currency)}`);
+        }
+        watch.hotel = hotel;
       }
     }
     watch.lastCheckedAt = new Date().toISOString();
@@ -938,7 +897,6 @@ async function checkWatches(): Promise<string[]> {
  *  - once a day, a self-check of the hotel pipeline that reports to Telegram when results look
  *    broken (the user should not be the one to find a Google change).
  */
-const JOBS_STATE_FILE = new URL('../data/jobs-state.json', import.meta.url);
 // Kept low so background work never gets the home network blocked by Google (the region scanner and
 // the user's own lookups use the same address): two prefetches per trip length per scan (their
 // hotels then get photos ready, which the user asked for on 2026-10-20), a pause between page-heavy
@@ -953,11 +911,13 @@ const TRIP_PAUSE_HOURS = 6;
 const isBlocked = (error: unknown) => error instanceof Error && error.name === 'GoogleBlockedError';
 const pause = () => new Promise(resolve => setTimeout(resolve, PAUSE_BETWEEN_MS));
 
-function readJobsState(): JobsState {
-  const empty: JobsState = { prefetched: {}, lastSelfCheck: null, lastWatchCheck: null, blockedUntil: null, tripPausedUntil: null };
-  try { return { ...empty, ...JSON.parse(readFileSync(JOBS_STATE_FILE, 'utf8')) }; } catch { return empty; }
-}
-const writeJobsState = (state: JobsState) => writeFileSync(JOBS_STATE_FILE, `${JSON.stringify(state, null, 2)}\n`);
+const emptyJobsState = (): JobsState => ({ prefetched: {}, lastSelfCheck: null, lastWatchCheck: null, blockedUntil: null, tripPausedUntil: null });
+const jobsStateFile = new JsonFile<JobsState>(dataFile('jobs-state.json'), emptyJobsState, value => {
+  const saved = objectOf<Partial<JobsState>>('背景工作狀態')(value);
+  return typeof saved === 'string' ? saved : { ...emptyJobsState(), ...saved };
+});
+const readJobsState = () => jobsStateFile.read();
+const writeJobsState = (state: JobsState) => jobsStateFile.write(state);
 
 /** Any command that meets a Google block pauses the background jobs; returns whether it was new. */
 function noteBlocked(): boolean {
@@ -971,7 +931,7 @@ function noteBlocked(): boolean {
 async function runJobs() {
   const state = readJobsState();
   if (state.blockedUntil && Date.parse(state.blockedUntil) > Date.now()) {
-    console.log(`jobs: paused until ${state.blockedUntil} after a Google block`);
+    say(`jobs: paused until ${state.blockedUntil} after a Google block`);
     return;
   }
   const problems: string[] = [];
@@ -996,7 +956,7 @@ async function runJobs() {
     }
     // Photos and room checks for the hotels of those lists, a few each run, ready before they are shown.
     const profiled = await profileHotels();
-    if (profiled) console.log(`jobs: profiled ${profiled} hotels`);
+    if (profiled) say(`jobs: profiled ${profiled} hotels`);
     if (!state.lastWatchCheck || Date.now() - Date.parse(state.lastWatchCheck) >= WATCH_CHECK_HOURS * 3_600_000) {
       alerts = await checkWatches();
       state.lastWatchCheck = new Date().toISOString();
@@ -1014,7 +974,7 @@ async function runJobs() {
   writeJobsState(state);
   for (const alert of alerts) await sendToTelegram([{ text: alert, photos: [] }], [[FLIGHT_LIST_BUTTON]]);
   if (problems.length) await sendToTelegram([{ text: `⚠️ trip bot 自我檢查發現問題\n${problems.map(problem => `• ${problem}`).join('\n')}`, photos: [] }], []);
-  console.log(`jobs: ${alerts.length} alerts, ${problems.length} problems`);
+  say(`jobs: ${alerts.length} alerts, ${problems.length} problems`);
 }
 
 /**
@@ -1090,7 +1050,7 @@ async function checkAll() {
     // "rooms each": the room photos of every hotel the list just before it saved, however many.
     if (run[0] === 'rooms' && run[1] === 'each') {
       let listed: ListedHotel[] = [];
-      try { listed = (JSON.parse(readFileSync(LAST_HOTELS_FILE, 'utf8')) as { hotels: ListedHotel[] }).hotels; } catch { /* none */ }
+      listed = lastHotelsFile.read()?.hotels ?? [];
       runs.splice(at + 1, 0, ...listed.map(hotel => ['rooms', String(hotel.n)]));
       continue;
     }
@@ -1098,9 +1058,9 @@ async function checkAll() {
     const verdict = (result.stdout ?? '').trim().split('\n').filter(line => /^[✓✗]/.test(line));
     const error = (result.stderr ?? '').split('\n').filter(line => line && !/ExperimentalWarning|--trace-warnings|^\[deals\]/.test(line)).join(' ').slice(0, 200);
     if (verdict.some(line => line.startsWith('✗')) || (!verdict.length && error)) failures++;
-    print(`${run.join(' ')}\n${verdict.length ? verdict.join('\n') : error ? `✗ ${error}` : '（沒有輸出）'}`);
+    console.log(`${run.join(' ')}\n${verdict.length ? verdict.join('\n') : error ? `✗ ${error}` : '（沒有輸出）'}`);
   }
-  print(failures ? `\n${failures} 個指令有問題` : '\n全部符合規則');
+  console.log(failures ? `\n${failures} 個指令有問題` : '\n全部符合規則');
   if (failures) process.exitCode = 1;
 }
 
@@ -1119,7 +1079,7 @@ async function tick() {
   const state = readJobsState();
   if (state.blockedUntil && Date.parse(state.blockedUntil) > Date.now()) {
     await deliverDealAlerts(sendAlert);
-    console.log(`tick: paused until ${state.blockedUntil} after a Google block`);
+    say(`tick: paused until ${state.blockedUntil} after a Google block`);
     return;
   }
   try {
@@ -1144,7 +1104,7 @@ function auditCache(): string[] {
   // Only hotel lists and flight pages: the cache also keeps booking pages and Booking room lists.
   for (const file of files.filter(name => /^(stays|flights)-/.test(name))) {
     let saved: { savedAt: string; key: unknown[]; value: unknown };
-    try { saved = JSON.parse(readFileSync(new URL(file, CACHE_DIR), 'utf8')); } catch { continue; }
+    try { saved = JSON.parse(readFileSync(join(CACHE_DIR, file), 'utf8')); } catch { continue; }
     if (Date.now() - Date.parse(saved.savedAt) > CACHE_HOURS * 3_600_000) continue;
     const stay = (file.startsWith('stays-') ? saved.key[0] : saved.key[1]) as Stay | undefined;
     const label = stay ? `${cityLabel(stay.city)} ${md(stay.outboundDate)}–${md(stay.returnDate)}` : file;
@@ -1158,7 +1118,7 @@ function auditCache(): string[] {
 
 function audit() {
   const problems = auditCache();
-  console.log(problems.length ? problems.join('\n') : '快取裡的清單都沒有發現問題。');
+  say(problems.length ? problems.join('\n') : '快取裡的清單都沒有發現問題。');
 }
 
 const PREF_NAMES: Record<keyof Prefs, string> = {
@@ -1169,31 +1129,29 @@ const PREF_NAMES: Record<keyof Prefs, string> = {
 
 /** Show the preferences, or set one: `prefs minRating 4.2`, `prefs checkedBag false`, `prefs maxPerPerson none`. */
 function setPrefs(key: string | undefined, value: string | undefined) {
-  let settings: Record<string, unknown> = {};
-  try { settings = JSON.parse(readFileSync(SETTINGS_FILE, 'utf8')); } catch { /* none yet */ }
+  const settings = settingsFile.read();
   if (key) {
     if (!(key in PREF_NAMES)) throw new Error(`可以設定：${Object.keys(PREF_NAMES).join('、')}`);
     const parsed = value === 'none' ? null : value === 'true' ? true : value === 'false' ? false : /^\d+(\.\d+)?$/.test(value ?? '') ? Number(value) : value;
     const next = readPrefs({ ...(settings.prefs as object | undefined), [key]: parsed });
     if (JSON.stringify(next[key as keyof Prefs]) !== JSON.stringify(parsed)) throw new Error(`${PREF_NAMES[key as keyof Prefs]} 的值不合理：${value}`);
     settings.prefs = { ...(settings.prefs as object | undefined), [key]: next[key as keyof Prefs] }; // only what the user set: defaults stay changeable
-    writeFileSync(SETTINGS_FILE, `${JSON.stringify(settings, null, 2)}\n`);
+    settingsFile.write(settings);
   }
   const prefs = readPrefs(settings.prefs);
-  console.log(['你的偏好', `出發時間 ${prefs.departAfter}–${prefs.departBefore}`, `托運行李：${prefs.checkedBag ? `要（廉航加 ${money(prefs.bagFeeEstimate, 'TWD')}）` : '不用'}`,
+  say(['你的偏好', `出發時間 ${prefs.departAfter}–${prefs.departBefore}`, `托運行李：${prefs.checkedBag ? `要（廉航加 ${money(prefs.bagFeeEstimate, 'TWD')}）` : '不用'}`,
     `飯店 ${prefs.minStars} 星以上、評分 ${prefs.minRating} 以上`, `每人預算：${prefs.maxPerPerson === null ? '不限' : money(prefs.maxPerPerson, 'TWD')}`,
     prefs.oneTicketPremium > 0 ? `一張票貴 ${money(prefs.oneTicketPremium, 'TWD')} 內也選一張票` : '分開訂比較便宜就分開訂', `飯店 ${prefs.hotelCheckIn} 入住・${prefs.hotelCheckOut} 退房`, prefs.nonSmoking ? '只要禁菸房' : '吸菸房也可以'].join('\n'));
 }
 
 function setTravelers(value: string | undefined) {
-  if (value === undefined) { console.log(`目前設定 ${travelers} 人同行（${roomsNeeded} 間房）。`); return; }
+  if (value === undefined) { say(`目前設定 ${travelers} 人同行（${roomsNeeded} 間房）。`); return; }
   const people = Number(value);
   if (!Number.isInteger(people) || people < 1 || people > MAX_TRAVELERS) throw new Error(`人數請用 1 到 ${MAX_TRAVELERS}`);
   // Keep the other settings (preferences) in the same file.
-  let settings: Record<string, unknown> = {};
-  try { settings = JSON.parse(readFileSync(SETTINGS_FILE, 'utf8')); } catch { /* none yet */ }
-  writeFileSync(SETTINGS_FILE, `${JSON.stringify({ ...settings, travelers: people }, null, 2)}\n`);
-  console.log(`已設定 ${people} 人同行：機票 × ${people}，住宿每間 2 人、共 ${Math.ceil(people / 2)} 間。之後查住宿都會算整團總價和每人平均。`);
+  const settings = settingsFile.read();
+  settingsFile.write({ ...settings, travelers: people });
+  say(`已設定 ${people} 人同行：機票 × ${people}，住宿每間 2 人、共 ${Math.ceil(people / 2)} 間。之後查住宿都會算整團總價和每人平均。`);
 }
 
 const [command = 'report', ...args] = process.argv.slice(2);
@@ -1206,13 +1164,9 @@ if (args.includes('--telegram')) {
   process.exit(2);
 }
 const checkOnly = args.includes('--check'); // render as for Telegram, check the user's rules, send nothing
-const print = console.log;
-if (checkOnly) console.log = (...parts: unknown[]) => {
-  const segment = segments.at(-1)!;
-  const line = parts.map(String).join(' ');
-  segment.text = segment.text ? `${segment.text}\n${line}` : line;
-};
 try {
+  travelers = readTravelers();
+  roomsNeeded = roomsNeededFor(travelers);
   if (command === 'report') await report(args.find(arg => !arg.startsWith('--') && arg !== args[limitIndex + 1]) ?? 'all', limit);
   else if (command === 'regions') regions();
   else if (command === 'add-region') addRegion(args[0], args[1]);
@@ -1233,12 +1187,12 @@ try {
   else if (command === 'tick') await tick();
   else if (command === 'audit') audit();
   else if (command === 'check') await checkAll();
-  else if (command === 'profile') console.log(`profiled ${await profileHotels(Number(words[0]) || PROFILES_PER_RUN)} hotels`);
+  else if (command === 'profile') say(`profiled ${await profileHotels(Number(words[0]) || PROFILES_PER_RUN)} hotels`);
   else throw new Error('指令：report、trip、hotels-for、rooms、watch、watch-hotel、watches、unwatch、travelers、regions、add-region、remove-region、scan-now、jobs');
-  if (checkOnly && segments.some(segment => segment.text)) {
-    console.log = print;
-    const problems = checkOutput(segments, keyboard, { travelers, nonSmoking: readUserPrefs().nonSmoking, checkIn: readUserPrefs().hotelCheckIn, checkOut: readUserPrefs().hotelCheckOut });
-    print(problems.length ? problems.map(problem => `✗ ${problem}`).join('\n') : '✓');
+  if (checkOnly && out.said) {
+    const prefs = readUserPrefs();
+    const problems = checkOutput(out.segments, out.keyboard, { travelers, nonSmoking: prefs.nonSmoking, checkIn: prefs.hotelCheckIn, checkOut: prefs.hotelCheckOut });
+    console.log(problems.length ? problems.map(problem => `✗ ${problem}`).join('\n') : '✓');
     if (problems.length) process.exitCode = 1;
   }
 
@@ -1249,6 +1203,4 @@ try {
     console.error(`Google 暫時擋住了自動查詢，通常幾小時內會恢復，請稍後再試。背景的預先查詢已暫停 ${BLOCK_COOLDOWN_HOURS} 小時。`);
   } else console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
-} finally {
-  console.log = print;
 }
