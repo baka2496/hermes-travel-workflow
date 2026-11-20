@@ -75,6 +75,20 @@ export function parseExploreDates(text: string, today: Date): { outboundDate: st
 }
 
 /**
+ * Destination cards that show a city and dates but no stops or price yet. Google fills the cards in
+ * one by one, so a page read too early misses cities (2026-11-21: a two-week Japan read had 20
+ * cities, Kobe and Hiroshima among the cards still without a price; the same page later had 36).
+ */
+export function cardsWithoutPrice(text: string, today: Date): number {
+  const lines = text.split('\n').map(normalizeSpaces).filter(Boolean);
+  let pending = 0;
+  for (let index = 1; index < lines.length; index++) {
+    if (CITY.test(lines[index - 1]!) && parseExploreDates(lines[index]!, today) && !STOPS.test(lines[index + 1] ?? '')) pending++;
+  }
+  return pending;
+}
+
+/**
  * Parse the visible text of a Google Flights Explore page. Each destination
  * renders as consecutive lines: city, date range, stops, duration, price.
  * Cards missing any piece are skipped rather than guessed. When a city

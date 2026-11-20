@@ -5,7 +5,7 @@ import { dismissGoogleConsent } from '../google/consent';
 import { parseGoogleMarketLevel, parseMarketDifference, type MarketLevel } from '../google/market-insight';
 import { addAlert, addObservations, claimWatch, dueAlerts, listWatches, observations, recentAlerts, transaction, updateAlert, updateWatch,
   type AlertMessage, type DealWatch } from '../store';
-import { buildExploreUrl, isTripLength, pageTripLength, parseExplorePage, TRIP_LENGTHS, type ExploreQuote } from './explore-page';
+import { buildExploreUrl, cardsWithoutPrice, isTripLength, pageTripLength, parseExplorePage, TRIP_LENGTHS, type ExploreQuote } from './explore-page';
 import { cheapestCities, DEFAULT_DEAL_RULES, findDeals, type CityHistory } from './detect';
 import { parseBookingOptions, parseFlightLabel, parseFlightLabels, type BookingOption, type FlightOption } from './flight-list';
 import { bestSiteRating, buildHotelNameUrl, buildHotelSearchUrl, classifyRooms, dateInputLabel, parseBelowUsual, parseHotelList, parseLabelRatings, parseRoomOffers, parseSiteOffers, attachSiteLinks, largePhotoUrl, roomPhotos, summarizeHotels,
@@ -14,6 +14,7 @@ import { dealMessage, digestMessage, scanFailingMessage, scanRecoveredMessage, t
 
 const DIGEST_SIZE = 10;
 const MIN_CARDS = 5;
+const STEADY_POLLS = 3; // 4.5 seconds without a new priced card
 const LIST_PAGES = 3; // pages of Google Hotels results read per list, some 15 hotels each
 const MAX_HOTEL_LOOKUPS = 3; // hotel pages per scan, for the deepest promotions
 const FAILURE_ALERT_AFTER = 3; // consecutive failed scans (retried hourly) before telling the user
@@ -23,11 +24,19 @@ const TAIPEI_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 /** "Loading results" stays in the page as an accessibility label, so wait for parseable cards instead. */
 async function waitForCards(page: Page, ready: (text: string) => boolean): Promise<string> {
+  let previous = -1;
+  let steady = 0;
   for (let waited = 0; waited < 30_000; waited += 1500) {
     await page.waitForTimeout(1500);
     const text = await page.evaluate(() => document.body.innerText);
     if (GOOGLE_ERROR.test(text)) return text; // no cards will come; do not wait out the 30 seconds
-    if (ready(text) && parseExplorePage(text, new Date()).length >= MIN_CARDS) break;
+    if (!ready(text)) continue;
+    // Cards get their prices one by one: read once every card has one, or the count has stopped
+    // growing for a few seconds (a card Google never prices), not at the first few.
+    const count = parseExplorePage(text, new Date()).length;
+    steady = count === previous ? steady + 1 : 0;
+    previous = count;
+    if (count >= MIN_CARDS && (cardsWithoutPrice(text, new Date()) === 0 || steady >= STEADY_POLLS)) break;
   }
   await page.waitForTimeout(1500);
   return page.evaluate(() => document.body.innerText);
