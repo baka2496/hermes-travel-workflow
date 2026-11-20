@@ -3,8 +3,9 @@ import importlib.util
 import io
 import json
 from pathlib import Path
-import tempfile
 import unittest
+
+import scratch
 
 REPO = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("workflow_setup", REPO / "setup.py")
@@ -49,8 +50,7 @@ class FakeHermes:
 
 class SetupCommandTests(unittest.TestCase):
     def setUp(self):
-        # Retain fixtures: the user's policy forbids recursive cleanup.
-        self.root = Path(tempfile.mkdtemp(prefix="hermes-setup-test-"))
+        self.root = Path(scratch.new_dir("hermes-setup-test-"))
         (self.root / ".travel-workflow-install.json").write_text(json.dumps({"version": 1, "profiles": {}}), encoding="utf-8")
         self.hermes = FakeHermes(self.root)
         self.hermes.add("trip", "s1", "travel-workflow/scanner")
@@ -113,7 +113,7 @@ class SetupCommandTests(unittest.TestCase):
         self.assertEqual(setup.delivery_for(self.receipt(), "local"), "local")
 
     def test_unmanaged_root_is_refused(self):
-        other = Path(tempfile.mkdtemp(prefix="hermes-setup-unmanaged-"))
+        other = Path(scratch.new_dir("hermes-setup-unmanaged-"))
         with self.assertRaisesRegex(RuntimeError, "not managed"):
             setup.set_state(other, "resume")
         self.assertEqual(self.hermes.calls, [])

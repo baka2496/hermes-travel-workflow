@@ -4,18 +4,18 @@ import re
 import sqlite3
 import subprocess
 import sys
-import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import scratch
 
 REPO = Path(__file__).resolve().parents[1]
 
 
 class ScoutTests(unittest.TestCase):
     def setUp(self):
-        # Retain fixtures: the user's policy forbids recursive cleanup.
-        self.root = Path(tempfile.mkdtemp(prefix="hermes-scout-test-"))
+        self.root = Path(scratch.new_dir("hermes-scout-test-"))
         self.scanner = self.root / "scanner"
         self.data = self.scanner / "data"
         self.data.mkdir(parents=True)

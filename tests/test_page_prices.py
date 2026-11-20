@@ -3,13 +3,14 @@ import json
 from pathlib import Path
 import subprocess
 import sys
-import tempfile
 import time
 import unittest
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts"))
 import page_evidence  # noqa: E402
+
+import scratch
 
 spec = importlib.util.spec_from_file_location("reply_check", REPO / "plugins/travel-reply-check/__init__.py")
 check = importlib.util.module_from_spec(spec)
@@ -37,8 +38,8 @@ def run(script, *args):
 
 
 def snapshot(html, page=PAGE, age_hours=0):
-    """A Hermes home where page-prices.py read `html` from `page` (retained: no recursive cleanup)."""
-    root = Path(tempfile.mkdtemp(prefix="hermes-page-prices-"))
+    """A Hermes home where page-prices.py read `html` from `page`."""
+    root = Path(scratch.new_dir("hermes-page-prices-"))
     text, headings = page_evidence.read_page(html)
     page_evidence.save_snapshot(root, page, text, headings, now=time.time() - age_hours * 3600)
     return str(root)
@@ -101,7 +102,7 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(page_evidence.known_pages(root, "烏來"), [])
 
     def test_the_tool_ranks_several_pages(self):
-        root = tempfile.mkdtemp(prefix="hermes-page-prices-")
+        root = scratch.new_dir("hermes-page-prices-")
         html = Path(root) / "page.html"
         html.write_text(CHUNHE, encoding="utf-8")
         status, out, err = run("page-prices.py", PAGE, "https://other.example/", "--date", "2026-12-14",
@@ -123,7 +124,7 @@ class PhonesOnPageTests(unittest.TestCase):
 
 class PagePricesToolTests(unittest.TestCase):
     def test_it_prints_the_prices_and_keeps_a_snapshot(self):
-        root = tempfile.mkdtemp(prefix="hermes-page-prices-")
+        root = scratch.new_dir("hermes-page-prices-")
         html = Path(root) / "page.html"
         html.write_text(CHUNHE, encoding="utf-8")
         status, out, err = run("page-prices.py", PAGE, "--html-file", str(html), "--hermes-root", root)
@@ -205,7 +206,7 @@ class RecordsAndSnapshotsInThePluginTests(unittest.TestCase):
         photo = "C:/Users/me/AppData/Local/hermes/shared/travel-workflow/photos/ab12.jpg"
         reply = f"12/14 礁溪 2人\nMEDIA:{photo}\n📷 溫泉湯屋 50分鐘（spa.example）\n玫瑰園原泉湯屋"
         old = os.environ.get("HERMES_HOME")
-        os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="hermes-photo-")  # no preferences: show all
+        os.environ["HERMES_HOME"] = scratch.new_dir("hermes-photo-")  # no preferences: show all
         try:
             fixed = check.transform_llm_output(response_text=reply, session_id="photo1", turn_id="t1")
             self.assertEqual(fixed, "12/14 礁溪 2人\n照片：未取得\n玫瑰園原泉湯屋")

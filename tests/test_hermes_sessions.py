@@ -12,12 +12,13 @@ from pathlib import Path
 import re
 import sqlite3
 import sys
-import tempfile
 import unittest
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts"))
 import hermes_sessions as sessions  # noqa: E402
+
+import scratch
 
 HERMES_TABLE = ("CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, "
                 "content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL)")
@@ -31,8 +32,7 @@ def load(path, name):
 
 
 def root_with(table=HERMES_TABLE, profile="travel-commander"):
-    # Retain fixtures: the user's policy forbids recursive cleanup.
-    root = Path(tempfile.mkdtemp(prefix="hermes-sessions-test-"))
+    root = Path(scratch.new_dir("hermes-sessions-test-"))
     path = root / "profiles" / profile / "state.db"
     path.parent.mkdir(parents=True)
     db = sqlite3.connect(path)
@@ -76,7 +76,7 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(len(sessions.databases(root)), 2)
 
     def test_read_only_never_creates_a_file(self):
-        missing = Path(tempfile.mkdtemp(prefix="hermes-sessions-test-")) / "state.db"
+        missing = Path(scratch.new_dir("hermes-sessions-test-")) / "state.db"
         with self.assertRaises(sqlite3.Error):
             with sessions.read_only(missing):
                 pass

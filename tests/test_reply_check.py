@@ -3,9 +3,10 @@ import json
 import os
 from pathlib import Path
 import sqlite3
-import tempfile
 import unittest
 from urllib.parse import unquote
+
+import scratch
 
 REPO = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("reply_check", REPO / "plugins/travel-reply-check/__init__.py")
@@ -20,8 +21,7 @@ COST = ("總計 NT$2,932，預算剩 NT$3,068（全部未確認）\r\n"
 
 def home_with(*outputs, session="s1", tool="trip-cost.py", home=None):
     """A Hermes home whose session ran `tool` once per output, in order."""
-    # Retain fixtures: the user's policy forbids recursive cleanup.
-    path = Path(home or tempfile.mkdtemp(prefix="hermes-reply-check-")) / "profiles" / "travel-commander" / "state.db"
+    path = Path(home or scratch.new_dir("hermes-reply-check-")) / "profiles" / "travel-commander" / "state.db"
     home = path.parents[2]
     if not path.exists():
         path.parent.mkdir(parents=True)
@@ -407,8 +407,7 @@ class RecordEditTests(unittest.TestCase):
         self.assertIsNone(self.patch(BEFORE, "", path="C:/hermes/profiles/trip/notes.json"))
 
     def test_rewriting_the_whole_file_keeps_provenance_too(self):
-        # Retain fixtures: the user's policy forbids recursive cleanup.
-        folder = Path(tempfile.mkdtemp(prefix="hermes-records-"))
+        folder = Path(scratch.new_dir("hermes-records-"))
         path = folder / "opportunities.json"
         path.write_text("{\n" + BEFORE + "}\n", encoding="utf-8")
         result = check.pre_tool_call("write_file", {"path": str(path), "content": "{}\n"}, session_id="s1")

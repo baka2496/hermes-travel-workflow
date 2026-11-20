@@ -8,6 +8,8 @@ from urllib.parse import quote
 
 from evidence_fixture import add_parallel_reads, add_tool_result, fake_hermes
 
+import scratch
+
 REPO = Path(__file__).resolve().parents[1]
 
 
@@ -155,7 +157,7 @@ class TripCostTests(unittest.TestCase):
 
     def test_only_confirmed_prices_when_the_user_wants_only_those(self):
         # 2026-11-19: 「未確認就不要傳給我，傳給我確認過的就好」.
-        folder = Path(tempfile.mkdtemp(prefix="hermes-prefs-"))  # retained: no recursive cleanup
+        folder = Path(scratch.new_dir("hermes-prefs-"))
         prefs = folder / "preferences.json"
         prefs.write_text(json.dumps({"show_unconfirmed": False}), encoding="utf-8")
         page = "https://www.yufuinspring.com.tw/"
@@ -176,7 +178,7 @@ class TripCostTests(unittest.TestCase):
 
     def test_no_public_transport_for_a_rider_or_driver(self):
         # 2026-11-19: 「我都是騎車或開車所以不要再給我大眾運輸了」.
-        folder = Path(tempfile.mkdtemp(prefix="hermes-prefs-"))  # retained: no recursive cleanup
+        folder = Path(scratch.new_dir("hermes-prefs-"))
         prefs = folder / "preferences.json"
         prefs.write_text(json.dumps({"transport_mode": "自己騎機車或開車（不搭大眾運輸、不搭飛機）",
                                      "public_transit": False}, ensure_ascii=False), encoding="utf-8")
