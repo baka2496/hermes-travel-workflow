@@ -30,21 +30,43 @@ export const nightsOf = (stay: { outboundDate: string; returnDate: string }) =>
  * - Two or more travellers need a room for two: no single room, and no shared bathroom (the user
  *   asked whether it meant bathing with strangers, 2026-10-18); the price is never under that room's.
  *   Three lists offered a single room to two people, priced as one (2026-10-18).
+ * - A room whose stated beds sleep fewer than the party is passed over for one whose beds do not;
+ *   when it is the only one it is kept but `bedsUnconfirmed` (2026-11-20: a "Basic Twin Room" with
+ *   "1 single bed" went out to two people marked ✅).
  * - One traveller takes the cheapest room; a hotel that also sells dorm beds, or whose cheapest room
  *   was left out, is priced no lower than the room offered.
  */
-export function roomForParty(check: RoomCheck, quoted: number, party: Party): { room: RoomOffer; nightly: number } | null {
+export function roomForParty(check: RoomCheck, quoted: number, party: Party): { room: RoomOffer; nightly: number; bedsUnconfirmed: boolean } | null {
   if (check.status !== 'private') return null;
   const options = check.options.filter(option => !(party.nonSmoking && isSmokingRoom(option.name)));
   if (!options.length) return null;
   if (party.travelers >= 2) {
-    const fits = options.filter(option => roomType(option.name) !== '單人房');
-    const forTwo = fits.find(option => !/共用衛浴/.test(roomType(option.name)));
-    return forTwo ? { room: forTwo, nightly: Math.max(forTwo.nightly, quoted) } : null;
+    const forTwo = options.filter(option => roomType(option.name) !== '單人房' && !/共用衛浴/.test(roomType(option.name)));
+    const room = forTwo.find(option => !bedsTooFew(option.beds, party.travelers)) ?? forTwo[0];
+    return room ? { room, nightly: Math.max(room.nightly, quoted), bedsUnconfirmed: bedsTooFew(room.beds, party.travelers) } : null;
   }
   const room = options[0]!;
-  return { room, nightly: check.alsoShared || room !== check.room ? Math.max(room.nightly, quoted) : quoted };
+  return { room, nightly: check.alsoShared || room !== check.room ? Math.max(room.nightly, quoted) : quoted, bedsUnconfirmed: false };
 }
+
+/** How many people the stated beds sleep ("1 single bed" → 1, "2 single beds" → 2), or null when unknown. */
+export function bedsSleep(beds: readonly string[] | undefined): number | null {
+  if (!beds?.length) return null;
+  let people = 0;
+  for (const bed of beds) {
+    const count = Number(/^\d+/.exec(bed)?.[0] ?? 1);
+    const each = /bunk|double|queen|king|full/i.test(bed) ? 2 : /single|twin|futon|sofa/i.test(bed) ? 1 : null;
+    if (each === null) return null;
+    people += count * each;
+  }
+  return people;
+}
+
+/** The beds are stated and sleep fewer than the party (a room for two is the most a party needs: roomsNeeded). */
+export const bedsTooFew = (beds: readonly string[] | undefined, travelers: number) => {
+  const sleeps = bedsSleep(beds);
+  return sleeps !== null && sleeps < Math.min(travelers, 2);
+};
 
 export const hasBunk = (room: BookingRoom) => room.bunkInPhotos || room.beds.some(bed => /bunk/i.test(bed));
 

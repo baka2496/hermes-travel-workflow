@@ -165,3 +165,10 @@ export function phoneLines(parts: readonly (string | null | undefined | false)[]
   }
   return lines;
 }
+
+/**
+ * Why no flights are suggested: Google listed flights and none fits the user's times, or the booking
+ * page was not read. Both used to say the first (2026-11-20: Google had not answered, and the user
+ * read it as no flight at a suitable time).
+ */
+export const noPlanReason = (noFit: boolean) => noFit ? '沒有符合時段的航班' : '這次沒讀到訂票頁，可以稍後再試';
