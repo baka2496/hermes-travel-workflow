@@ -74,7 +74,17 @@ export function recommendedSite(allSites: readonly SiteOffer[]): SiteOffer | nul
   const cheapest = sites[0];
   if (!cheapest) return null;
   const familiar = sites.find(isFamiliar);
-  return familiar && familiar.nightly - cheapest.nightly <= WORTH_A_MESSY_SITE ? familiar : cheapest;
+  return preferBooking(familiar && familiar.nightly - cheapest.nightly <= WORTH_A_MESSY_SITE ? familiar : cheapest, sites);
+}
+
+/**
+ * Agoda's link lands on a city search where the hotel may be missing; Booking's lists it first
+ * (2026-11-12, the user's choice). Booking within NT$200 a night of Agoda is linked instead.
+ */
+function preferBooking(chosen: SiteOffer, sites: readonly SiteOffer[]): SiteOffer {
+  if (!/^agoda/i.test(chosen.site)) return chosen;
+  const booking = sites.find(site => /^booking/i.test(site.site) && site.nightly >= chosen.nightly * 0.98);
+  return booking && booking.nightly - chosen.nightly <= WORTH_A_MESSY_SITE ? booking : chosen;
 }
 
 /**
@@ -86,8 +96,9 @@ export function recommendedSite(allSites: readonly SiteOffer[]): SiteOffer | nul
 export function siteForPrice(allSites: readonly SiteOffer[], nightly: number): SiteOffer | null {
   const recommended = recommendedSite(allSites);
   if (!recommended || recommended.nightly >= nightly * 0.98) return recommended;
-  return withoutOddlyCheap(allSites.filter(site => !BLOCKING_SITES.test(site.site)))
-    .filter(site => site.nightly >= nightly * 0.98).sort((a, b) => a.nightly - b.nightly)[0] ?? null;
+  const asking = withoutOddlyCheap(allSites.filter(site => !BLOCKING_SITES.test(site.site)))
+    .filter(site => site.nightly >= nightly * 0.98).sort((a, b) => a.nightly - b.nightly);
+  return asking[0] ? preferBooking(asking[0], asking) : null;
 }
 
 const AIRLINE_NAMES: [RegExp, string][] = [

@@ -24,3 +24,14 @@ test('a flight list with nothing at the right time is told apart from a page not
   assert.match(book, /throw new NoFittingFlight\('outbound'\)/);
   assert.match(book, /throw new NoFittingFlight\('inbound'\)/);
 });
+
+test('Google\'s error page on Explore is not waited out', () => {
+  const wait = source.slice(source.indexOf('async function waitForCards'), source.indexOf('const GOOGLE_ERROR'));
+  assert.match(wait, /if \(GOOGLE_ERROR\.test\(text\)\) return text;/);
+});
+
+test('Google\'s error page on Explore is reloaded in place before giving up', () => {
+  const once = source.slice(source.indexOf('async function captureExploreOnce'), source.indexOf('function context('));
+  assert.match(once, /reload < EXPLORE_RELOADS && GOOGLE_ERROR\.test\(text\)/);
+  assert.match(once, /page\.reload\(/);
+});

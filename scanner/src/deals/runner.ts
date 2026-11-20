@@ -26,14 +26,36 @@ async function waitForCards(page: Page, ready: (text: string) => boolean): Promi
   for (let waited = 0; waited < 30_000; waited += 1500) {
     await page.waitForTimeout(1500);
     const text = await page.evaluate(() => document.body.innerText);
+    if (GOOGLE_ERROR.test(text)) return text; // no cards will come; do not wait out the 30 seconds
     if (ready(text) && parseExplorePage(text, new Date()).length >= MIN_CARDS) break;
   }
   await page.waitForTimeout(1500);
   return page.evaluate(() => document.body.innerText);
 }
 
+/** Google's own error page in place of results ("Oops, something went wrong."). */
+const GOOGLE_ERROR = /Oops, something went wrong/;
+const EXPLORE_RELOADS = 2;
+
+type ExploreTarget = Pick<DealWatch, 'origin' | 'region' | 'currency' | 'country' | 'tripLength'>;
+
+/**
+ * The region's Explore page text, loaded once more when it shows no destination prices. Google
+ * sometimes answers the trip-length switch with its error page and a second load works (2026-11-21:
+ * Japan two-week scans failed twice in a row on "Oops, something went wrong."; the retry read 24 cities).
+ */
+export async function captureExplorePage(watch: ExploreTarget, load = captureExploreOnce,
+  wait = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))): Promise<string> {
+  let last = '';
+  const found = await retryIfEmpty(async () => {
+    last = await load(watch);
+    return parseExplorePage(last, new Date()).length ? last : null;
+  }, 8_000, wait);
+  return found ?? last;
+}
+
 /** Open the region's Explore page, switch to the watch's trip length, and return its visible text. */
-export async function captureExplorePage(watch: Pick<DealWatch, 'origin' | 'region' | 'currency' | 'country' | 'tripLength'>): Promise<string> {
+async function captureExploreOnce(watch: ExploreTarget): Promise<string> {
   const url = buildExploreUrl(watch);
   const length = isTripLength(watch.tripLength) ? watch.tripLength : 'week';
   const browser = await launchBrowser();
@@ -50,6 +72,12 @@ export async function captureExplorePage(watch: Pick<DealWatch, 'origin' | 'regi
       await page.getByText(TRIP_LENGTHS[shown].header, { exact: true }).first().click();
       await page.getByText(TRIP_LENGTHS[length].option, { exact: true }).filter({ visible: true }).first().click();
       await page.getByText('Done', { exact: true }).filter({ visible: true }).last().click();
+      text = await waitForCards(page, current => pageTripLength(current) === length);
+    }
+    // The page's address keeps the trip length, so a reload asks again for the same list (2026-11-21:
+    // reloading after Google's error page read 39 cities where a fresh browser failed again).
+    for (let reload = 0; reload < EXPLORE_RELOADS && GOOGLE_ERROR.test(text); reload++) {
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 });
       text = await waitForCards(page, current => pageTripLength(current) === length);
     }
     await context.close();
@@ -154,6 +182,18 @@ export async function captureHotelList(watch: Pick<DealWatch, 'currency' | 'coun
 export async function checkFlightMarket(origin: string, stay: Pick<ExploreQuote, 'city' | 'outboundDate' | 'returnDate'>,
   currency: string, country: string): Promise<{ level: MarketLevel; versusUsual: string | null } | null> {
   return (await searchFlights(origin, stay, currency, country)).market;
+}
+
+/**
+ * Run a lookup once more after a short wait when it comes back empty. A Google page sometimes loads
+ * without results and works a moment later (2026-11-12: Osaka 04/22–04/25 read nothing, then 101 flights).
+ */
+export async function retryIfEmpty<T>(lookup: () => Promise<T | null>, waitMs = 8_000,
+  wait = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))): Promise<T | null> {
+  const first = await lookup();
+  if (first !== null) return first;
+  await wait(waitMs);
+  return lookup();
 }
 
 /**
