@@ -368,13 +368,18 @@ const fitsPrefs = (pick: Pick, prefs: Prefs) =>
   (pick.hotel.stars ?? 0) >= prefs.minStars && (pick.hotel.rating === null || pick.hotel.rating >= prefs.minRating);
 
 async function hotelsFor(code: string | undefined, nearby = false) {
-  const { watch, row } = await resolveOption(code);
+  const option = await resolveOption(code);
+  const watchButton = `🔔 ${code!.toUpperCase()} 降價通知我`;
+  out.keyboard = !nearby && nearbyAreas(option.row.city).length
+    ? [[`${code!.toUpperCase()} ${NEARBY_BUTTON}`], [watchButton], [FLIGHT_LIST_BUTTON]] : [[watchButton], [FLIGHT_LIST_BUTTON]];
+  await listHotels(option, nearby);
+}
+
+/** The flight plan and hotel list of a trip, printed; what is saved for the buttons is up to the caller. */
+async function listHotels({ watch, row }: TripOption, nearby = false) {
   const stay: Stay = { city: row.city, outboundDate: row.outboundDate, returnDate: row.returnDate };
   const nights = nightsOf(row);
   lastStayFor = { ...stay, currency: row.currency, country: watch.country, origin: watch.origin };
-  const watchButton = `🔔 ${code!.toUpperCase()} 降價通知我`;
-  out.keyboard = !nearby && nearbyAreas(row.city).length
-    ? [[`${code!.toUpperCase()} ${NEARBY_BUTTON}`], [watchButton], [FLIGHT_LIST_BUTTON]] : [[watchButton], [FLIGHT_LIST_BUTTON]];
 
   if (nearby) {
     const areas = nearbyAreas(row.city);
@@ -635,23 +640,28 @@ function cityName(input: string): string | null {
  * Flights for dates the user chose (Google Flights: verdict, airlines, times), saved as option
  * T1 so its hotels can be asked for like a report option.
  */
-async function tripSearch(cityArg: string | undefined, outboundDate: string | undefined, returnDate: string | undefined) {
+/** A city and dates the user named, checked, with the scanner's origin, currency and market. */
+async function datedStay(command: string, cityArg: string | undefined, outboundDate: string | undefined, returnDate: string | undefined) {
   const city = cityName(cityArg ?? '');
   if (!city || !outboundDate || !returnDate || !ISO_DATE.test(outboundDate) || !ISO_DATE.test(returnDate) || returnDate <= outboundDate) {
-    throw new Error('用法：trip <城市> <出發日 YYYY-MM-DD> <回程日 YYYY-MM-DD>，例如 trip 大阪 2026-12-20 2026-12-25');
+    throw new Error(`用法：${command} <城市> <出發日 YYYY-MM-DD> <回程日 YYYY-MM-DD>，例如 ${command} 大阪 2026-12-20 2026-12-25`);
   }
   if (Date.parse(`${outboundDate}T00:00:00Z`) < Date.now() - 86_400_000) throw new Error('出發日已經過了。');
-  // Same origin, currency and market as the region scanner.
   const watch = (await activeWatches())[0]?.watch;
-  const origin = watch?.origin ?? 'Taipei';
-  const currency = watch?.currency ?? 'TWD';
-  const country = watch?.country ?? 'TW';
-  const stay: Stay = { city, outboundDate, returnDate };
+  return { watch, origin: watch?.origin ?? 'Taipei', currency: watch?.currency ?? 'TWD', country: watch?.country ?? 'TW',
+    stay: { city, outboundDate, returnDate } satisfies Stay };
+}
+
+const sayNoFlights = () => say('\n這次沒讀到航班，可以稍後再試。\n（Google 可能暫時擋住，\n或這條航線沒有航班）');
+
+async function tripSearch(cityArg: string | undefined, outboundDate: string | undefined, returnDate: string | undefined) {
+  const { watch, origin, currency, country, stay } = await datedStay('trip', cityArg, outboundDate, returnDate);
+  const { city } = stay;
   const found = await cachedFlights(origin, stay, currency, country);
   const nights = nightsOf(stay);
-  say(`✈️ *${watch?.originLabel ?? '台北'} → ${cityLabel(city)}*\n${dateRange(outboundDate, returnDate)}・${nights} 晚・來回`);
+  say(`✈️ *${watch?.originLabel ?? '台北'} → ${cityLabel(city)}*\n${dateRange(stay.outboundDate, stay.returnDate)}・${nights} 晚・來回`);
   if (!found?.flights.length) {
-    say('\n這次沒讀到航班，可以稍後再試。\n（Google 可能暫時擋住，\n或這條航線沒有航班）');
+    sayNoFlights();
     out.keyboard = [[FLIGHT_LIST_BUTTON]];
     return;
   }
@@ -660,11 +670,40 @@ async function tripSearch(cityArg: string | undefined, outboundDate: string | un
   // linked, with when the party reaches and leaves the hotel.
   const cheapest = found.flights[0]!;
   await printFlightPlan({ origin, currency, country, id: null, lastScanAt: null },
-    { city, outboundDate, returnDate, price: cheapest.price, stops: cheapest.stops, currency }, stay, readUserPrefs());
-  lastTripFile.write({ origin, currency, country, city, outboundDate, returnDate, price: cheapest.price, stops: cheapest.stops });
-  say(`\n[在 Google Flights 看全部航班](${buildCardSearchUrl(origin, { city, outboundDate, returnDate }, currency)})`);
+    { ...stay, price: cheapest.price, stops: cheapest.stops, currency }, stay, readUserPrefs());
+  lastTripFile.write({ origin, currency, country, ...stay, price: cheapest.price, stops: cheapest.stops });
+  say(`\n[在 Google Flights 看全部航班](${buildCardSearchUrl(origin, stay, currency)})`);
   say(travelers > 1 ? `每人來回價（${travelers} 人同行）・行李另計` : '1 人來回價・行李另計');
   out.keyboard = [[`🏨 ${DATED_TRIP_CODE} 這趟的住宿`], [`🔔 ${DATED_TRIP_CODE} 降價通知我`], [FLIGHT_LIST_BUTTON]];
+}
+
+/**
+ * Flights and hotels for a city and dates, for another agent's Kanban card. 2026-11-21: 想出去玩居 sent
+ * Trip Agent a card for Osaka, and since `trip` and `hotels-for` replace the user's Telegram list, it
+ * answered from airline home pages instead ("Peach about NT$8,000" where Google had NT$13,310). This
+ * reads the same prices and saves nothing: no T1, no hotel list, no buttons, and the party size is for
+ * this lookup only.
+ */
+async function planForCard(cityArg: string | undefined, outboundDate: string | undefined, returnDate: string | undefined, people: string | undefined) {
+  const { watch, origin, currency, country, stay } = await datedStay('plan', cityArg, outboundDate, returnDate);
+  if (people !== undefined) {
+    const count = Number(people);
+    if (!Number.isInteger(count) || count < 1 || count > MAX_TRAVELERS) throw new Error(`人數請用 1 到 ${MAX_TRAVELERS}`);
+    travelers = count;
+    roomsNeeded = roomsNeededFor(count);
+  }
+  out.keyboard = [];
+  const found = await cachedFlights(origin, stay, currency, country);
+  if (!found?.flights.length) {
+    say(`✈️ *${watch?.originLabel ?? '台北'} → ${cityLabel(stay.city)}*\n${dateRange(stay.outboundDate, stay.returnDate)}・${nightsOf(stay)} 晚`);
+    sayNoFlights();
+    return;
+  }
+  const cheapest = found.flights[0]!;
+  await listHotels({ watch: { origin, currency, country, id: null, lastScanAt: null },
+    row: { ...stay, price: cheapest.price, stops: cheapest.stops, currency }, label: `${nightsOf(stay)}晚` });
+  say(`\n[在 Google Flights 看全部航班](${buildCardSearchUrl(origin, stay, currency)})`);
+  say(`${travelers} 人・${roomsNeeded} 間房・查詢時間 ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC`);
 }
 
 /**
@@ -1189,6 +1228,7 @@ try {
     saveListedHotels();
   } else if (command === 'rooms') await roomsFor(words[0]);
   else if (command === 'trip') await tripSearch(args[0], args[1], args[2]);
+  else if (command === 'plan') await planForCard(words[0], words[1], words[2], words[3]);
   else if (command === 'watch') await watchTrip(args[0]);
   else if (command === 'watch-hotel') watchHotel(words[0]);
   else if (command === 'watches') listWatches();
@@ -1198,7 +1238,7 @@ try {
   else if (command === 'audit') audit();
   else if (command === 'check') await checkAll();
   else if (command === 'profile') say(`profiled ${await profileHotels(Number(words[0]) || PROFILES_PER_RUN)} hotels`);
-  else throw new Error('指令：report、trip、hotels-for、rooms、watch、watch-hotel、watches、unwatch、travelers、regions、add-region、remove-region、scan-now、jobs');
+  else throw new Error('指令：report、trip、plan、hotels-for、rooms、watch、watch-hotel、watches、unwatch、travelers、regions、add-region、remove-region、scan-now、jobs');
   if (checkOnly && out.said) {
     const prefs = readUserPrefs();
     const problems = checkOutput(out.segments, out.keyboard, { travelers, nonSmoking: prefs.nonSmoking, checkIn: prefs.hotelCheckIn, checkOut: prefs.hotelCheckOut });

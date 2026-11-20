@@ -27,6 +27,46 @@ MARKDOWN_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
 BARE_LINK = re.compile(r"(https?://|tel:)\S+")
 LOCAL_PATH = re.compile(r"(?<![\w/])([A-Za-z]:[\\/]|\\\\|~/|/Users/|/home/)\S*|\S+\.(md|json|txt|ics|py)\b")
 BOOKING_LINKS = "Google 地圖・查空房"  # booking-links.py output: a place is being recommended
+# 2026-11-21: 想出去玩居 answered 「下一步｜派工補查機票住宿」 and ended its turn with no card made, so
+# nobody looked. A reply that says work was handed on names the card it made (with --card; the user
+# never sees the ID), and the card must be on the board, made in the last few hours.
+HANDOFF = re.compile(r"派工|派給|派卡|交給\s*(Trip|trip|專員|行程管理)|請\s*(Trip|trip)|轉給\s*(Trip|trip)")
+CARD_ID = re.compile(r"^t_[0-9a-f]{6,}$")
+CARD_MAX_AGE_S = 6 * 3600
+
+
+def board_db():
+    """The command-center board: HERMES_KANBAN_DB, else beside this script's Hermes root."""
+    import os
+    if os.environ.get("HERMES_KANBAN_DB"):
+        return Path(os.environ["HERMES_KANBAN_DB"])
+    return Path(__file__).resolve().parents[2] / "kanban/boards/command-center/kanban.db"
+
+
+def card_problem(card, now=None):
+    """Why *card* does not back a handoff claim, or None when it is a recent card on the board."""
+    import sqlite3
+    import time
+    if not card:
+        return "no --card"
+    if not CARD_ID.match(card):
+        return f"not a card ID: {card}"
+    path = board_db()
+    if not path.is_file():
+        return f"board not found: {path.name}"
+    try:
+        db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            row = db.execute("SELECT created_at, assignee FROM tasks WHERE id = ?", (card,)).fetchone()
+        finally:
+            db.close()
+    except sqlite3.Error as exc:
+        return f"board unreadable: {exc}"
+    if row is None:
+        return f"{card} is not on the board"
+    if (now or time.time()) - row[0] > CARD_MAX_AGE_S:
+        return f"{card} is an old card ({row[1]})"
+    return None
 
 
 def photo_problem(path_text):
@@ -56,8 +96,14 @@ def wrapped(line):
     return max(1, math.ceil(width(line) / LINE_WIDTH))
 
 
-def check(message):
+def check(message, card=None):
     problems = []
+    if HANDOFF.search(message):
+        problem = card_problem(card)
+        if problem:
+            problems.append({"kind": "handoff_without_card", "text": problem,
+                             "hint": "make the Kanban card first (hermes kanban --board command-center create), "
+                                     "then pass its ID with --card; if it was not made, say the lookup was not sent"})
     lines = message.strip("\n").splitlines()
     phone_lines = 0
     for number, line in enumerate(lines, 1):
@@ -114,6 +160,7 @@ def main():
     parser.add_argument("file", nargs="?", help="message file (default: stdin)")
     parser.add_argument("--text", help="check this message text directly; no file needed")
     parser.add_argument("--json", action="store_true", help="print the report as JSON")
+    parser.add_argument("--card", help="the Kanban card this message says the work was handed to (t_...)")
     args = parser.parse_args()
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8")
@@ -122,7 +169,7 @@ def main():
         message = args.text.replace("\\n", "\n")
     else:
         message = open(args.file, encoding="utf-8").read() if args.file else sys.stdin.read()
-    report = check(message)
+    report = check(message, args.card)
     if args.json:
         print(json.dumps(report, ensure_ascii=False))
     else:
