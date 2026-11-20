@@ -61,6 +61,12 @@ function open(): DatabaseSync {
   return db;
 }
 
+/** Close the database (the next call opens it again); tests close it so their folder can be removed. */
+export function closeStore(): void {
+  db?.close();
+  db = null;
+}
+
 type Row = Record<string, unknown>;
 const iso = (date: Date | null | undefined) => (date ? date.toISOString() : null);
 const toDate = (value: unknown) => (typeof value === 'string' ? new Date(value) : null);
