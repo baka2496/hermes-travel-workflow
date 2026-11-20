@@ -67,9 +67,9 @@ class PhoneCheckTests(unittest.TestCase):
 
     def test_link_urls_do_not_count_toward_width(self):
         url = "https://www.google.com/maps/search/?api=1&query=" + "%E4%B8%89" * 20
-        status, report = check(f"結論\n\n{MEDIA}\n📍 [Google 地圖・查空房]({url})")
+        status, report = check(f"結論\n\n{MEDIA}\n📍 [Google 地圖・查空房]({url})\n📞 05-2679777")
         self.assertEqual(status, 0, report)
-        self.assertEqual(report["phone_lines"], 3)
+        self.assertEqual(report["phone_lines"], 4)
 
     def test_trailing_text_question_is_flagged(self):
         status, report = check("結論\n\n• 湯屋要不要先預約？")
@@ -86,6 +86,12 @@ class PhoneCheckTests(unittest.TestCase):
         self.assertEqual(kinds.count("bare_link"), 2)
         self.assertIn("local_path", kinds)
         self.assertIn("missing_photo", kinds)
+
+    def test_a_recommended_place_needs_its_phone(self):
+        # 2026-11-20: 「電話沒附」.
+        place = f"結論\n\n{MEDIA}\n📍 [Google 地圖・查空房](https://www.google.com/maps/search/?api=1&query=x)"
+        self.assertIn("missing_phone", {p["kind"] for p in check(place)[1]["problems"]})
+        self.assertEqual(check(place + "\n電話：未取得")[0], 0)
 
     def test_booking_links_with_photo_pass(self):
         status, report = check(f"結論\n\n{MEDIA}\n• 評分 4.5\n"
@@ -105,7 +111,8 @@ class PhoneCheckTests(unittest.TestCase):
                 self.assertIn("unverified_photo", {p["kind"] for p in report["problems"]})
 
     def test_no_photo_found_is_allowed_when_said(self):
-        status, report = check("結論\n\n照片：未取得\n📍 [Google 地圖・查空房](https://www.google.com/maps/search/?api=1&query=x)")
+        status, report = check("結論\n\n照片：未取得\n📍 [Google 地圖・查空房](https://www.google.com/maps/search/?api=1&query=x)"
+                               "\n📞 03-9881892")
         self.assertEqual(status, 0, report)
 
     def test_wide_and_narrow_characters(self):

@@ -344,6 +344,83 @@ def in_months(month, months):
     return a <= month <= b if a <= b else month >= a or month <= b
 
 
+# 2026-11-20: a reply named 春和 without its phone, though the page shows it. The page's own
+# numbers are printed with the price lines so 小居 has them; a fax number is not a phone.
+PHONE_ON_PAGE = re.compile(r"(?<![\d-])(?:\(0\d{1,2}\)\s?|0\d{1,2}-?)\d{3,4}-?\d{3,4}(?:\s?#\s?\d{1,4})?(?![\d-])"
+                           r"|(?<![\d-])09\d{2}-?\d{3}-?\d{3}(?![\d-])")
+FAX = re.compile(r"傳真|fax", re.I)
+
+
+def phones_on_page(text, limit=4):
+    """The phone numbers a page shows, each with the words just before it (「電話：03-9881892#3」)."""
+    found, seen = [], set()
+    for line in (text or "").splitlines():
+        for match in PHONE_ON_PAGE.finditer(line):
+            before = line[max(0, match.start() - 12):match.start()]
+            label = re.split(r"[\s。；;，,|｜]+", before.strip(" ：:"))[-1].strip(" ：:")
+            if FAX.search(label):
+                continue
+            number = re.sub(r"\s", "", match.group(0))
+            digits = re.sub(r"\D", "", number.split("#")[0])
+            if len(digits) < 9 or digits in seen:
+                continue
+            seen.add(digits)
+            found.append(f"{label} {number}".strip() if label else number)
+    return found[:limit]
+
+
+DURATION_WORD = re.compile(r"\d\s*(?:分鐘|分|小時|hr)|一間|每間|/\s*間|一房|每房|/\s*晚|一晚|每晚", re.I)
+EXTRA = re.compile(r"(?:加|多收|超過|湯券|\d+\s*張)[^0-9]{0,4}$")
+PER_PERSON = re.compile(r"每人|/\s*人|／\s*人|一人")
+
+
+def cheapest(lines, date=None, people=2):
+    """The lowest price for one visit among a page's price lines (from `price_lines`), as
+    (amount, line), or None. Only lines that price a visit count (a length of time, 一間, 一晚);
+    extras (「加一位大人加50元」), ticket bundles, other months and, on a known day, the other
+    day's price are left out. A per-person price counts once per person."""
+    best = None
+    for line in lines:
+        body = line.split("｜", 1)[-1]
+        if not DURATION_WORD.search(body):
+            continue
+        match = next((m for m in PRICE.finditer(body) if not EXTRA.search(body[:m.start()])), None)
+        if not match:
+            continue
+        if date:
+            months = MONTHS.search(body)
+            if months and not in_months(date.month, (int(months["a"]), int(months["b"]))):
+                continue
+            weekend = date.weekday() >= 5
+            if ("假日" in body and not weekend) or ("平日" in body and weekend):
+                continue
+        amount = int(re.sub(r"\D", "", match.group(0)))
+        if PER_PERSON.search(body[:match.end() + 6]) and "兩人" not in body and "雙人" not in body:
+            amount *= people
+        if best is None or amount < best[0]:
+            best = (amount, line)
+    return best
+
+
+def known_pages(hermes_root, near, limit=8):
+    """Pages page-prices.py read before whose text mentions `near` (a place name like 礁溪), newest
+    first: their addresses only. Their prices are read again, never reused."""
+    pages = []
+    for path in snapshot_dir(hermes_root).glob("*.json"):
+        try:
+            saved = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if near in (saved.get("text") or "") and saved.get("url"):
+            pages.append((saved.get("fetched_at") or 0, saved["url"]))
+    seen, urls = set(), []
+    for _, url in sorted(pages, reverse=True):
+        if page_key(url) not in seen:
+            seen.add(page_key(url))
+            urls.append(url)
+    return urls[:limit]
+
+
 def price_unit(text, pattern):
     """What the page says the price is for, right next to it: 「1小時」, 「人」, or 「起價」; else None."""
     return price_details(text, pattern)["unit"]
