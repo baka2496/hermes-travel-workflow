@@ -5,7 +5,6 @@ though no page was opened that turn and the record for that page showed NT$1,100
 only if that page, as opened (web_extract or the browser, in the last few hours) or as recorded in
 opportunities.json, shows the value. Used by trip-cost.py (prices) and booking-links.py (phones).
 """
-from contextlib import closing
 import hashlib
 from html.parser import HTMLParser
 import json
@@ -14,6 +13,7 @@ import re
 import sqlite3
 import time
 
+import hermes_sessions
 import travel_money
 
 HERE = Path(__file__).resolve().parent
@@ -59,9 +59,9 @@ def opened_page_text(hermes_root, key, pattern, now):
     if snapshot is not None and pattern.search(snapshot):
         return snapshot
     found = None
-    for db_path in sorted((hermes_root / "profiles").glob("*/state.db")):
+    for db_path in hermes_sessions.profile_databases(hermes_root):
         try:
-            with closing(sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=5)) as db:
+            with hermes_sessions.read_only(db_path) as db:
                 text = shows(db, since, key, pattern)
                 if text is not None:
                     found = text
@@ -440,9 +440,9 @@ def own_call_pages(db, session, row_id, call_id):
         return set()
     row = db.execute("SELECT tool_calls FROM messages WHERE session_id = ? AND id < ? AND tool_calls LIKE ? "
                      "ORDER BY id DESC LIMIT 1", (session, row_id, f"%{call_id}%")).fetchone()
-    for call in json.loads(row[0]) if row else []:
-        if (call.get("id") or call.get("call_id")) == call_id:
-            return {page_key(u) for u in URL.findall(str(call.get("function", call).get("arguments", "")))}
+    for own_id, _, arguments in hermes_sessions.calls(row[0] if row else None):
+        if own_id == call_id:
+            return {page_key(u) for u in URL.findall(arguments)}
     return set()
 
 
@@ -471,9 +471,8 @@ def current_page(db, session, row_id, content):
                          "ORDER BY id DESC LIMIT 40", (session, row_id)).fetchall()
     for tool, calls, text in earlier:
         if calls:
-            args = [c.get("function", c).get("arguments", "") for c in json.loads(calls)
-                    if str(c.get("function", c).get("name", "")).startswith(PAGE_TOOLS)]
-            text = " ".join(str(a) for a in args)
+            text = " ".join(arguments for _, name, arguments in hermes_sessions.calls(calls)
+                            if name.startswith(PAGE_TOOLS))
         elif not (tool or "").startswith(PAGE_TOOLS):
             continue
         found = [page_key(u) for u in URL.findall(text or "")]

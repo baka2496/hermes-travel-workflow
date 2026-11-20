@@ -2,6 +2,7 @@
 """Install the travel workflow into an explicit, separate Hermes home."""
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -14,8 +15,9 @@ PROFILES = ("trip", "travel-commander", "schedule-manager")
 PROFILE_NAMES = ("Trip Agent", "旅遊總指揮官 小居", "Schedule Manager")
 REPLY_CHECK = "travel-reply-check"
 REPLY_CHECK_FILES = ("plugin.yaml", "__init__.py")
-# The price format trip-cost.py prints and the plugin reads back: one source, installed in both places.
-SHARED_MONEY = "scripts/travel_money.py"
+# Modules the scripts and the plugin share (the price format; how Hermes stores conversations):
+# one source each, installed beside the scripts and inside every profile's plugin folder.
+SHARED_MODULES = ("travel_money.py", "hermes_sessions.py")
 JOBS = (("trip", "travel-workflow/scanner"),
         ("travel-commander", "travel-workflow/weekly"),
         ("travel-commander", "travel-workflow/alerts"))
@@ -171,6 +173,7 @@ def install(root, delivery):
     required += [PACKAGE / "prompts" / f"{p}.md" for p in ("weekly", "alert")]
     required += [PACKAGE / "scripts" / f"{p}.py" for p in ("travel-scout", "scan-trip", "phone-check", "booking-links",
                                                                 "trip-cost", "calendar-check", "place-photo", "page_evidence", "travel_money",
+                                                                "hermes_sessions",
                                                                 "page-prices")]
     required += [PACKAGE / "state" / f"{p}.json" for p in ("calendar", "preferences", "opportunities")]
     required += [PACKAGE / "skills" / "travel-planning" / "SKILL.md"]
@@ -219,7 +222,7 @@ def install(root, delivery):
         ("scripts/booking-links.py", "shared/travel-workflow/booking-links.py"),
         ("scripts/trip-cost.py", "shared/travel-workflow/trip-cost.py"),
         ("scripts/page_evidence.py", "shared/travel-workflow/page_evidence.py"),
-        (SHARED_MONEY, "shared/travel-workflow/travel_money.py"),
+        *((f"scripts/{name}", f"shared/travel-workflow/{name}") for name in SHARED_MODULES),
         ("scripts/calendar-check.py", "shared/travel-workflow/calendar-check.py"),
         ("scripts/place-photo.py", "shared/travel-workflow/place-photo.py"),
         ("scripts/page-prices.py", "shared/travel-workflow/page-prices.py"),
@@ -232,8 +235,9 @@ def install(root, delivery):
         for name in REPLY_CHECK_FILES:
             same_or_create(root / "profiles" / profile / "plugins" / REPLY_CHECK / name,
                            (PACKAGE / "plugins" / REPLY_CHECK / name).read_bytes())
-        same_or_create(root / "profiles" / profile / "plugins" / REPLY_CHECK / "travel_money.py",
-                       (PACKAGE / SHARED_MONEY).read_bytes())
+        for name in SHARED_MODULES:
+            same_or_create(root / "profiles" / profile / "plugins" / REPLY_CHECK / name,
+                           (PACKAGE / "scripts" / name).read_bytes())
         run(root, "-p", profile, "plugins", "enable", REPLY_CHECK)
     for name, target in [("calendar", "shared/annual-schedule/calendar.json"),
                          ("preferences", "shared/travel-workflow/preferences.json"),
@@ -316,10 +320,23 @@ def gateway_serving(root, profile):
     return "Gateway is running" in output
 
 
+def hermes_sessions():
+    spec = importlib.util.spec_from_file_location("hermes_sessions", PACKAGE / "scripts" / "hermes_sessions.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def check(root):
     """Read-only health report. Returns 1 when something needs attention."""
     root, _ = managed(root)
     problems = []
+    # The reply checks read Hermes's conversations; a Hermes upgrade that changes their layout would
+    # otherwise switch those checks off silently.
+    sessions = hermes_sessions()
+    for path, problem in sessions.schema_problems(root):
+        problems.append(f"{path}: {problem}. The reply checks cannot read this Hermes version's conversations; "
+                        f"update scripts/hermes_sessions.py (expects {', '.join(sessions.MESSAGE_COLUMNS)})")
     try:
         runtime = read_json(root / "shared/travel-workflow/runtime.json")
         scanner, node = Path(runtime["scanner_dir"]), Path(runtime["node"])

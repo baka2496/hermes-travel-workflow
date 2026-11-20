@@ -32,21 +32,26 @@ import sqlite3
 from urllib.parse import unquote
 
 
-def _load_money():
-    """travel_money.py, the price format shared with trip-cost.py: installed beside this file,
-    or in the checkout's scripts/ folder. A missing copy fails loudly here, at load, rather than
-    leaving every later check to fail inside a hook that swallows its errors."""
+# Modules shared with the workflow's scripts; setup.py installs a copy of each beside this file.
+SHARED = ("travel_money", "hermes_sessions")
+
+
+def _load_shared(name):
+    """scripts/<name>.py, installed beside this file, or in the checkout's scripts/ folder. A
+    missing copy fails loudly here, at load, rather than leaving every later check to fail inside
+    a hook that swallows its errors."""
     here = Path(__file__).resolve().parent
-    for path in (here / "travel_money.py", here.parents[1] / "scripts" / "travel_money.py"):
+    for path in (here / f"{name}.py", here.parents[1] / "scripts" / f"{name}.py"):
         if path.is_file():
-            spec = importlib.util.spec_from_file_location("travel_money", path)
+            spec = importlib.util.spec_from_file_location(name, path)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             return module
-    raise ImportError(f"travel_money.py not found beside {here}")
+    raise ImportError(f"{name}.py not found beside {here}")
 
 
-money = _load_money()
+money = _load_shared("travel_money")  # the price format trip-cost.py prints
+sessions = _load_shared("hermes_sessions")  # how Hermes stores conversations
 AMOUNT = money.AMOUNT_PATTERN
 TOTAL = re.compile(rf"總計 {AMOUNT}[^\n]*")
 MEDIA = re.compile(r"^\s*MEDIA:", re.M)
@@ -93,12 +98,6 @@ def question_text(args):
     return str(args.get("question", ""))
 
 
-def databases(home):
-    home = Path(home)
-    found = [home / "state.db"] if (home / "state.db").is_file() else []
-    return found + sorted((home / "profiles").glob("*/state.db"))
-
-
 UNKNOWN = object()  # the conversation is in no readable database: nothing to check against
 
 
@@ -115,39 +114,25 @@ def latest_cost_output(session_id, home):
 def tool_outputs(session_id, home, tool):
     """Outputs of every run of `tool` in this conversation, oldest first (empty if none),
     or UNKNOWN if the conversation cannot be found."""
-    for path in databases(home):
+    for path in sessions.databases(home):
         try:
-            db = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=5)
-        except sqlite3.Error:
-            continue
-        try:
-            if not db.execute("SELECT 1 FROM messages WHERE session_id = ? LIMIT 1", (session_id,)).fetchone():
-                continue
-            ids = []
-            for (calls,) in db.execute("SELECT tool_calls FROM messages WHERE session_id = ? AND tool_calls LIKE ? "
-                                       "ORDER BY id", (session_id, f"%{tool}%")):
-                for call in json.loads(calls or "[]"):
-                    function = call.get("function", call)
-                    if tool in str(function.get("arguments", "")):
-                        ids.append(call.get("id") or call.get("call_id"))
-            outputs = []
-            for call_id in ids:
-                row = db.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'tool' "
-                                 "AND tool_call_id = ? ORDER BY id DESC LIMIT 1", (session_id, call_id)).fetchone()
-                if not row:
+            with sessions.read_only(path) as db:
+                if not db.execute("SELECT 1 FROM messages WHERE session_id = ? LIMIT 1", (session_id,)).fetchone():
                     continue
-                try:
-                    output = json.loads(row[0]).get("output", "")
-                except (ValueError, AttributeError):
-                    output = row[0] or ""
-                output = str(output or "").replace("\r\n", "\n").strip()
-                if output:
-                    outputs.append(output)
-            return outputs
-        except sqlite3.Error:
+                ids = [call_id for (value,) in db.execute(
+                           "SELECT tool_calls FROM messages WHERE session_id = ? AND tool_calls LIKE ? ORDER BY id",
+                           (session_id, f"%{tool}%"))
+                       for call_id, _, arguments in sessions.calls(value) if tool in arguments]
+                outputs = []
+                for call_id in ids:
+                    row = db.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'tool' "
+                                     "AND tool_call_id = ? ORDER BY id DESC LIMIT 1", (session_id, call_id)).fetchone()
+                    output = sessions.result_text(row[0]) if row else ""
+                    if output:
+                        outputs.append(output)
+                return outputs
+        except sqlite3.Error:  # busy, or a layout `setup.py check` reports: no evidence either way
             continue
-        finally:
-            db.close()
     return UNKNOWN
 
 
@@ -231,7 +216,7 @@ def readable_questions(args):
 INFO_CHOICE = re.compile(r"^\s*(?:\d+[.、]\s*)?(?:看|查看|顯示|列出|展開|瀏覽)")
 INFO_PROBLEM = ("按鈕選項只能放不同的做法，不能放「{choice}」這種看資訊的選項：費用每項一行、交通或行程重點直接寫進方案。"
                 "拿掉這個選項；剩下的如果不是真的要使用者選，就不用按鈕，直接把結果講完。")
-ANSWERED = {}  # session_id -> turn_id whose button question the user already answered
+ANSWERED = sessions.Recent()  # session_id -> turn_id whose button question the user already answered
 SECOND_PROBLEM = ("這則訊息已經問過一次按鈕，使用者也選了。照選的做完，用一般回覆講結果就結束，"
                   "不要再用按鈕問下一步；之後要做什麼讓使用者自己說。")
 
@@ -303,7 +288,7 @@ def links_problem(text, outputs):
 # travel-workflow/pages holds page-prices.py's snapshots of what pages showed: the evidence itself.
 GUARDED = re.compile(r"(?:shared[\\/]+travel-workflow[\\/]+(?:[\w.-]+\.py|pages\b)|travel-reply-check[\\/]|travel[-_]rules"
                      r"|\.db\b|sqlite3|profiles[\\/]+[\w-]+[\\/]+cache\b|page_cache|sys\.path\.(?:append|insert)|spec_from_file_location"
-                     r"|\bimport\s+(?:page_evidence|travel_money|trip_cost|place_photo|booking_links|phone_check))", re.I)
+                     r"|\bimport\s+(?:page_evidence|travel_money|hermes_sessions|trip_cost|place_photo|booking_links|phone_check))", re.I)
 WRITES = ("patch", "write_file")
 # `python …/trip-cost.py …`: the script right after a Python interpreter is being run, not read.
 RUN_TOOL = re.compile(r"""((?:^|[\s;&|(])["']?[^\s"';&|]*python[\w.]*["']?\s+)["']?[^\s"']*"""
@@ -374,7 +359,7 @@ def pre_tool_call(tool_name, args, task_id="", session_id="", turn_id="", **kwar
 # 2026-11-15: a button question went unanswered for 10 minutes; clarify gave up, and 小居's
 # reply then repeated the whole plan as a second message under buttons that no longer worked.
 # After a timed-out question the reply says so in one line and lists the choices to type.
-TIMED_OUT = {}  # session_id -> {"turn", "question", "choices", "minutes"}
+TIMED_OUT = sessions.Recent()  # session_id -> {"turn", "question", "choices", "minutes"}
 TIMEOUT_NOTE = ("使用者還沒選，按鈕已失效。最後回覆不要重貼方案或問題（手機上已經看得到），"
                 "只說一句按鈕已失效、想繼續就直接回覆編號或打字，並列出選項。")
 
@@ -544,7 +529,7 @@ def without_unconfirmed(text, outputs):
 
 # 2026-11-20: the words beside a photo on a page do not say what it shows (玫瑰園's 「溫泉湯屋」 photo
 # was the shop front). A saved photo goes out only after the agent looked at it with vision_analyze.
-VIEWED = {}  # session_id -> photo paths the agent looked at
+VIEWED = sessions.Recent()  # session_id -> photo paths the agent looked at
 PHOTO = re.compile(r"^\s*MEDIA:\s*(?P<path>\S+)")
 UNSEEN = "照片：未取得"
 

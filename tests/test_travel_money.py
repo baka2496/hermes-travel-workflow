@@ -69,6 +69,7 @@ class InstalledPluginTests(unittest.TestCase):
         folder = Path(tempfile.mkdtemp(prefix="hermes-plugin-load-")) / "profiles" / "p" / "plugins" / "travel-reply-check"
         folder.mkdir(parents=True)
         shutil.copyfile(PLUGIN, folder / "__init__.py")
+        shutil.copyfile(REPO / "scripts" / "hermes_sessions.py", folder / "hermes_sessions.py")
         if with_money:
             shutil.copyfile(SHARED, folder / "travel_money.py")
         return folder
@@ -85,8 +86,11 @@ class InstalledPluginTests(unittest.TestCase):
 
     def test_setup_installs_it_in_both_places(self):
         text = (REPO / "setup.py").read_text(encoding="utf-8")
-        self.assertIn('(SHARED_MONEY, "shared/travel-workflow/travel_money.py")', text)
-        self.assertIn('REPLY_CHECK / "travel_money.py"', text)
+        self.assertIn('SHARED_MODULES = ("travel_money.py", "hermes_sessions.py")', text)
+        self.assertIn('f"shared/travel-workflow/{name}") for name in SHARED_MODULES', text)
+        self.assertIn('(PACKAGE / "scripts" / name).read_bytes()', text)
+        plugin = load(PLUGIN, "reply_check_shared")
+        self.assertEqual(sorted(f"{name}.py" for name in plugin.SHARED), sorted(load(REPO / "setup.py", "setup_shared").SHARED_MODULES))
 
 
 class BehaviourTests(unittest.TestCase):
