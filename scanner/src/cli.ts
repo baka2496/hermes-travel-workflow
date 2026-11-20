@@ -424,11 +424,14 @@ async function hotelsFor(code: string | undefined, nearby = false) {
   // The user's preferences decide what is shown; when nothing fits, show what there is rather than nothing.
   const fitting = result.picks.filter(pick => fitsPrefs(pick, prefs));
   const shown = fitting.length ? fitting : result.picks;
-  const cheaper = shown.filter(pick => pick.hotel.belowUsualPct);
+  // Counted over the hotels that are listed: Booking's room check can still leave one out, and the
+  // count once named five where four were shown (2026-11-21, BAKURO's bunk twin).
+  const listed = await ownBathrooms(shown, stay, row.currency);
+  const cheaper = listed.filter(pick => pick.hotel.belowUsualPct);
   say(cheaper.length ? `\n🏷 住宿：${cheaper.length} 間比平常便宜` : '\n🏷 住宿：都是一般價');
   if (!fitting.length) say(`沒有評分 ${prefs.minRating} 以上的，先列全部`);
   say('');
-  printPicks(await ownBathrooms(shown, stay, row.currency), stay, nights, perFare, row.currency, watch.country);
+  printPicks(listed, stay, nights, perFare, row.currency, watch.country);
   // Only the link: the user found the explanations under the list noise (2026-10-18). A public bath
   // keeps one short line, since its photos read as a shared bathroom.
   say(`\n[看全部住宿](${allLink})`);
