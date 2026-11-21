@@ -102,3 +102,13 @@ test('plan says its totals already hold the bags', () => {
   assert.match(source.slice(start, source.indexOf('\n}\n', start)), /say\(PLAN_TOTAL_NOTE\)/);
   assert.ok(source.includes('PLAN_TOTAL_NOTE = ') && source.includes('不要再加'));
 });
+
+// 2026-11-21: plan read no flights once and the card said 「遠期尚未開賣」 with hotels nobody looked up.
+test('plan says no flights read is not "not on sale" and hotels are unchecked', () => {
+  const source = readFileSync(new URL('./cli.ts', import.meta.url), 'utf8');
+  const start = source.indexOf('async function planForCard');
+  const body = source.slice(start, source.indexOf('\n}\n', start));
+  const noFlights = body.slice(body.indexOf('!found?.flights.length'), body.indexOf('return;'));
+  assert.match(noFlights, /say\(PLAN_NO_FLIGHTS_NOTE\)/);
+  assert.ok(source.includes('不是還沒開賣') && source.includes('不要自己挑飯店'));
+});

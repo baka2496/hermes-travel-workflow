@@ -221,6 +221,15 @@ class ResultTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("not done", report["problems"][0]["text"])
 
+    def test_an_empty_lookup_is_not_called_not_on_sale(self):
+        # 2026-11-21 message 11045: 「機票與房價尚未開賣」 for March 2027; Google had Tigerair at NT$12,281.
+        for text in ("福岡 2 人旅遊規劃已完成，機票與房價尚未開賣。", "機票｜遠期尚未開賣", "待航空公司開賣後重新查價",
+                     "房價還沒開放預訂"):
+            status, report = check_handoff(text, board([]))
+            self.assertIn("guessed_not_on_sale", [p["kind"] for p in report["problems"]], text)
+        status, report = check_handoff("福岡 3/2–3/6 兩人\n機票這次沒讀到價格，未確認", board([]))
+        self.assertEqual(status, 0, report)
+
     def test_the_live_fukuoka_card_is_caught(self):
         import os
         live = Path(os.environ.get("LOCALAPPDATA", "")) / "hermes/kanban/boards/command-center/kanban.db"
