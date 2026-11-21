@@ -124,17 +124,28 @@ class PhoneCheckTests(unittest.TestCase):
         self.assertEqual(report["phone_lines"], 2)
 
 
-def board(cards, watched=None):
-    """A command-center board holding *cards* (id, seconds ago, assignee); *watched* have notify subs (default all)."""
+def board(cards, watched=None, done=None):
+    """A command-center board holding *cards* (id, seconds ago, assignee); *watched* have notify subs (default all).
+
+    *done* maps a card to how it was closed: "review" (a spawned reviewer worker) or "hand" (completed by a CLI call).
+    """
     import sqlite3
     import time
+    done = done or {}
     path = Path(scratch.new_dir()) / "kanban.db"
     db = sqlite3.connect(path)
-    db.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, assignee TEXT, created_at INTEGER)")
-    db.executemany("INSERT INTO tasks VALUES (?, ?, ?)", [(i, who, int(time.time()) - ago) for i, ago, who in cards])
+    db.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, assignee TEXT, created_at INTEGER, status TEXT)")
+    db.executemany("INSERT INTO tasks VALUES (?, ?, ?, ?)",
+                   [(i, who, int(time.time()) - ago, "done" if i in done else "running") for i, ago, who in cards])
     db.execute("CREATE TABLE kanban_notify_subs (task_id TEXT, platform TEXT)")
     subs = [i for i, _, _ in cards] if watched is None else watched
     db.executemany("INSERT INTO kanban_notify_subs VALUES (?, 'telegram')", [(i,) for i in subs])
+    db.execute("CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id TEXT, profile TEXT, outcome TEXT)")
+    db.execute("CREATE TABLE task_events (task_id TEXT, run_id INTEGER, kind TEXT)")
+    for run, (card, how) in enumerate(done.items(), 1):
+        db.execute("INSERT INTO task_runs VALUES (?, ?, 'commander', 'completed')", (run, card))
+        kinds = ["claimed", "spawned", "completed"] if how == "review" else ["completed"]
+        db.executemany("INSERT INTO task_events VALUES (?, ?, ?)", [(card, run, k) for k in kinds])
     db.commit()
     db.close()
     return path
@@ -185,6 +196,38 @@ class HandoffTests(unittest.TestCase):
         for text in ("已交給 Trip Agent 查", "請 Trip Agent 重查價格", "派給專員補查"):
             self.assertEqual(self.kinds(check_handoff(text, db)[1]), ["handoff_without_card"], text)
         self.assertEqual(check_handoff("大阪 1/19–1/24 兩人\n機票每人 NT$13,310", db)[0], 0)
+
+
+class ResultTests(unittest.TestCase):
+    # 2026-11-21: the Fukuoka card's workers crashed; 想出去玩居 ran `hermes -p commander kanban complete`
+    # itself, so the card said done with no review, and the user got a plan nobody had checked.
+    RESULT = "福岡 2/2–2/6 兩人機酒\n首選｜Plus One Nishikoen，機酒 41,310 元"
+
+    def test_results_from_a_reviewed_card_pass(self):
+        db = board([("t_3ded90ad", 600, "trip")], done={"t_3ded90ad": "review"})
+        status, report = check_handoff(self.RESULT, db, "--card", "t_3ded90ad")
+        self.assertEqual(status, 0, report)
+
+    def test_a_card_closed_by_hand_is_not_reviewed(self):
+        db = board([("t_b4fe3cd7", 600, "trip")], done={"t_b4fe3cd7": "hand"})
+        status, report = check_handoff(self.RESULT, db, "--card", "t_b4fe3cd7")
+        self.assertEqual(status, 1)
+        self.assertEqual(report["problems"][0]["kind"], "unreviewed_result")
+        self.assertIn("closed by hand", report["problems"][0]["text"])
+
+    def test_a_card_still_running_has_no_results(self):
+        db = board([("t_b4fe3cd7", 600, "trip")])
+        status, report = check_handoff(self.RESULT, db, "--card", "t_b4fe3cd7")
+        self.assertEqual(status, 1)
+        self.assertIn("not done", report["problems"][0]["text"])
+
+    def test_the_live_fukuoka_card_is_caught(self):
+        import os
+        live = Path(os.environ.get("LOCALAPPDATA", "")) / "hermes/kanban/boards/command-center/kanban.db"
+        if not live.is_file():
+            self.skipTest("no live board on this machine")
+        status, report = check_handoff(self.RESULT, live, "--card", "t_b4fe3cd7")
+        self.assertIn("closed by hand", report["problems"][0]["text"])
 
 
 if __name__ == "__main__":

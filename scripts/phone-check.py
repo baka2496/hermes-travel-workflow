@@ -74,6 +74,41 @@ def card_problem(card, now=None):
     return None
 
 
+def result_problem(card):
+    """Why *card* cannot back a message that reports its results, or None when the reviewer really passed it.
+
+    2026-11-21: the Fukuoka card's workers crashed, so 想出去玩居 attached a plan itself and ran
+    `hermes -p commander kanban complete` — the card said done but nobody had reviewed it. A real review
+    is a reviewer worker the dispatcher spawned; a card closed by hand has no spawned run.
+    """
+    import sqlite3
+    if not CARD_ID.match(card):
+        return f"not a card ID: {card}"
+    path = board_db()
+    if not path.is_file():
+        return f"board not found: {path.name}"
+    try:
+        db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            row = db.execute("SELECT status FROM tasks WHERE id = ?", (card,)).fetchone()
+            run = db.execute("SELECT id, profile FROM task_runs WHERE task_id = ? AND outcome = 'completed' "
+                             "ORDER BY id DESC LIMIT 1", (card,)).fetchone()
+            spawned = run and db.execute("SELECT 1 FROM task_events WHERE task_id = ? AND run_id = ? AND kind = 'spawned'",
+                                         (card, run[0])).fetchone()
+        finally:
+            db.close()
+    except sqlite3.Error as exc:
+        return f"board unreadable: {exc}"
+    if row is None:
+        return f"{card} is not on the board"
+    if row[0] != "done":
+        return f"{card} is {row[0]}, not done: say the lookup is not finished (or failed), with no prices"
+    if not spawned:
+        return (f"{card} was closed by hand, not by a reviewer worker: never complete a card as another profile; "
+                "tell the user the review did not run")
+    return None
+
+
 def photo_problem(path_text):
     """A MEDIA photo must have the source record place-photo.py writes, matching the file."""
     path = Path(path_text)
@@ -109,6 +144,11 @@ def check(message, card=None):
             problems.append({"kind": "handoff_without_card", "text": problem,
                              "hint": "make the Kanban card first (hermes kanban --board command-center create), "
                                      "then pass its ID with --card; if it was not made, say the lookup was not sent"})
+    elif card:
+        problem = result_problem(card)
+        if problem:
+            problems.append({"kind": "unreviewed_result", "text": problem,
+                             "hint": "report a card's results only after its reviewer worker passed it"})
     lines = message.strip("\n").splitlines()
     phone_lines = 0
     for number, line in enumerate(lines, 1):
@@ -165,7 +205,7 @@ def main():
     parser.add_argument("file", nargs="?", help="message file (default: stdin)")
     parser.add_argument("--text", help="check this message text directly; no file needed")
     parser.add_argument("--json", action="store_true", help="print the report as JSON")
-    parser.add_argument("--card", help="the Kanban card this message says the work was handed to (t_...)")
+    parser.add_argument("--card", help="the Kanban card this message hands work to, or whose results it reports (t_...)")
     args = parser.parse_args()
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8")
