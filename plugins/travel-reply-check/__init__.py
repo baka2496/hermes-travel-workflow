@@ -509,11 +509,94 @@ def confirmed_only(home):
     return False
 
 
-def without_unconfirmed(text, outputs):
+
+# 2026-11-21: with show_unconfirmed off, only amounts trip-cost.py printed survived, so a plan from a
+# Kanban card lost every price line on the way out: twice the user got only 「來源為 Google Flights 與
+# Hotels，訂票與付款由你自行確認。」. Amounts in a card this conversation looked at are confirmed when the
+# card is done and its reviewer worker really passed it (a run the dispatcher spawned, not one closed by
+# hand): its attachments and run summaries are the reviewed result.
+amounts_in = money.amounts
+CARD_ID = re.compile(r"(?<![\w-])t_[0-9a-f]{8}(?![\w-])")
+
+
+def _board(home):
+    home = Path(home)
+    for root in (home, home.parent.parent):
+        path = root / "kanban" / "boards" / "command-center" / "kanban.db"
+        if path.is_file():
+            return path
+    return None
+
+
+def session_cards(session_id, home):
+    """Card IDs named anywhere in this conversation (tool calls and results), oldest first."""
+    for path in sessions.databases(home):
+        try:
+            db = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=5)
+        except sqlite3.Error:
+            continue
+        try:
+            rows = db.execute("SELECT content, tool_calls FROM messages WHERE session_id = ? ORDER BY id",
+                              (session_id,)).fetchall()
+        except sqlite3.Error:
+            rows = []
+        finally:
+            db.close()
+        if rows:
+            seen = []
+            for content, calls in rows:
+                for card in CARD_ID.findall(f"{content or ''} {calls or ''}"):
+                    if card not in seen:
+                        seen.append(card)
+            return seen
+    return []
+
+
+def reviewed_card_amounts(session_id, home):
+    """Amounts in the attachments and run summaries of this conversation's reviewed, done cards."""
+    board = _board(home)
+    cards = session_cards(session_id, home) if board else []
+    if not cards:
+        return set()
+    found = set()
+    try:
+        db = sqlite3.connect(f"file:{board.as_posix()}?mode=ro", uri=True, timeout=5)
+    except sqlite3.Error:
+        return found
+    try:
+        for card in cards:
+            row = db.execute("SELECT status FROM tasks WHERE id = ?", (card,)).fetchone()
+            run = db.execute("SELECT id FROM task_runs WHERE task_id = ? AND outcome = 'completed' "
+                             "ORDER BY id DESC LIMIT 1", (card,)).fetchone()
+            if not row or row[0] != "done" or not run or not db.execute(
+                    "SELECT 1 FROM task_events WHERE task_id = ? AND run_id = ? AND kind = 'spawned'",
+                    (card, run[0])).fetchone():
+                continue
+            texts = [s or "" for (s,) in db.execute("SELECT summary FROM task_runs WHERE task_id = ?", (card,))]
+            attachments = board.parent / "attachments" / card
+            for (stored,) in db.execute("SELECT stored_path FROM task_attachments WHERE task_id = ?", (card,)):
+                path = Path(stored or "")
+                try:
+                    if path.resolve().is_relative_to(attachments.resolve()) and path.is_file():
+                        texts.append(path.read_text(encoding="utf-8", errors="replace"))
+                except (OSError, ValueError):
+                    continue
+            for text in texts:
+                found.update(amounts_in(text))
+    except sqlite3.Error:
+        pass
+    finally:
+        db.close()
+    return found
+
+
+def without_unconfirmed(text, outputs, reviewed=()):
     """text without lines that state unconfirmed things: 「未確認」, 「待確認：…」, estimates, and
-    amounts the latest trip-cost.py run did not print. The tool's own lines stay."""
+    amounts neither the latest trip-cost.py run nor a reviewed card printed (*reviewed*). The tool's
+    own lines stay."""
     printed = {line.strip() for output in outputs[-1:] for line in output.splitlines() if line.strip()}
     known = {a for line in printed for a in money.amounts(line)}
+    known |= set(reviewed)
     kept = []
     for line in text.splitlines():
         if line.strip() in printed:
@@ -574,7 +657,7 @@ def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
             outputs = [] if outputs is UNKNOWN else [o for o in outputs if o.startswith("總計")]
             fixed = corrected_costs(fixed, outputs) if outputs else fixed
             if hide:
-                fixed = without_unconfirmed(fixed, outputs)
+                fixed = without_unconfirmed(fixed, outputs, reviewed_card_amounts(session_id, home))
         return fixed if fixed != response_text else None
     except Exception:
         return None

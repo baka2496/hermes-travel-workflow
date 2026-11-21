@@ -415,3 +415,68 @@ class RecordEditTests(unittest.TestCase):
         self.assertIsNone(check.pre_tool_call("write_file", {"path": str(path),
                                                               "content": "{\n" + BEFORE + '  "x": 1\n}\n'},
                                               session_id="s1"))
+
+
+PLAN_REPLY = ("福岡 2027/03/16–03/20 雙人機酒 NT$35,094，在預算 4 萬內。\n\n華航直飛來回 NT$26,474\n"
+              "首選法華俱樂部 4 晚 NT$8,620\n\n來源為 Google Flights 與 Hotels，訂票與付款由你自行確認。")
+
+
+def home_with_card(how="review", status="done"):
+    """A confirmed-only home whose session read card t_6e12091c, with that card on the board."""
+    home = Path(scratch.new_dir("hermes-reply-card-"))
+    (home / "shared" / "travel-workflow").mkdir(parents=True)
+    (home / "shared" / "travel-workflow" / "preferences.json").write_text('{"show_unconfirmed": false}', encoding="utf-8")
+    session = home / "profiles" / "travel-commander" / "state.db"
+    session.parent.mkdir(parents=True)
+    db = sqlite3.connect(session)
+    db.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, "
+               "content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL)")
+    db.execute("INSERT INTO messages (session_id, role, content) VALUES ('s8', 'user', '看板任務 t_6e12091c 已完成。')")
+    db.commit()
+    db.close()
+    board = home / "kanban" / "boards" / "command-center"
+    (board / "attachments" / "t_6e12091c").mkdir(parents=True)
+    plan = board / "attachments" / "t_6e12091c" / "plan.md"
+    plan.write_text("機票每人 NT$13,237，兩人 NT$26,474\n法華俱樂部 4晚 NT$8,620\n總計 NT$35,094", encoding="utf-8")
+    db = sqlite3.connect(board / "kanban.db")
+    db.execute("CREATE TABLE tasks (id TEXT, status TEXT)")
+    db.execute("CREATE TABLE task_runs (id INTEGER, task_id TEXT, outcome TEXT, summary TEXT)")
+    db.execute("CREATE TABLE task_events (task_id TEXT, run_id INTEGER, kind TEXT)")
+    db.execute("CREATE TABLE task_attachments (task_id TEXT, stored_path TEXT)")
+    db.execute("INSERT INTO tasks VALUES ('t_6e12091c', ?)", (status,))
+    db.execute("INSERT INTO task_runs VALUES (1, 't_6e12091c', 'completed', '')")
+    for kind in (["claimed", "spawned", "completed"] if how == "review" else ["completed"]):
+        db.execute("INSERT INTO task_events VALUES ('t_6e12091c', 1, ?)", (kind,))
+    db.execute("INSERT INTO task_attachments VALUES ('t_6e12091c', ?)", (str(plan),))
+    db.commit()
+    db.close()
+    return home
+
+
+def send(home, reply):
+    old = os.environ.get("HERMES_HOME")
+    os.environ["HERMES_HOME"] = str(home)
+    try:
+        out = check.transform_llm_output(response_text=reply, session_id="s8", turn_id="t1")
+        return reply if out is None else out
+    finally:
+        if old is None:
+            del os.environ["HERMES_HOME"]
+        else:
+            os.environ["HERMES_HOME"] = old
+
+
+class ReviewedCardAmountsTests(unittest.TestCase):
+    # 2026-11-21: with show_unconfirmed off, a Kanban card's reviewed prices were all stripped, and twice
+    # the user got only 「來源為 Google Flights 與 Hotels，訂票與付款由你自行確認。」.
+    def test_prices_from_a_reviewed_card_are_kept(self):
+        self.assertEqual(send(home_with_card(), PLAN_REPLY), PLAN_REPLY)
+
+    def test_a_price_the_card_does_not_have_is_still_removed(self):
+        out = send(home_with_card(), PLAN_REPLY.replace("NT$8,620", "NT$6,999"))
+        self.assertNotIn("NT$6,999", out)
+        self.assertIn("NT$26,474", out)
+
+    def test_a_card_closed_by_hand_or_not_done_confirms_nothing(self):
+        for home in (home_with_card(how="hand"), home_with_card(status="review")):
+            self.assertNotIn("NT$", send(home, PLAN_REPLY))
