@@ -101,8 +101,10 @@ test('plan says its totals already hold the bags', () => {
   const start = source.indexOf('async function planForCard');
   assert.match(source.slice(start, source.indexOf('\n}\n', start)), /say\(PLAN_TOTAL_NOTE\)/);
   assert.ok(source.includes('PLAN_TOTAL_NOTE = ') && source.includes('不要再加'));
-  // 2026-11-21: no bag line, and the user was not told the total left the bags out.
+  // 2026-11-21: no bag line, and the user was not told the total left the bags out; but a full-service
+  // pair has no bag line because its fare holds the bags.
   assert.ok(source.includes('總價沒含托運行李') && source.includes('未含托運行李'));
+  assert.ok(source.includes('一般航空，票價已含托運行李') && source.includes('這次沒讀到訂票頁」或「沒有符合時段的航班'));
 });
 
 // 2026-11-21: plan read no flights once and the card said 「遠期尚未開賣」 with hotels nobody looked up.
