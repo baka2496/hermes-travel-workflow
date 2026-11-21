@@ -32,6 +32,10 @@ BOOKING_LINKS = "Google 地圖・查空房"  # booking-links.py output: a place 
 # never sees the ID), and the card must be on the board, made in the last few hours.
 HANDOFF = re.compile(r"派工|派給|派卡|交給\s*(Trip|trip|專員|行程管理)|請\s*(Trip|trip)|轉給\s*(Trip|trip)")
 CARD_ID = re.compile(r"^t_[0-9a-f]{6,}$")
+# 2026-11-21: plan read no flights once (Google blocked it; a rerun had Tigerair at NT$12,281) and the user
+# was told 「機票與房價尚未開賣」「預計2026年3月查價」 for a March 2027 trip. Google sells about 11 months out;
+# an empty read is 未確認, never a reason the agent made up.
+NOT_ON_SALE = re.compile(r"(尚未|還沒|還未|未)(開賣|開放(銷售|預訂|訂購))|開賣後|遠期")
 CARD_MAX_AGE_S = 6 * 3600
 
 
@@ -149,6 +153,10 @@ def check(message, card=None):
         if problem:
             problems.append({"kind": "unreviewed_result", "text": problem,
                              "hint": "report a card's results only after its reviewer worker passed it"})
+    if NOT_ON_SALE.search(message):
+        problems.append({"kind": "guessed_not_on_sale", "text": NOT_ON_SALE.search(message).group(0),
+                         "hint": "a lookup that read no prices was blocked or empty this time, not 'not on sale': "
+                                 "write 這次沒讀到價格，未確認, and offer to look again"})
     lines = message.strip("\n").splitlines()
     phone_lines = 0
     for number, line in enumerate(lines, 1):

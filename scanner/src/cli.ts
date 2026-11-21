@@ -685,6 +685,9 @@ async function tripSearch(cityArg: string | undefined, outboundDate: string | un
  * this lookup only.
  */
 const PLAN_TOTAL_NOTE = '「含機票」總價＝住宿＋每人機票\n（上面寫了托運行李就已加進去，不要再加）';
+// 2026-11-21: plan read no flights for Fukuoka in March (Google blocked it once; a rerun had Tigerair at
+// NT$12,281), and the card said 「遠期尚未開賣」「預計 2026 年 3 月查價」 with two hotels nobody looked up.
+const PLAN_NO_FLIGHTS_NOTE = '這次讀不到＝被擋或暫時沒讀到，不是還沒開賣\n（Google 可訂約 11 個月內的航班）\n住宿也還沒查：機票、住宿都寫「未確認」\n不要自己挑飯店或猜原因，過幾分鐘再跑一次 plan';
 
 async function planForCard(cityArg: string | undefined, outboundDate: string | undefined, returnDate: string | undefined, people: string | undefined) {
   const { watch, origin, currency, country, stay } = await datedStay('plan', cityArg, outboundDate, returnDate);
@@ -699,6 +702,7 @@ async function planForCard(cityArg: string | undefined, outboundDate: string | u
   if (!found?.flights.length) {
     say(`✈️ *${watch?.originLabel ?? '台北'} → ${cityLabel(stay.city)}*\n${dateRange(stay.outboundDate, stay.returnDate)}・${nightsOf(stay)} 晚`);
     sayNoFlights();
+    say(PLAN_NO_FLIGHTS_NOTE);
     return;
   }
   const cheapest = found.flights[0]!;
