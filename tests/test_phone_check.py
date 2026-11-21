@@ -193,7 +193,7 @@ class HandoffTests(unittest.TestCase):
 
     def test_other_wordings_count_and_plain_replies_need_no_card(self):
         db = board([])
-        for text in ("已交給 Trip Agent 查", "請 Trip Agent 重查價格", "派給專員補查"):
+        for text in ("已交給 Trip Agent 查", "請 Trip Agent 重查價格", "派給專員補查", "已為你送出福岡機票與住宿查詢，查好後回報。"):
             self.assertEqual(self.kinds(check_handoff(text, db)[1]), ["handoff_without_card"], text)
         self.assertEqual(check_handoff("大阪 1/19–1/24 兩人\n機票每人 NT$13,310", db)[0], 0)
 

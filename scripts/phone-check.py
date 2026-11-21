@@ -30,7 +30,8 @@ BOOKING_LINKS = "Google 地圖・查空房"  # booking-links.py output: a place 
 # 2026-11-21: 想出去玩居 answered 「下一步｜派工補查機票住宿」 and ended its turn with no card made, so
 # nobody looked. A reply that says work was handed on names the card it made (with --card; the user
 # never sees the ID), and the card must be on the board, made in the last few hours.
-HANDOFF = re.compile(r"派工|派給|派卡|交給\s*(Trip|trip|專員|行程管理)|請\s*(Trip|trip)|轉給\s*(Trip|trip)")
+# 2026-11-21: 「已為你送出福岡機票與住宿查詢」 was checked against a card ID the agent made up.
+HANDOFF = re.compile(r"派工|派給|派卡|交給\s*(Trip|trip|專員|行程管理)|請\s*(Trip|trip)|轉給\s*(Trip|trip)|送出.{0,12}查詢")
 CARD_ID = re.compile(r"^t_[0-9a-f]{6,}$")
 # 2026-11-21: plan read no flights once (Google blocked it; a rerun had Tigerair at NT$12,281) and the user
 # was told 「機票與房價尚未開賣」「預計2026年3月查價」 for a March 2027 trip. Google sells about 11 months out;
@@ -146,8 +147,9 @@ def check(message, card=None):
         problem = card_problem(card)
         if problem:
             problems.append({"kind": "handoff_without_card", "text": problem,
-                             "hint": "make the Kanban card first (hermes kanban --board command-center create), "
-                                     "then pass its ID with --card; if it was not made, say the lookup was not sent"})
+                             "hint": "make the card first: hermes kanban --board command-center create \"<title>\" --assignee trip "
+                                     "--body \"<body>\" --json (no --title), then pass the id it prints with --card; "
+                                     "never make an ID up; if it was not made, say the lookup was not sent"})
     elif card:
         problem = result_problem(card)
         if problem:
