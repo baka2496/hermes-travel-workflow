@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseBookingOptions, parseFlightLabel, parseFlightLabels } from './flight-list';
+import { flightPageState, parseBookingOptions, parseFlightLabel, parseFlightLabels } from './flight-list';
 
 // Labels from Google Flights, Taipei → Osaka, Dec 20–25 2026.
 const PEACH = 'From 11137 New Taiwan dollars round trip total. Nonstop flight with Peach Aviation. Leaves Taiwan Taoyuan International Airport at 6:50 PM on Sunday, December 20 and arrives at Kansai International Airport at 10:20 PM on Sunday, December 20. Total duration 2 hr 30 min.   Select flight';
@@ -32,5 +32,20 @@ describe('Google Flights results', () => {
   it('lists each option once, cheapest first', () => {
     expect(parseFlightLabels([EVA, PEACH, PEACH, 'Flight details. Leaves …', JETSTAR]).map(option => option.airline))
       .toEqual(['Peach Aviation', 'Jetstar', 'EVA Air']);
+  });
+});
+
+// 2026-11-21: Google's answer when a `plan` run read no flights, and the same page loaded fine.
+describe('a Google Flights page is told ready, failed or still loading', () => {
+  const oops = 'Loading results\nFlight search\nSearch results\nNo results returned.\n\nOops, something went wrong.\n\nReload';
+  const ready = 'Prices are currently typical for your search\nBest departing flights';
+  it('ready only with results and Google\'s price verdict', () => {
+    expect(flightPageState(ready, 22)).toBe('ready');
+    expect(flightPageState(ready, 0)).toBe('loading');
+    expect(flightPageState('Best departing flights', 22)).toBe('loading');
+  });
+  it('Google\'s "Oops" page with no results is an error, not a page to wait out', () => {
+    expect(flightPageState(oops, 0)).toBe('google-error');
+    expect(flightPageState('Loading results', 0)).toBe('loading');
   });
 });

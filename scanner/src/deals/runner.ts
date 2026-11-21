@@ -7,7 +7,7 @@ import { addAlert, addObservations, claimWatch, dueAlerts, listWatches, observat
   type AlertMessage, type DealWatch } from '../store';
 import { buildExploreUrl, cardsWithoutPrice, isTripLength, pageTripLength, parseExplorePage, TRIP_LENGTHS, type ExploreQuote } from './explore-page';
 import { cheapestCities, DEFAULT_DEAL_RULES, findDeals, type CityHistory } from './detect';
-import { parseBookingOptions, parseFlightLabel, parseFlightLabels, type BookingOption, type FlightOption } from './flight-list';
+import { flightPageState, parseBookingOptions, parseFlightLabel, parseFlightLabels, type BookingOption, type FlightOption } from './flight-list';
 import { bestSiteRating, buildHotelNameUrl, buildHotelSearchUrl, classifyRooms, dateInputLabel, parseBelowUsual, parseHotelList, parseLabelRatings, parseRoomOffers, parseSiteOffers, attachSiteLinks, largePhotoUrl, roomPhotos, summarizeHotels,
   type HotelListQuote, type HotelSummary, type RoomCheck, type SiteOffer, type HotelPhotos } from './hotel-page';
 import { dealMessage, digestMessage, scanFailingMessage, scanRecoveredMessage, type DealContext } from './message';
@@ -260,6 +260,48 @@ export async function retryIfEmpty<T>(lookup: () => Promise<T | null>, waitMs = 
   return lookup();
 }
 
+const FLIGHT_WAIT_MS = 45_000;
+const FLIGHT_SETTLE_MS = 5_000; // results without Google's price verdict, waited for this long
+const FLIGHT_RELOADS = 3;
+const FLIGHT_STUCK_MS = 15_000; // no results and no error for this long: load the page again
+const FLIGHT_RELOAD_SETTLE_MS = 3_000; // the error read this long after a Reload is the new page's
+
+/**
+ * Wait for a Google Flights results page: done once the results and Google's price verdict are in,
+ * or the results have stood a few seconds without a verdict. Google's own "Oops, something went
+ * wrong" is answered with its Reload button, and a page stuck loading is loaded again, a few times,
+ * instead of waiting out the whole time and opening a new browser (2026-11-21: three runs of 90 s
+ * each read nothing; Reload read 22 results in 3 s).
+ */
+async function waitForFlightResults(page: Page): Promise<void> {
+  const start = Date.now();
+  let reloads = 0;
+  let loadedAt = start;
+  let resultsSince: number | null = null;
+  while (Date.now() - start < FLIGHT_WAIT_MS) {
+    const { text, results } = await page.evaluate(() => ({ text: document.body?.innerText ?? '',
+      results: document.querySelectorAll('[aria-label*="round trip total"]').length }));
+    const state = flightPageState(text, results);
+    if (state === 'ready') return;
+    // Google's error again after its own Reload: it is limiting this computer, and more loads only
+    // keep the limit on (2026-11-21: every route and date showed it for minutes on end). Its Reload
+    // is pressed once; a page only stuck loading is loaded again up to FLIGHT_RELOADS times.
+    if (state === 'google-error' && reloads >= 1 && Date.now() - loadedAt >= FLIGHT_RELOAD_SETTLE_MS) throw new GoogleLimitedError();
+    if (results) {
+      resultsSince ??= Date.now();
+      if (Date.now() - resultsSince >= FLIGHT_SETTLE_MS) return;
+    } else if (state === 'google-error' ? reloads === 0 : reloads < FLIGHT_RELOADS && Date.now() - loadedAt >= FLIGHT_STUCK_MS) {
+      reloads++;
+      loadedAt = Date.now();
+      const reload = page.getByRole('button', { name: 'Reload' });
+      if (state === 'google-error' && await reload.count()) await reload.first().click({ timeout: 5_000 }).catch(() => undefined);
+      else await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined);
+      await assertNotBlocked(page);
+    }
+    await page.waitForTimeout(1_000);
+  }
+}
+
 /**
  * Google Flights for a route and dates: its verdict on the price ("Prices are currently low")
  * and the flight options with airline, times and stops, from one results page.
@@ -278,8 +320,7 @@ export async function searchFlights(origin: string, stay: Pick<ExploreQuote, 'ci
     await page.goto(url.toString(), { waitUntil: 'domcontentloaded', timeout: 30_000 });
     await dismissGoogleConsent(page);
     await assertNotBlocked(page);
-    // Results load slower while hotel pages are open in parallel, so allow time.
-    await page.waitForFunction(() => /Prices are currently (low|typical|high)/i.test(document.body.innerText), undefined, { timeout: 35_000 }).catch(() => undefined);
+    await waitForFlightResults(page);
     const text = await page.evaluate(() => document.body.innerText);
     const labels = await page.evaluate(() => [...document.querySelectorAll('[aria-label]')]
       .map(element => element.getAttribute('aria-label') ?? '').filter(label => /round trip total/.test(label)));
@@ -354,6 +395,8 @@ export async function bookFlight(origin: string, stay: Pick<ExploreQuote, 'city'
       return parsed && option && parsed.airline === option.airline && parsed.departs === option.departs && parsed.price === option.price;
     });
 
+    // A limit met here, after the flight list was read, leaves only the booking page unread.
+    if (await waitForFlightResults(page).then(() => false, error => { if (error instanceof GoogleLimitedError) return true; throw error; })) return null;
     const outboundLabels = await readRows([]);
     const outboundFlights = parseFlightLabels(outboundLabels);
     const outbound = choose.outbound(outboundFlights);
@@ -427,6 +470,19 @@ export class GoogleBlockedError extends Error {
   constructor() {
     super('Google 暫時擋住了自動查詢（unusual traffic）');
     this.name = 'GoogleBlockedError';
+  }
+}
+
+/**
+ * Google answered with "Oops, something went wrong" even after its own Reload: not the "unusual traffic"
+ * page, but it stays that way for minutes on every search (2026-11-21), so it is handled like a block
+ * with a shorter pause. A GoogleBlockedError, so every place that passes a block on passes this too.
+ */
+export class GoogleLimitedError extends GoogleBlockedError {
+  constructor() {
+    super();
+    this.message = 'Google 暫時限流（每個查詢都回 Oops, something went wrong）';
+    this.name = 'GoogleLimitedError';
   }
 }
 

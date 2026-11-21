@@ -691,6 +691,9 @@ const PLAN_TOTAL_NOTE = '「含機票」總價＝住宿＋每人機票\n有「�
 // 2026-11-21: plan read no flights for Fukuoka in March (Google blocked it once; a rerun had Tigerair at
 // NT$12,281), and the card said 「遠期尚未開賣」「預計 2026 年 3 月查價」 with two hotels nobody looked up.
 const PLAN_NO_FLIGHTS_NOTE = '這次讀不到＝被擋或暫時沒讀到，不是還沒開賣\n（Google 可訂約 11 個月內的航班）\n住宿也還沒查：機票、住宿都寫「未確認」\n不要自己挑飯店或猜原因，過幾分鐘再跑一次 plan';
+// 2026-11-21: three runs of a card's plan met Google's limit, some 90 s each, and Trip then spent minutes
+// reading this program to find out why. Said plainly, with when to try again.
+const planLimitedNote = (minutes: number) => `Google 暫時限流：每個查詢都回「Oops, something went wrong」\n不是被封鎖、不是還沒開賣，也不是程式壞掉，不用查原因\n約 ${minutes} 分鐘後再跑一次 plan（背景查詢已讓開）\n現在回報就寫：機票、住宿都「未確認」`;
 
 async function planForCard(cityArg: string | undefined, outboundDate: string | undefined, returnDate: string | undefined, people: string | undefined) {
   const { watch, origin, currency, country, stay } = await datedStay('plan', cityArg, outboundDate, returnDate);
@@ -701,9 +704,18 @@ async function planForCard(cityArg: string | undefined, outboundDate: string | u
     roomsNeeded = roomsNeededFor(count);
   }
   out.keyboard = [];
-  const found = await cachedFlights(origin, stay, currency, country);
+  const heading = `✈️ *${watch?.originLabel ?? '台北'} → ${cityLabel(stay.city)}*\n${dateRange(stay.outboundDate, stay.returnDate)}・${nightsOf(stay)} 晚`;
+  const found = await cachedFlights(origin, stay, currency, country).catch(error => {
+    if (!isLimited(error)) throw error;
+    noteBlocked(error);
+    return 'limited' as const;
+  });
+  if (found === 'limited') {
+    say(`${heading}\n\n${planLimitedNote(LIMIT_COOLDOWN_MINUTES)}`);
+    return;
+  }
   if (!found?.flights.length) {
-    say(`✈️ *${watch?.originLabel ?? '台北'} → ${cityLabel(stay.city)}*\n${dateRange(stay.outboundDate, stay.returnDate)}・${nightsOf(stay)} 晚`);
+    say(heading);
     sayNoFlights();
     say(PLAN_NO_FLIGHTS_NOTE);
     return;
@@ -966,13 +978,22 @@ const PREFETCH_PER_LENGTH = 2;
 const PAUSE_BETWEEN_MS = 60_000;
 const WATCH_CHECK_HOURS = 6;
 const BLOCK_COOLDOWN_HOURS = 3;
-type JobsState = { prefetched: Record<string, string>; lastSelfCheck: string | null; lastWatchCheck: string | null; blockedUntil: string | null; tripPausedUntil: string | null };
+// Google's "Oops, something went wrong" on every search (GoogleLimitedError): a shorter pause, but one,
+// since the background's own requests kept the limit on (2026-11-21).
+const LIMIT_COOLDOWN_MINUTES = 20;
+// The user's own lookups go first: after one, the background leaves Google alone for this long
+// (2026-11-21: a card's plan met the limit right after the 14:16 background run).
+const USER_FIRST_MINUTES = 10;
+type JobsState = { prefetched: Record<string, string>; lastSelfCheck: string | null; lastWatchCheck: string | null; blockedUntil: string | null;
+  tripPausedUntil: string | null; userLookupAt: string | null };
 const TRIP_PAUSE_HOURS = 6;
 
-const isBlocked = (error: unknown) => error instanceof Error && error.name === 'GoogleBlockedError';
+const isLimited = (error: unknown) => error instanceof Error && error.name === 'GoogleLimitedError';
+const isBlocked = (error: unknown) => error instanceof Error && (error.name === 'GoogleBlockedError' || isLimited(error));
+const cooldownMs = (error: unknown) => isLimited(error) ? LIMIT_COOLDOWN_MINUTES * 60_000 : BLOCK_COOLDOWN_HOURS * 3_600_000;
 const pause = () => new Promise(resolve => setTimeout(resolve, PAUSE_BETWEEN_MS));
 
-const emptyJobsState = (): JobsState => ({ prefetched: {}, lastSelfCheck: null, lastWatchCheck: null, blockedUntil: null, tripPausedUntil: null });
+const emptyJobsState = (): JobsState => ({ prefetched: {}, lastSelfCheck: null, lastWatchCheck: null, blockedUntil: null, tripPausedUntil: null, userLookupAt: null });
 const jobsStateFile = new JsonFile<JobsState>(dataFile('jobs-state.json'), emptyJobsState, value => {
   const saved = objectOf<Partial<JobsState>>('背景工作狀態')(value);
   return typeof saved === 'string' ? saved : { ...emptyJobsState(), ...saved };
@@ -980,19 +1001,34 @@ const jobsStateFile = new JsonFile<JobsState>(dataFile('jobs-state.json'), empty
 const readJobsState = () => jobsStateFile.read();
 const writeJobsState = (state: JobsState) => jobsStateFile.write(state);
 
+/** The pause after a block: the longer of the one running and this one's. */
+const blockedUntilAfter = (state: JobsState, error: unknown) =>
+  new Date(Math.max(state.blockedUntil ? Date.parse(state.blockedUntil) : 0, Date.now() + cooldownMs(error))).toISOString();
+
 /** Any command that meets a Google block pauses the background jobs; returns whether it was new. */
-function noteBlocked(): boolean {
+function noteBlocked(error: unknown): boolean {
   const state = readJobsState();
   const wasBlocked = state.blockedUntil !== null && Date.parse(state.blockedUntil) > Date.now();
-  state.blockedUntil = new Date(Date.now() + BLOCK_COOLDOWN_HOURS * 3_600_000).toISOString();
+  state.blockedUntil = blockedUntilAfter(state, error);
   writeJobsState(state);
   return !wasBlocked;
 }
 
+/** A lookup the user (or a card) is waiting for: the background steps aside for a while. */
+const noteUserLookup = () => writeJobsState({ ...readJobsState(), userLookupAt: new Date().toISOString() });
+
+/** Why the background should leave Google alone now, or null. */
+function backgroundPause(state: { blockedUntil: string | null; userLookupAt: string | null }, now = Date.now()): string | null {
+  if (state.blockedUntil && Date.parse(state.blockedUntil) > now) return `paused until ${state.blockedUntil} after a Google block`;
+  if (state.userLookupAt && now - Date.parse(state.userLookupAt) < USER_FIRST_MINUTES * 60_000) return `waiting: a user lookup ran at ${state.userLookupAt}`;
+  return null;
+}
+
 async function runJobs() {
   const state = readJobsState();
-  if (state.blockedUntil && Date.parse(state.blockedUntil) > Date.now()) {
-    say(`jobs: paused until ${state.blockedUntil} after a Google block`);
+  const paused = backgroundPause(state);
+  if (paused) {
+    say(`jobs: ${paused}`);
     return;
   }
   const problems: string[] = [];
@@ -1029,8 +1065,9 @@ async function runJobs() {
     }
   } catch (error) {
     if (!isBlocked(error)) throw error;
-    state.blockedUntil = new Date(Date.now() + BLOCK_COOLDOWN_HOURS * 3_600_000).toISOString();
-    problems.push(`Google 暫時擋住自動查詢，背景工作暫停 ${BLOCK_COOLDOWN_HOURS} 小時（你主動查詢照常，但可能也會失敗）`);
+    state.blockedUntil = blockedUntilAfter(state, error);
+    // A limit lifts within its pause and needs no word to the user; a block is worth one.
+    if (!isLimited(error)) problems.push(`Google 暫時擋住自動查詢，背景工作暫停 ${BLOCK_COOLDOWN_HOURS} 小時（你主動查詢照常，但可能也會失敗）`);
   }
   writeJobsState(state);
   for (const alert of alerts) await sendToTelegram([{ text: alert, photos: [] }], [[FLIGHT_LIST_BUTTON]]);
@@ -1137,17 +1174,17 @@ const OBSERVATION_DAYS = 60; // the usual price looks back 30 days
  * already-queued alerts go out.
  */
 async function tick() {
-  const state = readJobsState();
-  if (state.blockedUntil && Date.parse(state.blockedUntil) > Date.now()) {
+  const paused = backgroundPause(readJobsState());
+  if (paused) {
     await deliverDealAlerts(sendAlert);
-    say(`tick: paused until ${state.blockedUntil} after a Google block`);
+    say(`tick: ${paused}`);
     return;
   }
   try {
     await runDueDealWatches(sendAlert);
   } catch (error) {
     if (!isBlocked(error)) throw error;
-    if (noteBlocked()) await sendAlert({ title: '⚠️ Google 暫時擋住自動查詢', body: `掃描和背景查詢暫停 ${BLOCK_COOLDOWN_HOURS} 小時，之後自動恢復。`, url: '' });
+    if (noteBlocked(error) && !isLimited(error)) await sendAlert({ title: '⚠️ Google 暫時擋住自動查詢', body: `掃描和背景查詢暫停 ${BLOCK_COOLDOWN_HOURS} 小時，之後自動恢復。`, url: '' });
     return;
   }
   pruneObservations(new Date(Date.now() - OBSERVATION_DAYS * 86_400_000));
@@ -1216,6 +1253,8 @@ function setTravelers(value: string | undefined) {
 }
 
 const [command = 'report', ...args] = process.argv.slice(2);
+// The commands someone is waiting on that read Google: the background steps aside after each.
+const USER_LOOKUPS = new Set(['trip', 'plan', 'hotels-for', 'rooms', 'watch', 'check']);
 const limitIndex = args.indexOf('--limit');
 const limit = limitIndex >= 0 ? Math.min(40, Math.max(1, Number(args[limitIndex + 1]) || 10)) : 10;
 // The arguments without flags: `prefs --telegram` read the flag as a preference to set (2026-10-19).
@@ -1228,6 +1267,7 @@ const checkOnly = args.includes('--check'); // render as for Telegram, check the
 try {
   travelers = readTravelers();
   roomsNeeded = roomsNeededFor(travelers);
+  if (USER_LOOKUPS.has(command) && !checkOnly) noteUserLookup();
   if (command === 'report') await report(args.find(arg => !arg.startsWith('--') && arg !== args[limitIndex + 1]) ?? 'all', limit);
   else if (command === 'regions') regions();
   else if (command === 'add-region') addRegion(args[0], args[1]);
@@ -1261,8 +1301,10 @@ try {
 } catch (error) {
   if (isBlocked(error)) {
     // The user's own lookup met the block too: pause the background jobs so they do not prolong it.
-    noteBlocked();
-    console.error(`Google 暫時擋住了自動查詢，通常幾小時內會恢復，請稍後再試。背景的預先查詢已暫停 ${BLOCK_COOLDOWN_HOURS} 小時。`);
+    noteBlocked(error);
+    console.error(isLimited(error)
+      ? `Google 暫時限流（每個查詢都回 Oops），約 ${LIMIT_COOLDOWN_MINUTES} 分鐘後再試。背景的預先查詢已暫停 ${LIMIT_COOLDOWN_MINUTES} 分鐘。`
+      : `Google 暫時擋住了自動查詢，通常幾小時內會恢復，請稍後再試。背景的預先查詢已暫停 ${BLOCK_COOLDOWN_HOURS} 小時。`);
   } else console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
 }

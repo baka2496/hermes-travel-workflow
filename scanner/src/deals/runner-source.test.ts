@@ -35,3 +35,24 @@ test('Google\'s error page on Explore is reloaded in place before giving up', ()
   assert.match(once, /reload < EXPLORE_RELOADS && GOOGLE_ERROR\.test\(text\)/);
   assert.match(once, /page\.reload\(/);
 });
+
+// 2026-11-21: three `plan` runs of some 90 s each read no flights; Google had shown "Oops, something
+// went wrong." with a Reload button, and both flight readers waited out a fixed 35 s instead.
+test('both flight readers wait through waitForFlightResults, which presses Reload on Google\'s error', () => {
+  assert.match(body('searchFlights'), /await waitForFlightResults\(page\);/);
+  assert.doesNotMatch(body('searchFlights'), /timeout: 35_000/);
+  const book = body('bookFlight');
+  assert.ok(book.indexOf('await waitForFlightResults(page)') >= 0 && book.indexOf('await waitForFlightResults(page)') < book.indexOf('await readRows([])'));
+  const wait = source.slice(source.indexOf('async function waitForFlightResults'), source.indexOf('/**\n * Google Flights for a route'));
+  assert.match(wait, /getByRole\('button', \{ name: 'Reload' \}\)/);
+  assert.match(wait, /page\.reload\(/);
+  assert.match(wait, /state === 'ready'\) return;/);
+});
+
+test('Google\'s error after its own Reload is a limit; on the booking page it only leaves that page unread', () => {
+  const wait = source.slice(source.indexOf('async function waitForFlightResults'), source.indexOf('/**\n * Google Flights for a route'));
+  assert.match(wait, /state === 'google-error' && reloads >= 1 && Date\.now\(\) - loadedAt >= FLIGHT_RELOAD_SETTLE_MS\) throw new GoogleLimitedError\(\)/);
+  assert.match(wait, /state === 'google-error' \? reloads === 0 :/);
+  assert.match(source, /export class GoogleLimitedError extends GoogleBlockedError/);
+  assert.match(body('bookFlight'), /error instanceof GoogleLimitedError\) return true; throw error; \}\)\) return null;/);
+});

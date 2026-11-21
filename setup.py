@@ -56,7 +56,12 @@ PROFILE_SETTINGS = (("compression.threshold_tokens", "64000"),
                     ("agent.clarify_timeout", "600"),
                     # A stalled model call waited 900 s for its first byte before retrying; one
                     # 2026-11-19 reply sat 8 minutes on a single call (normal calls take 4-7 s).
-                    ("agent.local_stream_stale_timeout", "180"))
+                    ("agent.local_stream_stale_timeout", "180"),
+                    # 2026-11-21: a Trip call ran 8 minutes, the model thinking until agy hit its output
+                    # limit; that wait guards only a silent start, and Hermes' own cap for a call is 1800 s.
+                    # 99% of calls take under 93 s, the longest good one 192 s. Needs the antigravity-oauth
+                    # timeout patch (tests/test_antigravity_deadline.py), which otherwise ignores this.
+                    ("providers.antigravity-oauth.request_timeout_seconds", "180"))
 
 
 def digest(data):

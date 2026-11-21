@@ -112,7 +112,43 @@ test('plan says no flights read is not "not on sale" and hotels are unchecked', 
   const source = readFileSync(new URL('./cli.ts', import.meta.url), 'utf8');
   const start = source.indexOf('async function planForCard');
   const body = source.slice(start, source.indexOf('\n}\n', start));
-  const noFlights = body.slice(body.indexOf('!found?.flights.length'), body.indexOf('return;'));
+  const from = body.indexOf('!found?.flights.length');
+  const noFlights = body.slice(from, body.indexOf('return;', from));
   assert.match(noFlights, /say\(PLAN_NO_FLIGHTS_NOTE\)/);
   assert.ok(source.includes('不是還沒開賣') && source.includes('不要自己挑飯店'));
+});
+
+// 2026-11-21: a card's plan met Google's limit ("Oops, something went wrong" on every search) right after
+// a background run, and the background kept loading Google through it. After a user lookup, and during a
+// pause, the background leaves Google alone.
+test('the background steps aside after a user lookup and during a Google pause', { timeout: 60_000 }, () => {
+  for (const [state, wanted] of [
+    [{ userLookupAt: new Date().toISOString() }, /waiting: a user lookup ran at/],
+    [{ blockedUntil: new Date(Date.now() + 600_000).toISOString() }, /paused until .* after a Google block/],
+  ] as const) {
+    const data = fresh('pause');
+    writeFileSync(join(data, 'jobs-state.json'), JSON.stringify(state));
+    for (const command of ['jobs', 'tick']) {
+      const run = deals(data, command);
+      assert.equal(run.status, 0, `${command}: ${run.stderr}`);
+      assert.match(run.stdout, wanted, command);
+    }
+  }
+});
+
+test('a lookup someone waits on is noted; a limit pauses the background and plan says when to retry', () => {
+  const source = readFileSync(new URL('./cli.ts', import.meta.url), 'utf8');
+  assert.match(source, /const USER_LOOKUPS = new Set\(\['trip', 'plan', 'hotels-for', 'rooms'/);
+  assert.match(source, /if \(USER_LOOKUPS\.has\(command\) && !checkOnly\) noteUserLookup\(\);/);
+  for (const name of ['async function runJobs', 'async function tick']) {
+    const start = source.indexOf(name);
+    assert.match(source.slice(start, start + 200), /backgroundPause\(/, name);
+  }
+  const start = source.indexOf('async function planForCard');
+  const plan = source.slice(start, source.indexOf('\n}\n', start));
+  assert.match(plan, /if \(!isLimited\(error\)\) throw error;\s+noteBlocked\(error\);/);
+  assert.match(plan, /planLimitedNote\(LIMIT_COOLDOWN_MINUTES\)/);
+  assert.ok(source.includes('不用查原因') && source.includes('分鐘後再跑一次 plan'));
+  // A limit does not message the user; a block still does.
+  assert.match(source, /noteBlocked\(error\) && !isLimited\(error\)\) await sendAlert/);
 });
