@@ -80,3 +80,17 @@ export function parseFlightLabels(labels: readonly string[]): FlightOption[] {
   }
   return options.sort((a, b) => a.price - b.price);
 }
+
+/**
+ * What a Google Flights results page shows right now. 2026-11-21: a card's `plan` read no flights three
+ * times in a row (some 90 s each): Google had answered "No results returned. Oops, something went
+ * wrong." with a Reload button, and the page waited out its 35 s for a price verdict that never came.
+ * Pressing Reload, or a run a minute later, read 22 results in 3 s.
+ */
+export type FlightPageState = 'ready' | 'google-error' | 'loading';
+
+export function flightPageState(text: string, results: number): FlightPageState {
+  if (results && /Prices are currently (low|typical|high)/i.test(text)) return 'ready';
+  if (!results && /Oops, something went wrong/i.test(text)) return 'google-error';
+  return 'loading';
+}
