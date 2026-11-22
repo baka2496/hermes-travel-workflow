@@ -17,6 +17,7 @@ A page that builds its prices with scripts may show none here: open it with the 
 read it there (trip-cost.py also accepts a page opened that way), or say the price was not found.
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import datetime
 from email.message import Message
 import re
@@ -29,6 +30,8 @@ import page_evidence
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130 Safari/537.36",
       "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.5"}
 META_CHARSET = re.compile(rb"""<meta[^>]+charset\s*=\s*["']?([\w-]+)""", re.I)
+DEFAULT_TIMEOUT = 10
+MAX_WORKERS = 5
 
 
 def decode(data, header_charset):
@@ -44,9 +47,9 @@ def decode(data, header_charset):
     return data.decode("utf-8", "replace")
 
 
-def fetch(url):
+def fetch(url, timeout=DEFAULT_TIMEOUT):
     request = urllib.request.Request(url, headers=UA)
-    with urllib.request.urlopen(request, timeout=20) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         data = response.read(5_000_000)
         message = Message()
         message["content-type"] = response.headers.get("Content-Type", "")
@@ -57,22 +60,31 @@ TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
 
 
 def read(url, args):
-    """(title, price lines, phones) for one page, keeping its snapshot; None when it cannot be opened."""
+    """(page, error) for one URL, keeping its snapshot; page is None when it cannot be opened."""
     try:
         if args.html_file:
-            html, final = open(args.html_file, encoding="utf-8").read(), url
+            with open(args.html_file, encoding="utf-8") as fh:
+                html, final = fh.read(), url
         else:
-            html, final = fetch(url)
+            html, final = fetch(url, timeout=getattr(args, "timeout", DEFAULT_TIMEOUT))
     except Exception as error:  # 404, timeout, refused: report it; do not use a remembered price
-        print(f"打不開 {url}（{error}）：這裡的價格不能用。換官網上別的頁面，或寫「沒查到價格」。", file=sys.stderr)
-        return None
+        return None, f"打不開 {url}（{error}）：這裡的價格不能用。換官網上別的頁面，或寫「沒查到價格」。"
     text, headings = page_evidence.read_page(html)
     page_evidence.save_snapshot(args.hermes_root, url, text, headings)
     if page_evidence.page_key(final) != page_evidence.page_key(url):
         page_evidence.save_snapshot(args.hermes_root, final, text, headings)  # redirected: either address counts
     title = TITLE.search(html)
     title = (re.sub(r"\s+", " ", title.group(1)).strip()[:40] if title else "") or urlsplit(url).netloc
-    return title, page_evidence.price_lines(text, headings), page_evidence.phones_on_page(text)
+    return (title, page_evidence.price_lines(text, headings), page_evidence.phones_on_page(text)), None
+
+
+def read_all(urls, args):
+    """Read URLs concurrently (up to MAX_WORKERS) while preserving input order."""
+    if len(urls) <= 1:
+        return [(url, *read(url, args)) for url in urls]
+    with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(urls))) as pool:
+        results = list(pool.map(lambda u: read(u, args), urls))
+    return [(url, page, error) for url, (page, error) in zip(urls, results)]
 
 
 def show(url, page, many):
@@ -97,6 +109,8 @@ def main():
     parser.add_argument("--date", type=lambda s: datetime.date.fromisoformat(s),
                         help="trip date YYYY-MM-DD: the comparison leaves out other months and the other day's price")
     parser.add_argument("--people", type=int, default=2, help="how many people (for per-person prices)")
+    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
+                        help=f"per-page fetch timeout in seconds (default: {DEFAULT_TIMEOUT})")
     parser.add_argument("--hermes-root", default=page_evidence.HERMES_ROOT, help=argparse.SUPPRESS)  # tests only
     parser.add_argument("--html-file", help=argparse.SUPPRESS)  # tests only: the page's HTML from a file
     args = parser.parse_args()
@@ -111,8 +125,9 @@ def main():
             parser.error(f"https addresses only: {url}")
     many = len(urls) > 1
     ranked, opened = [], 0
-    for url in urls:
-        page = read(url, args)
+    for url, page, error in read_all(urls, args):
+        if error:
+            print(error, file=sys.stderr)
         if page is None:
             continue
         opened += 1

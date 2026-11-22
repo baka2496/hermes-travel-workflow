@@ -26,6 +26,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import time
 from urllib.parse import unquote, urljoin, urlsplit
 import urllib.request
 
@@ -33,6 +34,7 @@ DEFAULT_DIR = Path(__file__).resolve().parent / "photos"
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130 Safari/537.36"}
 EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 MIN_BYTES = 8_000  # icons, logos and tracking pixels are smaller than a real photo
+MAX_AGE_DAYS = 30  # prune old cached candidate photos so the folder does not grow forever
 
 
 def fetch(url, limit):
@@ -227,6 +229,27 @@ def candidates(args, photos):
     return 0
 
 
+def prune_old_photos(directory, max_age_days=MAX_AGE_DAYS, now=None):
+    """Remove cached photos older than `max_age_days` and their matching .source.json files."""
+    directory = Path(directory)
+    if not directory.is_dir():
+        return 0
+    cutoff = (time.time() if now is None else now) - max_age_days * 86400
+    removed = 0
+    exts = set(EXTENSIONS.values())
+    for entry in directory.iterdir():
+        if not entry.is_file() or entry.suffix.lower() not in exts:
+            continue
+        try:
+            if entry.stat().st_mtime < cutoff:
+                entry.unlink(missing_ok=True)
+                entry.with_name(entry.name + ".source.json").unlink(missing_ok=True)
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 def save(args, image, label):
     """Download the photo and keep a record of where it came from; the saved path, or None."""
     try:
@@ -238,6 +261,7 @@ def save(args, image, label):
         print(f"{image} is not a photo ({kind}, {len(data)} bytes)", file=sys.stderr)
         return None
     args.out.mkdir(parents=True, exist_ok=True)
+    prune_old_photos(args.out)
     path = args.out / f"{hashlib.sha256(data).hexdigest()[:16]}{EXTENSIONS[kind]}"
     path.write_bytes(data)
     record = {"name": args.name, "label": label, "page": args.page, "image": image,

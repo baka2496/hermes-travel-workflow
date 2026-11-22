@@ -17,6 +17,7 @@ PAGE = """<!doctype html>
   .chat {{ max-width: 390px; margin: 0 auto; padding: 12px 10px 40px; }}
   .bubble {{ background: #2b2735; color: #f2f2f2; border-radius: 16px; padding: 10px 14px; margin-right: 32px; white-space: pre-wrap; word-break: break-word; }}
   .bubble b {{ font-weight: 700; }}
+  .bubble a {{ color: #6ab2f2; text-decoration: none; }}
   .meta {{ color: #8a8f98; font-size: 13px; margin: 6px 4px; }}
 </style></head>
 <body><div class="chat"><div class="meta">{label}</div><div class="bubble">{body}</div></div></body></html>
@@ -25,6 +26,7 @@ PAGE = """<!doctype html>
 
 def render(message):
     body = html.escape(message.strip("\n"))
+    body = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r'<a href="\2">\1</a>', body)
     return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", body)
 
 

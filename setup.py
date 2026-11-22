@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -81,6 +82,36 @@ DEFERRED_TOOLS = {"trip": HERMES_DEFERRED + UNUSED_TOOLS + ("kanban_create", "ka
                   "schedule-manager": HERMES_DEFERRED + UNUSED_TOOLS}
 
 
+# Keys pointing at personal/local model logins; skipped when --no-model-defaults is passed.
+MODEL_SETTING_KEYS = {
+    "auxiliary.compression.provider", "auxiliary.compression.base_url", "auxiliary.compression.model",
+    "auxiliary.vision.provider", "auxiliary.vision.base_url", "auxiliary.vision.model",
+}
+
+PACKAGE_SCRIPTS = (
+    ("scripts/travel-scout.py", "profiles/travel-commander/scripts/travel-scout.py"),
+    ("scripts/scan-trip.py", "profiles/trip/scripts/scan-trip.py"),
+    ("scripts/phone-check.py", "shared/travel-workflow/phone-check.py"),
+    ("scripts/booking-links.py", "shared/travel-workflow/booking-links.py"),
+    ("scripts/trip-cost.py", "shared/travel-workflow/trip-cost.py"),
+    ("scripts/format-plan.py", "shared/travel-workflow/format-plan.py"),
+    ("scripts/page_evidence.py", "shared/travel-workflow/page_evidence.py"),
+    *((f"scripts/{name}", f"shared/travel-workflow/{name}") for name in SHARED_MODULES),
+    ("scripts/calendar-check.py", "shared/travel-workflow/calendar-check.py"),
+    ("scripts/place-photo.py", "shared/travel-workflow/place-photo.py"),
+    ("scripts/page-prices.py", "shared/travel-workflow/page-prices.py"),
+    ("skills/travel-planning/SKILL.md", "profiles/travel-commander/skills/travel-planning/SKILL.md"),
+)
+
+INCLUDE_DIRECTIVE = re.compile(r"^\{\{INCLUDE:([^}\n]+)\}\}\s*$", re.M)
+
+
+def profile_settings(include_models=True):
+    if include_models:
+        return PROFILE_SETTINGS
+    return tuple((k, v) for k, v in PROFILE_SETTINGS if k not in MODEL_SETTING_KEYS)
+
+
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -113,10 +144,39 @@ def same_or_create(path, data, *, preserve=False):
     write_new(path, data)
 
 
+def expand_includes(text):
+    """Expand {{INCLUDE:relative/path}} lines from the package directory."""
+    def replace(match):
+        rel = match.group(1).strip()
+        target = (PACKAGE / rel).resolve()
+        if PACKAGE not in target.parents or not target.is_file():
+            raise RuntimeError(f"Invalid include target: {rel}")
+        return target.read_text(encoding="utf-8").rstrip("\n")
+    return INCLUDE_DIRECTIVE.sub(replace, text)
+
+
 def rendered(path, root):
-    return (path.read_text(encoding="utf-8")
+    text = expand_includes(path.read_text(encoding="utf-8"))
+    return (text
             .replace("{{ROOT}}", root.as_posix())
             .replace("{{PYTHON}}", Path(sys.executable).resolve().as_posix()).encode("utf-8"))
+
+
+def managed_files(root):
+    """All package-owned files as (relative_posix_path, bytes) for `root`."""
+    entries = []
+    for profile in PROFILES:
+        entries.append((f"profiles/{profile}/SOUL.md", rendered(PACKAGE / "roles" / f"{profile}.md", root)))
+    for source, target in PACKAGE_SCRIPTS:
+        entries.append((target, rendered(PACKAGE / source, root)))
+    for profile in PROFILES:
+        for name in REPLY_CHECK_FILES:
+            entries.append((f"profiles/{profile}/plugins/{REPLY_CHECK}/{name}",
+                            (PACKAGE / "plugins" / REPLY_CHECK / name).read_bytes()))
+        for name in SHARED_MODULES:
+            entries.append((f"profiles/{profile}/plugins/{REPLY_CHECK}/{name}",
+                            (PACKAGE / "scripts" / name).read_bytes()))
+    return entries
 
 
 def save_receipt(path, receipt):
@@ -180,7 +240,7 @@ def ensure_job(root, profile, name, schedule, prompt, deliver, *, script=None,
         raise RuntimeError(f"Hermes did not create {name} paused")
 
 
-def install(root, delivery):
+def install(root, delivery, *, include_models=True):
     root = root.expanduser().resolve()
     if root == PACKAGE or PACKAGE in root.parents:
         raise RuntimeError("Choose a Hermes root outside the Git checkout")
@@ -193,12 +253,8 @@ def install(root, delivery):
     scanner = (PACKAGE / "scanner").resolve()
     required = [PACKAGE / "roles" / f"{p}.md" for p in PROFILES]
     required += [PACKAGE / "prompts" / f"{p}.md" for p in ("weekly", "alert")]
-    required += [PACKAGE / "scripts" / f"{p}.py" for p in ("travel-scout", "scan-trip", "phone-check", "booking-links",
-                                                                "trip-cost", "calendar-check", "place-photo", "page_evidence", "travel_money",
-                                                                "hermes_sessions",
-                                                                "page-prices")]
+    required += [PACKAGE / source for source, _ in PACKAGE_SCRIPTS]
     required += [PACKAGE / "state" / f"{p}.json" for p in ("calendar", "preferences", "opportunities")]
-    required += [PACKAGE / "skills" / "travel-planning" / "SKILL.md"]
     required += [PACKAGE / "plugins" / REPLY_CHECK / f for f in REPLY_CHECK_FILES]
     missing = [str(p) for p in required if not p.is_file()]
     if missing or not scanner.is_dir():
@@ -212,9 +268,12 @@ def install(root, delivery):
         if root.exists() and any(root.iterdir()):
             raise RuntimeError(f"Root must be new or already managed: {root}")
         root.mkdir(parents=True, exist_ok=True)
-        receipt = {"version": 1, "profiles": {}}
+        receipt = {"version": 1, "profiles": {}, "files": {}, "settings": []}
         save_receipt(receipt_path, receipt)
+    receipt.setdefault("files", {})
+    receipt.setdefault("settings", [])
     delivery = delivery_for(receipt, delivery)
+    applied_settings = profile_settings(include_models)
     for profile, display_name in zip(PROFILES, PROFILE_NAMES):
         home = root / "profiles" / profile
         soul = home / "SOUL.md"
@@ -226,7 +285,7 @@ def install(root, delivery):
                 raise RuntimeError(f"Native profile has no scaffold SOUL: {soul}")
             receipt["profiles"][profile] = digest(soul.read_bytes())
             save_receipt(receipt_path, receipt)
-            for key, value in PROFILE_SETTINGS:
+            for key, value in applied_settings:
                 run(root, "-p", profile, "config", "set", key, value)
             run(root, "-p", profile, "config", "set", "tools.tool_search.defer",
                 json.dumps(list(DEFERRED_TOOLS[profile])))
@@ -239,29 +298,24 @@ def install(root, delivery):
             soul.write_bytes(wanted)
         elif not soul.exists():
             write_new(soul, wanted)
-    for source, target in [
-        ("scripts/travel-scout.py", "profiles/travel-commander/scripts/travel-scout.py"),
-        ("scripts/scan-trip.py", "profiles/trip/scripts/scan-trip.py"),
-        ("scripts/phone-check.py", "shared/travel-workflow/phone-check.py"),
-        ("scripts/booking-links.py", "shared/travel-workflow/booking-links.py"),
-        ("scripts/trip-cost.py", "shared/travel-workflow/trip-cost.py"),
-        ("scripts/page_evidence.py", "shared/travel-workflow/page_evidence.py"),
-        *((f"scripts/{name}", f"shared/travel-workflow/{name}") for name in SHARED_MODULES),
-        ("scripts/calendar-check.py", "shared/travel-workflow/calendar-check.py"),
-        ("scripts/place-photo.py", "shared/travel-workflow/place-photo.py"),
-        ("scripts/page-prices.py", "shared/travel-workflow/page-prices.py"),
-        ("skills/travel-planning/SKILL.md", "profiles/travel-commander/skills/travel-planning/SKILL.md"),
-    ]:
-        same_or_create(root / target, rendered(PACKAGE / source, root))
+        receipt["files"][f"profiles/{profile}/SOUL.md"] = digest(wanted)
+    for source, target in PACKAGE_SCRIPTS:
+        data = rendered(PACKAGE / source, root)
+        same_or_create(root / target, data)
+        receipt["files"][target] = digest(data)
     # 2026-11-14: a button question went out with a total the cost tool had not printed; this
     # plugin holds such a question back until it matches (plugins/travel-reply-check).
     for profile in PROFILES:
         for name in REPLY_CHECK_FILES:
-            same_or_create(root / "profiles" / profile / "plugins" / REPLY_CHECK / name,
-                           (PACKAGE / "plugins" / REPLY_CHECK / name).read_bytes())
+            rel = f"profiles/{profile}/plugins/{REPLY_CHECK}/{name}"
+            data = (PACKAGE / "plugins" / REPLY_CHECK / name).read_bytes()
+            same_or_create(root / rel, data)
+            receipt["files"][rel] = digest(data)
         for name in SHARED_MODULES:
-            same_or_create(root / "profiles" / profile / "plugins" / REPLY_CHECK / name,
-                           (PACKAGE / "scripts" / name).read_bytes())
+            rel = f"profiles/{profile}/plugins/{REPLY_CHECK}/{name}"
+            data = (PACKAGE / "scripts" / name).read_bytes()
+            same_or_create(root / rel, data)
+            receipt["files"][rel] = digest(data)
         run(root, "-p", profile, "plugins", "enable", REPLY_CHECK)
     for name, target in [("calendar", "shared/annual-schedule/calendar.json"),
                          ("preferences", "shared/travel-workflow/preferences.json"),
@@ -282,12 +336,69 @@ def install(root, delivery):
     ensure_job(root, "travel-commander", "travel-workflow/weekly", "0 9 * * 1", weekly, delivery, continuity=True)
     ensure_job(root, "travel-commander", "travel-workflow/alerts", "*/15 * * * *", alert, delivery,
                monitor="travel-scout.py", continuity=True)
-    if receipt.get("delivery") != delivery:
-        receipt["delivery"] = delivery
-        save_receipt(receipt_path, receipt)
+    receipt["settings"] = sorted(set(receipt.get("settings", [])) | {k for k, _ in applied_settings})
+    receipt["delivery"] = delivery
+    save_receipt(receipt_path, receipt)
     print(f"Installed in {root}. New jobs are paused; existing job state was preserved.")
     if not (scanner / "node_modules/tsx/dist/cli.mjs").is_file():
         print("Scanner dependencies are not installed yet: npm --prefix scanner ci --ignore-scripts")
+
+
+def upgrade(root, *, force=False, include_models=True):
+    """Update package-owned roles, scripts, skills, plugin files and new settings in a managed root.
+
+    User state files (calendar.json, preferences.json, opportunities.json) are never touched.
+    Files modified by hand are left alone and reported unless --force is passed.
+    """
+    root, receipt = managed(root)
+    recorded = dict(receipt.get("files") or {})
+    conflicts, plan = [], []
+    for rel, wanted in managed_files(root):
+        path = root / rel
+        wanted_hash = digest(wanted)
+        if not path.exists():
+            plan.append(("create", rel, path, wanted, wanted_hash))
+            continue
+        current = path.read_bytes()
+        current_hash = digest(current)
+        if current_hash == wanted_hash:
+            plan.append(("unchanged", rel, path, wanted, wanted_hash))
+            continue
+        known = {recorded.get(rel)}
+        if rel.startswith("profiles/") and rel.endswith("/SOUL.md"):
+            profile = rel.split("/")[1]
+            known.add(receipt.get("profiles", {}).get(profile))
+        known.discard(None)
+        if force or current_hash in known:
+            plan.append(("update", rel, path, wanted, wanted_hash))
+        else:
+            conflicts.append(rel)
+    if conflicts:
+        joined = ", ".join(conflicts)
+        raise RuntimeError(f"Modified files would be overwritten ({joined}); inspect them or re-run with --force")
+    counts = {"create": 0, "update": 0, "unchanged": 0}
+    for action, rel, path, wanted, wanted_hash in plan:
+        counts[action] += 1
+        if action in ("create", "update"):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(wanted)
+        recorded[rel] = wanted_hash
+    applied = set(receipt.get("settings") or [])
+    new_settings = [(k, v) for k, v in profile_settings(include_models) if k not in applied]
+    for profile in PROFILES:
+        if not (root / "profiles" / profile).is_dir():
+            continue
+        for key, value in new_settings:
+            run(root, "-p", profile, "config", "set", key, value)
+        run(root, "-p", profile, "config", "set", "tools.tool_search.defer",
+            json.dumps(list(DEFERRED_TOOLS[profile])))
+        run(root, "-p", profile, "plugins", "enable", REPLY_CHECK)
+    receipt["files"] = recorded
+    receipt["settings"] = sorted(applied | {k for k, _ in new_settings})
+    save_receipt(root / RECEIPT, receipt)
+    print(f"Upgraded {root}: {counts['update']} updated, {counts['create']} created, "
+          f"{counts['unchanged']} unchanged, {len(new_settings)} new setting(s).")
+    return counts
 
 
 def delivery_for(receipt, requested):
@@ -416,6 +527,14 @@ def main():
     command.add_argument("--root", type=Path, required=True)
     command.add_argument("--deliver", choices=("local", "telegram"),
                          help="digest/alert delivery for a new root (default: local, or the root's current setting)")
+    command.add_argument("--no-model-defaults", action="store_true",
+                         help="skip personal auxiliary compression/vision model settings")
+    command = sub.add_parser("upgrade", help="update package-owned roles, scripts, plugin files and new settings")
+    command.add_argument("--root", type=Path, required=True)
+    command.add_argument("--force", action="store_true",
+                         help="overwrite package-owned files even if modified by hand (user state is still untouched)")
+    command.add_argument("--no-model-defaults", action="store_true",
+                         help="skip personal auxiliary compression/vision model settings")
     for name, text in [("check", "read-only health report"), ("resume", "start the three workflow jobs"),
                        ("pause", "pause the three workflow jobs")]:
         sub.add_parser(name, help=text).add_argument("--root", type=Path, required=True)
@@ -430,8 +549,10 @@ def main():
             set_state(args.root, args.command)
         elif args.command == "delivery":
             set_delivery(args.root, args.target)
+        elif args.command == "upgrade":
+            upgrade(args.root, force=args.force, include_models=not args.no_model_defaults)
         else:
-            install(args.root, args.deliver)
+            install(args.root, args.deliver, include_models=not args.no_model_defaults)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"{args.command} stopped: {exc}", file=sys.stderr)
         return 1

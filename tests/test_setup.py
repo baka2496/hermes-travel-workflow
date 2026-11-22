@@ -150,11 +150,11 @@ class ProfileSettingsTests(unittest.TestCase):
         self.assertIn(("auxiliary.vision.provider", "openai-codex"), setup.PROFILE_SETTINGS)  # antigravity drops images
         for role in ("travel-commander", "trip", "schedule-manager"):
             with self.subTest(role=role):
-                text = (Path(setup.__file__).parent / "roles" / f"{role}.md").read_text(encoding="utf-8")
+                text = setup.expand_includes((Path(setup.__file__).parent / "roles" / f"{role}.md").read_text(encoding="utf-8"))
                 self.assertIn("04:00 或閒置超過 1 小時後，會自動開新對話", text)
                 self.assertIn("pending_question", text)
                 self.assertIn("不要猜", text)
-        commander = (Path(setup.__file__).parent / "roles" / "travel-commander.md").read_text(encoding="utf-8")
+        commander = setup.expand_includes((Path(setup.__file__).parent / "roles" / "travel-commander.md").read_text(encoding="utf-8"))
         self.assertIn("寫進那筆機會紀錄的 `pending_question`", commander)
         # Test 13c: 小居 rewrote a record's source to another hotel's page; the plugin now blocks it.
         self.assertIn("紀錄裡已有的 `source`、`queried_at`、候選日期不要改寫或刪掉", commander)
@@ -168,13 +168,22 @@ class ProfileSettingsTests(unittest.TestCase):
         self.assertIn(("agent.local_stream_stale_timeout", "180"), setup.PROFILE_SETTINGS)
         for role in ("travel-commander", "trip", "schedule-manager"):
             with self.subTest(role=role):
-                text = (Path(setup.__file__).parent / "roles" / f"{role}.md").read_text(encoding="utf-8")
+                text = setup.expand_includes((Path(setup.__file__).parent / "roles" / f"{role}.md").read_text(encoding="utf-8"))
                 self.assertIn("全文直接寫進 `clarify` 的 question", text)
                 self.assertIn("不要只送出按鈕", text)
                 self.assertIn("日期範圍和天數對不上", text)
-                # Same test: clarify went out in one batch with trip-cost.py, whose error was never
-                # read, so the total was added up by hand.
                 self.assertIn("`clarify` 要單獨呼叫", text)
+                self.assertIn("照片（MEDIA 那行）例外：不能放進 question", text)
+                self.assertIn("就照選的那個繼續做完", text)
+                self.assertNotIn("最後的回覆只寫一句結果", text)
+                self.assertIn("按鈕只在使用者真的要在不同做法之間選一個時用", text)
+                self.assertIn("不放「看費用明細」「看交通動線」這種資訊", text)
+                self.assertIn("已經決定或暫定的事不要再問要不要維持", text)
+                self.assertIn("使用者每傳一則訊息，最多問一次按鈕", text)
+                self.assertIn("不要再接著用按鈕問下一步", text)
+        for role in ("travel-commander", "trip"):
+            with self.subTest(role=role):
+                text = setup.expand_includes((Path(setup.__file__).parent / "roles" / f"{role}.md").read_text(encoding="utf-8"))
                 self.assertIn("工具說明裡的範例名稱不是資料", text)
                 # Same test: Trip Agent said "12/6尚有空房" without opening a dated booking page, put
                 # "含早餐" from a NT$5,850 package on the NT$3,600 starting price, and wrote 4.5 stars
@@ -201,21 +210,8 @@ class ProfileSettingsTests(unittest.TestCase):
                 self.assertIn("page-prices.py\" <官網網址>", text)
                 self.assertIn("才用 `browser_exec`", text)
                 self.assertIn("一次只開一個網址", text)
-                # Test 13b: a MEDIA line inside a clarify question showed up as a file path.
-                self.assertIn("照片（MEDIA 那行）例外：不能放進 question", text)
                 self.assertIn("`web_extract` 在這台電腦讀不到網頁", text)
-                # Same test: after "改排 12/12–12/13" was pressed, 小居 replied only "已為你調整…" and
-                # stopped, following the earlier one-line rule; it must carry on with the choice.
-                self.assertIn("就照選的那個繼續做完", text)
-                self.assertNotIn("最後的回覆只寫一句結果", text)
-                # 2026-11-19: one message took three button questions — keep the plan already set,
-                # "看費用明細", then "下一步" again — because every reply had to end with buttons.
-                self.assertIn("按鈕只在使用者真的要在不同做法之間選一個時用", text)
-                self.assertIn("不放「看費用明細」「看交通動線」這種資訊", text)
-                self.assertIn("已經決定或暫定的事不要再問要不要維持", text)
-                self.assertIn("使用者每傳一則訊息，最多問一次按鈕", text)
                 self.assertIn("總計下面原樣貼上 trip-cost.py 印的每一行明細，不要合併或改寫", text)
-                self.assertIn("不要再接著用按鈕問下一步", text)
                 # 2026-11-19: a record's 「TWD 120」 for another route confirmed a fare; records no longer
                 # vouch for prices, so reusing one means opening its page again.
                 self.assertIn("紀錄裡的價格只是去哪裡查的線索", text)
@@ -267,10 +263,78 @@ class ProfileSettingsTests(unittest.TestCase):
         # lasting preferences (its memories folder was empty).
         for role in ("travel-commander", "trip", "schedule-manager"):
             with self.subTest(role=role):
-                text = (Path(setup.__file__).parent / "roles" / f"{role}.md").read_text(encoding="utf-8")
+                text = setup.expand_includes((Path(setup.__file__).parent / "roles" / f"{role}.md").read_text(encoding="utf-8"))
                 self.assertIn("先用 `session_search` 搜舊對話", text)
                 self.assertIn("用 `memory` 記到 `user`", text)
                 self.assertIn("一次性的行程、價格、日期不要記", text)
+
+
+class UpgradeTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(scratch.new_dir("hermes-upgrade-test-"))
+        for profile in setup.PROFILES:
+            (self.root / "profiles" / profile).mkdir(parents=True, exist_ok=True)
+        # Seed a managed root with an outdated script and a user state file.
+        old_script = b"# old version\n"
+        target = self.root / "shared/travel-workflow/page-prices.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(old_script)
+        self.prefs = self.root / "shared/travel-workflow/preferences.json"
+        self.prefs.write_text('{"budget": {"amount": 9999}}\n', encoding="utf-8")
+        receipt = {
+            "version": 1,
+            "profiles": {},
+            "files": {"shared/travel-workflow/page-prices.py": setup.digest(old_script)},
+            "settings": ["compression.threshold_tokens"],
+        }
+        (self.root / setup.RECEIPT).write_text(json.dumps(receipt), encoding="utf-8")
+        self.calls = []
+        self.original_run = setup.run
+        setup.run = lambda root, *args: (self.calls.append(args), "")[1]
+
+    def tearDown(self):
+        setup.run = self.original_run
+
+    def test_upgrade_updates_unmodified_files_creates_missing_and_keeps_user_state(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            counts = setup.upgrade(self.root)
+        self.assertEqual(counts["update"], 1)
+        self.assertGreater(counts["create"], 0)
+        # User preferences are never touched.
+        self.assertEqual(json.loads(self.prefs.read_text(encoding="utf-8")), {"budget": {"amount": 9999}})
+        # Role includes were expanded in installed SOUL.md.
+        soul = (self.root / "profiles/schedule-manager/SOUL.md").read_text(encoding="utf-8")
+        self.assertNotIn("{{INCLUDE:", soul)
+        self.assertIn("calendar-check.py", soul)
+        self.assertNotIn("page-prices.py", soul)
+        # format-plan.py was installed.
+        self.assertTrue((self.root / "shared/travel-workflow/format-plan.py").is_file())
+        # Previously applied setting was not re-applied, while new settings were.
+        set_keys = [c[4] for c in self.calls if len(c) >= 5 and c[2] == "config" and c[3] == "set"]
+        self.assertNotIn("compression.threshold_tokens", set_keys)
+        self.assertIn("agent.clarify_timeout", set_keys)
+        self.assertIn("tools.tool_search.defer", set_keys)
+
+    def test_upgrade_refuses_hand_modified_file_unless_forced(self):
+        target = self.root / "shared/travel-workflow/page-prices.py"
+        target.write_text("# user edited this by hand\n", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "Modified files would be overwritten"):
+            setup.upgrade(self.root)
+        self.assertEqual(target.read_text(encoding="utf-8"), "# user edited this by hand\n")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            counts = setup.upgrade(self.root, force=True)
+        self.assertEqual(counts["update"], 1)
+        self.assertIn("ThreadPoolExecutor", target.read_text(encoding="utf-8"))
+
+    def test_no_model_defaults_skips_personal_auxiliary_models(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            setup.upgrade(self.root, include_models=False)
+        set_keys = {c[4] for c in self.calls if len(c) >= 5 and c[2] == "config" and c[3] == "set"}
+        self.assertFalse(set_keys & setup.MODEL_SETTING_KEYS)
+        self.assertIn("agent.clarify_timeout", set_keys)
 
 
 if __name__ == "__main__":

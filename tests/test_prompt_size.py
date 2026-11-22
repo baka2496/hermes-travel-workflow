@@ -11,8 +11,8 @@ import unittest
 import setup
 
 ROOT = Path(setup.__file__).parent
-# Bytes (UTF-8). Raise one only after shortening something else in the same file.
-ROLE_LIMITS = {"trip": 14_000, "travel-commander": 17_500, "schedule-manager": 13_500}
+# Bytes (UTF-8) after expanding shared includes. Raise one only after shortening something else.
+ROLE_LIMITS = {"trip": 14_000, "travel-commander": 17_500, "schedule-manager": 6_500}
 # Tools a role tells the agent to call; deferring one would hide it from the opening prompt.
 ROLE_TOOLS = {"trip": ("terminal", "browser_exec", "clarify", "vision_analyze", "kanban_request_review",
                        "kanban_show", "kanban_complete", "read_file", "patch", "web_search"),
@@ -28,8 +28,19 @@ class RoleSizeTest(unittest.TestCase):
     def test_roles_stay_under_their_limits(self):
         for role, limit in ROLE_LIMITS.items():
             with self.subTest(role=role):
-                size = len((ROOT / "roles" / f"{role}.md").read_bytes())
-                self.assertLessEqual(size, limit, f"roles/{role}.md is {size} bytes: tighten an old rule first")
+                expanded = setup.expand_includes((ROOT / "roles" / f"{role}.md").read_text(encoding="utf-8"))
+                size = len(expanded.encode("utf-8"))
+                self.assertLessEqual(size, limit, f"roles/{role}.md (expanded) is {size} bytes: tighten an old rule first")
+
+    def test_schedule_manager_does_not_carry_price_or_photo_rules(self):
+        expanded = setup.expand_includes((ROOT / "roles" / "schedule-manager.md").read_text(encoding="utf-8"))
+        for unused in ("page-prices.py", "place-photo.py", "booking-links.py"):
+            self.assertNotIn(unused, expanded)
+
+    def test_travel_planning_skill_uses_vision_photo_flow(self):
+        skill = (ROOT / "skills" / "travel-planning" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("vision_analyze", skill)
+        self.assertNotIn("先 `--list`", skill)
 
     def test_card_rules_keep_their_point_without_the_whole_story(self):
         text = (ROOT / "roles" / "trip.md").read_text(encoding="utf-8")
@@ -69,7 +80,7 @@ class DeferredToolsTest(unittest.TestCase):
     def test_a_deferred_tool_the_role_names_says_how_to_reach_it(self):
         for role in ROLE_LIMITS:
             with self.subTest(role=role):
-                text = (ROOT / "roles" / f"{role}.md").read_text(encoding="utf-8")
+                text = setup.expand_includes((ROOT / "roles" / f"{role}.md").read_text(encoding="utf-8"))
                 if "用 `memory` 記到 `user`" in text:
                     self.assertIn("memory 是延後載入的工具，先用 `tool_search` 找到它", text)
 
