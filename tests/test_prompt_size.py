@@ -40,6 +40,18 @@ class RoleSizeTest(unittest.TestCase):
         self.assertLess(longest, 1_300, "one paragraph of trip.md grew back into a wall of text")
 
 
+class ToolOutputSizeTest(unittest.TestCase):
+    def test_existing_cards_are_listed_as_text(self):
+        # 2026-11-22: `kanban list --json` printed the whole board (57,736 characters in the reply,
+        # 118K by then) and compressed a 3-minute hand-off; the text list is 3.7K and has every card.
+        for path in [ROOT / "roles" / "travel-commander.md",
+                     *([HERMES / "project-manager" / "SOUL.md"] if (HERMES / "project-manager" / "SOUL.md").is_file() else [])]:
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("list --sort created-desc`，不加 `--json`", text)
+                self.assertNotIn("list --json", text)
+
+
 class DeferredToolsTest(unittest.TestCase):
     def test_unused_tools_wait_behind_tool_search(self):
         for profile in setup.PROFILES:

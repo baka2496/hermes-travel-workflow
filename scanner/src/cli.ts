@@ -693,7 +693,7 @@ const PLAN_TOTAL_NOTE = '「含機票」總價＝住宿＋每人機票\n有「�
 const PLAN_NO_FLIGHTS_NOTE = '這次讀不到＝被擋或暫時沒讀到，不是還沒開賣\n（Google 可訂約 11 個月內的航班）\n住宿也還沒查：機票、住宿都寫「未確認」\n不要自己挑飯店或猜原因，過幾分鐘再跑一次 plan';
 // 2026-11-21: three runs of a card's plan met Google's limit, some 90 s each, and Trip then spent minutes
 // reading this program to find out why. Said plainly, with when to try again.
-const planLimitedNote = (minutes: number) => `Google 暫時限流：每個查詢都回「Oops, something went wrong」\n不是被封鎖、不是還沒開賣，也不是程式壞掉，不用查原因\n約 ${minutes} 分鐘後再跑一次 plan（背景查詢已讓開）\n現在回報就寫：機票、住宿都「未確認」`;
+const planLimitedNote = (minutes: number) => `Google 暫時限流：每個查詢都回「Oops, something went wrong」\n不是被封鎖、不是還沒開賣，也不是程式壞掉，不用查原因\n這張卡不要重跑：約 ${minutes} 分鐘後 Google 才恢復（背景查詢已讓開）\n現在回報就寫：機票、住宿都「未確認」`;
 
 async function planForCard(cityArg: string | undefined, outboundDate: string | undefined, returnDate: string | undefined, people: string | undefined) {
   const { watch, origin, currency, country, stay } = await datedStay('plan', cityArg, outboundDate, returnDate);
@@ -1017,6 +1017,18 @@ function noteBlocked(error: unknown): boolean {
 /** A lookup the user (or a card) is waiting for: the background steps aside for a while. */
 const noteUserLookup = () => writeJobsState({ ...readJobsState(), userLookupAt: new Date().toISOString() });
 
+/**
+ * Saves what a background run changed onto the newest state. 2026-11-22: runJobs read the state at
+ * its start and wrote all of it back at its end, so the pause a card's plan noted meanwhile (and its
+ * user lookup) vanished, and the next run went straight back to Google.
+ */
+function saveJobsRun(run: JobsState) {
+  const fresh = readJobsState();
+  const later = (a: string | null, b: string | null) => (a && b ? (a > b ? a : b) : a ?? b);
+  writeJobsState({ ...fresh, prefetched: { ...fresh.prefetched, ...run.prefetched }, lastWatchCheck: run.lastWatchCheck,
+    lastSelfCheck: run.lastSelfCheck, blockedUntil: later(fresh.blockedUntil, run.blockedUntil) });
+}
+
 /** Why the background should leave Google alone now, or null. */
 function backgroundPause(state: { blockedUntil: string | null; userLookupAt: string | null }, now = Date.now()): string | null {
   if (state.blockedUntil && Date.parse(state.blockedUntil) > now) return `paused until ${state.blockedUntil} after a Google block`;
@@ -1033,10 +1045,18 @@ async function runJobs() {
   }
   const problems: string[] = [];
   let alerts: string[] = [];
+  // Checked again before each Google step: a lookup someone waits for (or a block) that starts while
+  // this runs gets Google to itself. 2026-11-22: a card's plan met the limit while this kept prefetching.
+  const stepAside = () => {
+    const reason = backgroundPause(readJobsState());
+    if (reason) say(`jobs: stopped, ${reason}`);
+    return reason !== null;
+  };
   try {
-    for (const { watch, letter } of await activeWatches()) {
+    watches: for (const { watch, letter } of await activeWatches()) {
       if (!watch.lastScanAt || state.prefetched[watch.id] === watch.lastScanAt.toISOString()) continue;
       for (let index = 1; index <= PREFETCH_PER_LENGTH; index++) {
+        if (stepAside()) break watches;
         try {
           const { row } = await resolveOption(`${letter}${index}`);
           const stay: Stay = { city: row.city, outboundDate: row.outboundDate, returnDate: row.returnDate };
@@ -1052,14 +1072,14 @@ async function runJobs() {
       state.prefetched[watch.id] = watch.lastScanAt.toISOString();
     }
     // Photos and room checks for the hotels of those lists, a few each run, ready before they are shown.
-    const profiled = await profileHotels();
+    const profiled = stepAside() ? 0 : await profileHotels();
     if (profiled) say(`jobs: profiled ${profiled} hotels`);
-    if (!state.lastWatchCheck || Date.now() - Date.parse(state.lastWatchCheck) >= WATCH_CHECK_HOURS * 3_600_000) {
+    if ((!state.lastWatchCheck || Date.now() - Date.parse(state.lastWatchCheck) >= WATCH_CHECK_HOURS * 3_600_000) && !stepAside()) {
       alerts = await checkWatches();
       state.lastWatchCheck = new Date().toISOString();
     }
     const today = new Date().toISOString().slice(0, 10);
-    if (state.lastSelfCheck !== today) {
+    if (state.lastSelfCheck !== today && !stepAside()) {
       problems.push(...await selfCheck());
       state.lastSelfCheck = today;
     }
@@ -1069,7 +1089,7 @@ async function runJobs() {
     // A limit lifts within its pause and needs no word to the user; a block is worth one.
     if (!isLimited(error)) problems.push(`Google 暫時擋住自動查詢，背景工作暫停 ${BLOCK_COOLDOWN_HOURS} 小時（你主動查詢照常，但可能也會失敗）`);
   }
-  writeJobsState(state);
+  saveJobsRun(state);
   for (const alert of alerts) await sendToTelegram([{ text: alert, photos: [] }], [[FLIGHT_LIST_BUTTON]]);
   if (problems.length) await sendToTelegram([{ text: `⚠️ trip bot 自我檢查發現問題\n${problems.map(problem => `• ${problem}`).join('\n')}`, photos: [] }], []);
   say(`jobs: ${alerts.length} alerts, ${problems.length} problems`);
