@@ -63,6 +63,23 @@ PROFILE_SETTINGS = (("compression.threshold_tokens", "64000"),
                     # timeout patch (tests/test_antigravity_deadline.py), which otherwise ignores this.
                     ("providers.antigravity-oauth.request_timeout_seconds", "180"))
 
+# Tools each profile keeps out of its opening prompt: Hermes lists them behind `tool_search` and
+# loads one only when it is asked for. 2026-11-22: Trip opened every card with ~37K tokens, 15.6K
+# of them tool descriptions, and still compressed twice in an 8-minute card; in 30 days it never
+# called the tools below (6.1K tokens). The first list is Hermes' own default, which an explicit
+# `defer` replaces wholesale.
+HERMES_DEFERRED = ("computer_use", "session_search", "image_generate", "todo_list", "process_manage",
+                   "cronjob_manage", "browser_vault", "text_to_speech", "manage_connections",
+                   "drive_preview", "gui_tour", "desktop_preview", "annotate_preview", "manage_catalog",
+                   "show_tip", "desktop_project", "close_terminal", "set_theme", "read_terminal",
+                   "read_window_below", "focus_pane")
+UNUSED_TOOLS = ("delegate_task", "skill_manage", "memory", "kanban_link", "kanban_attach",
+                "kanban_attach_url", "kanban_heartbeat")
+# Trip only works cards it is given: it neither creates cards nor sends one back.
+DEFERRED_TOOLS = {"trip": HERMES_DEFERRED + UNUSED_TOOLS + ("kanban_create", "kanban_request_changes"),
+                  "travel-commander": HERMES_DEFERRED + UNUSED_TOOLS,
+                  "schedule-manager": HERMES_DEFERRED + UNUSED_TOOLS}
+
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
@@ -211,6 +228,8 @@ def install(root, delivery):
             save_receipt(receipt_path, receipt)
             for key, value in PROFILE_SETTINGS:
                 run(root, "-p", profile, "config", "set", key, value)
+            run(root, "-p", profile, "config", "set", "tools.tool_search.defer",
+                json.dumps(list(DEFERRED_TOOLS[profile])))
         scaffold = receipt["profiles"].get(profile)
         if not scaffold:
             raise RuntimeError(f"Existing unowned profile: {home}")
