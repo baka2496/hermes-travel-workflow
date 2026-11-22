@@ -61,6 +61,15 @@ class CardRulesTest(unittest.TestCase):
                 self.assertIn("show <卡號>`，不加 `--json`", text)
                 self.assertNotIn("show <卡號> --json", text)
 
+    def test_opportunities_is_searched_not_read_whole(self):
+        # The retry: 想出去玩居 read all 38K characters of opportunities.json first and compressed.
+        for name, text in texts("travel-commander", "project-manager"):
+            with self.subTest(name):
+                self.assertIn("先用 `search_files` 在 opportunities.json 找 `pending_question`", text)
+                self.assertIn("offset/limit 只讀那一筆", text)
+        self.assertNotIn("與同目錄的 `opportunities.json`。這兩份資料由你維護。",
+                         (ROOT / "roles" / "travel-commander.md").read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()
