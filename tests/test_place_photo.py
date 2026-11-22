@@ -138,5 +138,36 @@ class CommentedOutCaptionTests(unittest.TestCase):
         self.assertEqual(photos["https://spring.example/images/hotp_01.png"], [])
         self.assertEqual(photos["https://spring.example/images/hotp_02.png"], ["溫馨家庭池"])
 
+class PruneOldPhotosTests(unittest.TestCase):
+    def test_prunes_photos_older_than_30_days_and_keeps_recent_ones(self):
+        import importlib.util
+        import os
+        import time
+        spec = importlib.util.spec_from_file_location("place_photo_mod", Path(__file__).resolve().parents[1] / "scripts/place-photo.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        folder = Path(scratch.new_dir("hermes-photo-prune-"))
+        now = time.time()
+        old_img = folder / "old123.jpg"
+        old_meta = folder / "old123.jpg.source.json"
+        new_img = folder / "new456.jpg"
+        new_meta = folder / "new456.jpg.source.json"
+        other = folder / "keep.txt"
+        for p in (old_img, old_meta, new_img, new_meta, other):
+            p.write_bytes(b"x")
+        old_ts = now - 31 * 86400
+        os.utime(old_img, (old_ts, old_ts))
+        os.utime(other, (old_ts, old_ts))
+
+        removed = mod.prune_old_photos(folder, max_age_days=30, now=now)
+        self.assertEqual(removed, 1)
+        self.assertFalse(old_img.exists())
+        self.assertFalse(old_meta.exists())
+        self.assertTrue(new_img.exists())
+        self.assertTrue(new_meta.exists())
+        self.assertTrue(other.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

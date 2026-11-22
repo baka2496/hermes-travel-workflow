@@ -81,7 +81,7 @@ py -3 .\setup.py check --root "$workflowRoot"
 
 `setup.py check` 只讀取、不修改，會列出三個排程的狀態、投遞目標和最近一次結果，並指出缺少的掃描器套件、連續失敗的排程，以及提醒還在等待哪些資料（例如 `budget`、`calendar_coverage`）。有問題時結束代碼為 1。行程涵蓋的結束日已過時，提醒會視為涵蓋不足而保持靜默。推送到 GitHub 時，`.github/workflows/test.yml` 會自動執行上面三組測試。
 
-安裝命令可以重跑以檢查已安裝設定，並沿用這個資料目錄目前的投遞設定。要切換投遞方式時用 `setup.py delivery local|telegram`；重跑安裝時指定不同的 `--deliver`，安裝器會停止並提示改用這個指令，不會改動既有排程。若發現角色或排程定義衝突，先在本機檢視錯誤訊息。移機時使用新的 checkout 和 Hermes 資料目錄，按上面步驟配置帳號。需要延續原有行程和偏好時，在本機核對 schema 後移轉 `shared/annual-schedule/calendar.json` 及 `shared/travel-workflow/` 下的 `preferences.json` 與 `opportunities.json`。新安裝的 `runtime.json` 記錄新環境的路徑。個人資料、掃描 SQLite、帳號憑證、聊天紀錄和私人 Hermes 外掛由原環境獨立管理。
+安裝命令可以重跑以檢查已安裝設定，並沿用這個資料目錄目前的投遞設定；若不想套用內建的個人輔助模型設定，安裝或升級時可加上 `--no-model-defaults`。拉下新版程式碼後，執行 `py -3 .\setup.py upgrade --root "$workflowRoot"` 可一次更新未經手改的角色規則、工具腳本、外掛與新設定，不會動到你的行程、偏好與機會紀錄（有手改過的檔案會停下來提醒，確認要覆蓋才加 `--force`）。要切換投遞方式時用 `setup.py delivery local|telegram`；重跑安裝時指定不同的 `--deliver`，安裝器會停止並提示改用這個指令，不會改動既有排程。若發現角色或排程定義衝突，先在本機檢視錯誤訊息。移機時使用新的 checkout 和 Hermes 資料目錄，按上面步驟配置帳號。需要延續原有行程和偏好時，在本機核對 schema 後移轉 `shared/annual-schedule/calendar.json` 及 `shared/travel-workflow/` 下的 `preferences.json` 與 `opportunities.json`。新安裝的 `runtime.json` 記錄新環境的路徑。個人資料、掃描 SQLite、帳號憑證、聊天紀錄和私人 Hermes 外掛由原環境獨立管理。
 
 ## 自動修問題
 

@@ -228,5 +228,39 @@ class RecordsAndSnapshotsInThePluginTests(unittest.TestCase):
         self.assertIn("page-prices.py", check.TAMPER_PROBLEM)
 
 
+class ParallelFetchTests(unittest.TestCase):
+    def test_read_all_fetches_pages_concurrently_and_keeps_order(self):
+        import types
+        spec_pp = importlib.util.spec_from_file_location("page_prices_mod", REPO / "scripts/page-prices.py")
+        pp = importlib.util.module_from_spec(spec_pp)
+        spec_pp.loader.exec_module(pp)
+
+        urls = ["https://a.example/", "https://b.example/", "https://c.example/"]
+        root = scratch.new_dir("hermes-parallel-prices-")
+        args = types.SimpleNamespace(html_file=None, hermes_root=root, timeout=5)
+
+        def fake_fetch(url, timeout=10):
+            time.sleep(0.15)
+            if "b.example" in url:
+                raise RuntimeError("timed out")
+            return f"<html><title>{url}</title><body><p>湯屋 600元 / 1小時</p></body></html>", url
+
+        original = pp.fetch
+        pp.fetch = fake_fetch
+        try:
+            start = time.monotonic()
+            results = pp.read_all(urls, args)
+            elapsed = time.monotonic() - start
+        finally:
+            pp.fetch = original
+
+        self.assertLess(elapsed, 0.35, f"expected parallel fetch, took {elapsed:.2f}s")
+        self.assertEqual([u for u, _, _ in results], urls)
+        self.assertIsNotNone(results[0][1])
+        self.assertIsNone(results[1][1])
+        self.assertIn("打不開 https://b.example/", results[1][2])
+        self.assertIsNotNone(results[2][1])
+
+
 if __name__ == "__main__":
     unittest.main()
