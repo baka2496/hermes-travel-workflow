@@ -125,7 +125,7 @@ class PhoneCheckTests(unittest.TestCase):
 
 
 def board(cards, watched=None, done=None):
-    """A command-center board holding *cards* (id, seconds ago, assignee); *watched* have notify subs (default all).
+    """A command-center board holding *cards* (id, seconds ago, assignee[, body]); *watched* have notify subs (default all).
 
     *done* maps a card to how it was closed: "review" (a spawned reviewer worker) or "hand" (completed by a CLI call).
     """
@@ -134,11 +134,12 @@ def board(cards, watched=None, done=None):
     done = done or {}
     path = Path(scratch.new_dir()) / "kanban.db"
     db = sqlite3.connect(path)
-    db.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, assignee TEXT, created_at INTEGER, status TEXT)")
-    db.executemany("INSERT INTO tasks VALUES (?, ?, ?, ?)",
-                   [(i, who, int(time.time()) - ago, "done" if i in done else "running") for i, ago, who in cards])
+    db.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, assignee TEXT, created_at INTEGER, status TEXT, body TEXT)")
+    db.executemany("INSERT INTO tasks VALUES (?, ?, ?, ?, ?)",
+                   [(i, who, int(time.time()) - ago, "done" if i in done else "running", (rest or ["整趟預算: NT$40,000"])[0])
+                    for i, ago, who, *rest in cards])
     db.execute("CREATE TABLE kanban_notify_subs (task_id TEXT, platform TEXT)")
-    subs = [i for i, _, _ in cards] if watched is None else watched
+    subs = [c[0] for c in cards] if watched is None else watched
     db.executemany("INSERT INTO kanban_notify_subs VALUES (?, 'telegram')", [(i,) for i in subs])
     db.execute("CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id TEXT, profile TEXT, outcome TEXT)")
     db.execute("CREATE TABLE task_events (task_id TEXT, run_id INTEGER, kind TEXT)")
@@ -190,6 +191,17 @@ class HandoffTests(unittest.TestCase):
         status, report = check_handoff(self.REPLY, db, "--card", "t_3ded90ad")
         self.assertEqual(status, 1)
         self.assertIn("no notify-subscribe", report["problems"][0]["text"])
+
+    def test_a_card_whose_amounts_lost_their_dollar_sign_does_not(self):
+        # 2026-11-22: `--body "...NT$40,000..."` in bash made the card say "整趟預算: NT0,000".
+        db = board([("t_4f8382c6", 60, "trip", "城市: 福岡\n人數: 2\n整趟預算: NT0,000")])
+        status, report = check_handoff(self.REPLY, db, "--card", "t_4f8382c6")
+        self.assertEqual(status, 1)
+        self.assertIn("says NT0,000", report["problems"][0]["text"])
+        self.assertIn("single quotes", report["problems"][0]["text"])
+        self.assertIn("--body '<body>'", report["problems"][0]["hint"])
+        ok = board([("t_4f8382c7", 60, "trip", "整趟預算: NT$40,000（約 TWD 40000）")])
+        self.assertEqual(check_handoff(self.REPLY, ok, "--card", "t_4f8382c7")[0], 0)
 
     def test_other_wordings_count_and_plain_replies_need_no_card(self):
         db = board([])

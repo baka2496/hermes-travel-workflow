@@ -136,6 +136,26 @@ test('the background steps aside after a user lookup and during a Google pause',
   }
 });
 
+// 2026-11-22: a card's plan started while runJobs was prefetching, met the limit, and noted a pause;
+// runJobs then wrote back the state it had read at its start, erasing the pause and the user lookup.
+test('a background run stops for a lookup that starts meanwhile, and keeps what it noted', () => {
+  const source = readFileSync(new URL('./cli.ts', import.meta.url), 'utf8');
+  const start = source.indexOf('async function runJobs');
+  const jobs = source.slice(start, source.indexOf('\n}\n', start));
+  assert.doesNotMatch(jobs, /writeJobsState\(state\)/);
+  assert.match(jobs, /saveJobsRun\(state\);/);
+  assert.match(jobs, /const reason = backgroundPause\(readJobsState\(\)\);/);  // read fresh, not the start's copy
+  assert.match(jobs, /for \(let index = 1; index <= PREFETCH_PER_LENGTH; index\+\+\) \{\s+if \(stepAside\(\)\) break watches;/);
+  assert.match(jobs, /stepAside\(\) \? 0 : await profileHotels\(\)/);
+  assert.match(jobs, /&& !stepAside\(\)\) \{\s+alerts = await checkWatches\(\)/);
+  assert.match(jobs, /state\.lastSelfCheck !== today && !stepAside\(\)/);
+  const save = source.slice(source.indexOf('function saveJobsRun'), source.indexOf('/** Why the background'));
+  assert.match(save, /const fresh = readJobsState\(\);/);
+  assert.match(save, /\.\.\.fresh, prefetched: \{ \.\.\.fresh\.prefetched, \.\.\.run\.prefetched \}/);
+  assert.match(save, /blockedUntil: later\(fresh\.blockedUntil, run\.blockedUntil\)/);
+  assert.doesNotMatch(save, /userLookupAt/);  // the lookup noted meanwhile is the fresh one's
+});
+
 test('a lookup someone waits on is noted; a limit pauses the background and plan says when to retry', () => {
   const source = readFileSync(new URL('./cli.ts', import.meta.url), 'utf8');
   assert.match(source, /const USER_LOOKUPS = new Set\(\['trip', 'plan', 'hotels-for', 'rooms'/);
@@ -148,7 +168,17 @@ test('a lookup someone waits on is noted; a limit pauses the background and plan
   const plan = source.slice(start, source.indexOf('\n}\n', start));
   assert.match(plan, /if \(!isLimited\(error\)\) throw error;\s+noteBlocked\(error\);/);
   assert.match(plan, /planLimitedNote\(LIMIT_COOLDOWN_MINUTES\)/);
-  assert.ok(source.includes('不用查原因') && source.includes('分鐘後再跑一次 plan'));
+  assert.ok(source.includes('不用查原因') && source.includes('這張卡不要重跑') && !source.includes('分鐘後再跑一次 plan'));
   // A limit does not message the user; a block still does.
   assert.match(source, /noteBlocked\(error\) && !isLimited\(error\)\) await sendAlert/);
+});
+
+// 2026-11-22: plan printed 「分開訂可省 NT$38,423」 on a NT$13,237 fare: the difference was absolute, so
+// separate tickets that cost NT$38,423 more were called a saving.
+test('a saving is only claimed when the other way to buy is really cheaper', () => {
+  const source = readFileSync(new URL('./cli.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /Math\.abs\(buy\.other\.price - buy\.chosen\.price\)/);
+  assert.match(source, /const saving = buy\.other \? buy\.other\.price - buy\.chosen\.price : 0;/);
+  assert.match(source, /分開訂兩張票\$\{saving > 0 \? `・省 \$\{money\(saving, currency\)\}`/);
+  assert.match(source, /separateTickets && saving < 0 \? `分開訂可省 \$\{money\(-saving, currency\)\}`/);
 });
