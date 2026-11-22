@@ -593,10 +593,12 @@ async function printFlightPlan(watch: TripOption['watch'], row: TripOption['row'
   // A short trip may buy more time there: say what it costs over the cheapest fare for those dates.
   const forTime = buy.chosen.price - row.price;
   if (nightsOf(stay) <= SHORT_TRIP_NIGHTS && forTime > 0) say(`早去晚回・比最便宜多 ${money(forTime, currency)}`);
-  const difference = buy.other ? Math.abs(buy.other.price - buy.chosen.price) : 0;
-  if (separate) say(`分開訂兩張票${difference ? `・省 ${money(difference, currency)}` : ''}`);
+  // How much the chosen fare saves over the other way to buy it; negative when the other is cheaper.
+  // 2026-11-22: an absolute difference printed 「分開訂可省 NT$38,423」 for separate tickets that cost NT$38,423 more.
+  const saving = buy.other ? buy.other.price - buy.chosen.price : 0;
+  if (separate) say(`分開訂兩張票${saving > 0 ? `・省 ${money(saving, currency)}` : ''}`);
   // One ticket is one booking: say the one link covers both legs (only the outbound line is linked).
-  else for (const line of phoneLines(['去回同一張票・去程連結一次訂', buy.other?.separateTickets && difference ? `分開訂可省 ${money(difference, currency)}` : null])) say(line);
+  else for (const line of phoneLines(['去回同一張票・去程連結一次訂', buy.other?.separateTickets && saving < 0 ? `分開訂可省 ${money(-saving, currency)}` : null])) say(line);
   return buy.chosen.price + (bagged ? prefs.bagFeeEstimate : 0);
 }
 

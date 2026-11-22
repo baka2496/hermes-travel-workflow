@@ -172,3 +172,13 @@ test('a lookup someone waits on is noted; a limit pauses the background and plan
   // A limit does not message the user; a block still does.
   assert.match(source, /noteBlocked\(error\) && !isLimited\(error\)\) await sendAlert/);
 });
+
+// 2026-11-22: plan printed 「分開訂可省 NT$38,423」 on a NT$13,237 fare: the difference was absolute, so
+// separate tickets that cost NT$38,423 more were called a saving.
+test('a saving is only claimed when the other way to buy is really cheaper', () => {
+  const source = readFileSync(new URL('./cli.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /Math\.abs\(buy\.other\.price - buy\.chosen\.price\)/);
+  assert.match(source, /const saving = buy\.other \? buy\.other\.price - buy\.chosen\.price : 0;/);
+  assert.match(source, /分開訂兩張票\$\{saving > 0 \? `・省 \$\{money\(saving, currency\)\}`/);
+  assert.match(source, /separateTickets && saving < 0 \? `分開訂可省 \$\{money\(-saving, currency\)\}`/);
+});
