@@ -41,6 +41,26 @@ class CardRulesTest(unittest.TestCase):
                 self.assertIn("「未確認」（Google 限流、沒讀到）是正確交付，照實通過", text)
                 self.assertIn("自己挑沒查過價格的具名飯店", text)
 
+    def test_the_reviewer_rejects_prices_plan_did_not_print(self):
+        # The same card's second try was all estimates with a made-up NT$70,000 budget, and passed.
+        for name, text in texts("travel-commander", "commander"):
+            with self.subTest(name):
+                self.assertIn("價格只能是 `plan` 印的", text)
+                self.assertIn("預算和成果對不上，就退回", text)
+
+    def test_a_broken_card_budget_is_reported_not_replaced(self):
+        for name, text in texts("trip", "trip"):
+            with self.subTest(name):
+                self.assertIn("不要自己找別的預算", text)
+
+    def test_a_done_card_is_always_reported(self):
+        # The same card: after compressing, 想出去玩居 answered its "done" notice with NO_REPLY.
+        for name, text in texts("travel-commander", "project-manager"):
+            with self.subTest(name):
+                self.assertIn("「已完成」通知就是新成果：一定要讀成果、照規則回報使用者，絕不回 `NO_REPLY`", text)
+                self.assertIn("show <卡號>`，不加 `--json`", text)
+                self.assertNotIn("show <卡號> --json", text)
+
 
 if __name__ == "__main__":
     unittest.main()

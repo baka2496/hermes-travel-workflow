@@ -38,6 +38,9 @@ CARD_ID = re.compile(r"^t_[0-9a-f]{6,}$")
 # an empty read is 未確認, never a reason the agent made up.
 NOT_ON_SALE = re.compile(r"(尚未|還沒|還未|未)(開賣|開放(銷售|預訂|訂購))|開賣後|遠期")
 CARD_MAX_AGE_S = 6 * 3600
+# 2026-11-22: the card's budget arrived as "NT0,000": bash expanded `$4` inside a double-quoted --body,
+# and Trip filled in a NT$70,000 budget of its own. An amount that lost its `$` means the body is broken.
+LOST_DOLLAR = re.compile(r"NT(?=[0-9,])")
 
 
 def board_db():
@@ -62,7 +65,7 @@ def card_problem(card, now=None):
     try:
         db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
         try:
-            row = db.execute("SELECT created_at, assignee FROM tasks WHERE id = ?", (card,)).fetchone()
+            row = db.execute("SELECT created_at, assignee, body FROM tasks WHERE id = ?", (card,)).fetchone()
             watched = db.execute("SELECT 1 FROM kanban_notify_subs WHERE task_id = ?", (card,)).fetchone()
         finally:
             db.close()
@@ -76,6 +79,11 @@ def card_problem(card, now=None):
     # native tool subscribes on its own, so the card needs notify-subscribe to wake whoever made it.
     if watched is None:
         return f"{card} has no notify-subscribe, so nobody is told when it is done"
+    lost = LOST_DOLLAR.search(row[2] or "")
+    if lost:
+        amount = re.match(r"NT[0-9,]*", (row[2] or "")[lost.start():]).group(0)
+        return (f"{card}'s body says {amount}: bash ate the `$` of a double-quoted --body; make the card again "
+                "with the body in single quotes (or --body-file)")
     return None
 
 
@@ -148,7 +156,7 @@ def check(message, card=None):
         if problem:
             problems.append({"kind": "handoff_without_card", "text": problem,
                              "hint": "make the card first: hermes kanban --board command-center create \"<title>\" --assignee trip "
-                                     "--body \"<body>\" --json (no --title), then pass the id it prints with --card; "
+                                     "--body '<body>' --json (single quotes; no --title), then pass the id it prints with --card; "
                                      "never make an ID up; if it was not made, say the lookup was not sent"})
     elif card:
         problem = result_problem(card)
