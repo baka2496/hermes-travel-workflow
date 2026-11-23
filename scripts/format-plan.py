@@ -60,7 +60,11 @@ def build_plan(args):
         if out and not out.startswith("沒有確認過的價格"):
             sections.append(out)
 
-    # 2. Optional short notes (traffic, highlights, pros/cons)
+    # 2. Optional weather & short notes (traffic, highlights, pros/cons)
+    if getattr(args, "weather_place", None) and args.date:
+        rc, w_out, _ = run_tool("weather-check.py", [args.weather_place, "--date", args.date])
+        if rc == 0 and w_out and "未確認" not in w_out:
+            sections.append(w_out)
     for note in args.note or []:
         text = note.strip()
         if text:
@@ -76,7 +80,7 @@ def build_plan(args):
     elif args.place and not args.for_clarify:
         sections.append("照片：未取得")
 
-    # 4. Verified booking links & phone via booking-links.py
+    # 4. Verified booking links, one-tap route, phone & reservation script via booking-links.py
     if args.place:
         link_args = [args.place]
         if args.official:
@@ -85,6 +89,20 @@ def build_plan(args):
             link_args += ["--booking", args.booking]
         if args.booking_label:
             link_args += ["--booking-label", args.booking_label]
+        if getattr(args, "checkin", None) or args.date:
+            link_args += ["--checkin", getattr(args, "checkin", None) or args.date]
+        if getattr(args, "checkout", None):
+            link_args += ["--checkout", args.checkout]
+        if getattr(args, "guests", None):
+            link_args += ["--guests", str(args.guests)]
+        if getattr(args, "route", None):
+            link_args += ["--route", *args.route]
+        if getattr(args, "reservation_script", False):
+            link_args.append("--reservation-script")
+            if getattr(args, "time_text", None):
+                link_args += ["--time", args.time_text]
+            if getattr(args, "script_item", None):
+                link_args += ["--item", args.script_item]
         if args.phone:
             link_args += ["--phone", args.phone]
         if args.phone_source:
@@ -128,6 +146,14 @@ def main():
     parser.add_argument("--official", help="official page URL")
     parser.add_argument("--booking", help="booking-site page URL")
     parser.add_argument("--booking-label", help="label for --booking (e.g. Agoda)")
+    parser.add_argument("--checkin", help="check-in YYYY-MM-DD for prefilled booking link")
+    parser.add_argument("--checkout", help="check-out YYYY-MM-DD for prefilled booking link")
+    parser.add_argument("--guests", type=int, help="adult guest count for prefilled booking link / script")
+    parser.add_argument("--route", nargs="+", metavar="STOP", help="stops for one-tap Google Maps navigation")
+    parser.add_argument("--reservation-script", action="store_true", help="include copy-paste reservation script")
+    parser.add_argument("--time", dest="time_text", help="arrival time for --reservation-script")
+    parser.add_argument("--script-item", help="room/bath name for --reservation-script")
+    parser.add_argument("--weather-place", help="append verified weather line for this place on --date")
     parser.add_argument("--phone", help="verified phone number")
     parser.add_argument("--phone-source", help="page URL showing --phone")
     parser.add_argument("--photo", help="path to verified photo saved by place-photo.py")
