@@ -336,6 +336,17 @@ class UpgradeTests(unittest.TestCase):
         self.assertFalse(set_keys & setup.MODEL_SETTING_KEYS)
         self.assertIn("agent.clarify_timeout", set_keys)
 
+    def test_growth_problems_flags_bloated_opportunities_and_snapshots(self):
+        opps = self.root / "shared/travel-workflow/opportunities.json"
+        opps.write_text(" " * (setup.MAX_OPPORTUNITIES_BYTES + 1024), encoding="utf-8")
+        pages = self.root / "shared/travel-workflow/pages"
+        pages.mkdir(parents=True, exist_ok=True)
+        for i in range(setup.MAX_PAGE_SNAPSHOTS + 1):
+            (pages / f"p{i}.json").write_text("{}", encoding="utf-8")
+        problems = setup.growth_problems(self.root)
+        self.assertTrue(any("opportunities.json" in p for p in problems), problems)
+        self.assertTrue(any("snapshots" in p for p in problems), problems)
+
 
 if __name__ == "__main__":
     unittest.main()

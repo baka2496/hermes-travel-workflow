@@ -95,6 +95,7 @@ PACKAGE_SCRIPTS = (
     ("scripts/booking-links.py", "shared/travel-workflow/booking-links.py"),
     ("scripts/trip-cost.py", "shared/travel-workflow/trip-cost.py"),
     ("scripts/format-plan.py", "shared/travel-workflow/format-plan.py"),
+    ("scripts/archive-opportunities.py", "shared/travel-workflow/archive-opportunities.py"),
     ("scripts/page_evidence.py", "shared/travel-workflow/page_evidence.py"),
     *((f"scripts/{name}", f"shared/travel-workflow/{name}") for name in SHARED_MODULES),
     ("scripts/calendar-check.py", "shared/travel-workflow/calendar-check.py"),
@@ -462,6 +463,35 @@ def hermes_sessions():
     return module
 
 
+MAX_OPPORTUNITIES_BYTES = 100_000
+MAX_STATE_DB_BYTES = 250 * 1024 * 1024
+MAX_PAGE_SNAPSHOTS = 50
+
+
+def growth_problems(root):
+    """Flag files/folders that grow unbounded over time before they slow replies down."""
+    found = []
+    opps = root / "shared/travel-workflow/opportunities.json"
+    if opps.is_file() and opps.stat().st_size > MAX_OPPORTUNITIES_BYTES:
+        kb = opps.stat().st_size // 1024
+        found.append(f"opportunities.json is {kb} KB (> {MAX_OPPORTUNITIES_BYTES // 1024} KB); "
+                     f"run archive-opportunities.py to move expired records into opportunities-archive.json")
+    pages = root / "shared/travel-workflow/pages"
+    if pages.is_dir():
+        count = sum(1 for p in pages.glob("*.json") if p.is_file())
+        if count > MAX_PAGE_SNAPSHOTS:
+            found.append(f"shared/travel-workflow/pages has {count} snapshots (> {MAX_PAGE_SNAPSHOTS}); "
+                         f"old snapshots can be cleaned up to keep --near lookups fast")
+    profiles = root / "profiles"
+    if profiles.is_dir():
+        for db in sorted(profiles.glob("*/state.db")):
+            if db.is_file() and db.stat().st_size > MAX_STATE_DB_BYTES:
+                mb = db.stat().st_size // (1024 * 1024)
+                found.append(f"profiles/{db.parent.name}/state.db is {mb} MB (> {MAX_STATE_DB_BYTES // (1024 * 1024)} MB); "
+                             f"prune old sessions or vacuum to keep evidence lookups fast")
+    return found
+
+
 def check(root):
     """Read-only health report. Returns 1 when something needs attention."""
     root, _ = managed(root)
@@ -511,6 +541,7 @@ def check(root):
             signal = {"status": "error"}
         detail = ", ".join(signal.get("missing", [])) if signal.get("status") == "waiting" else ""
         print(f"  alert gate: {signal.get('status')}{' (missing ' + detail + ')' if detail else ''}")
+    problems.extend(growth_problems(root))
     if problems:
         print("Needs attention:")
         for problem in problems:

@@ -261,6 +261,17 @@ class ParallelFetchTests(unittest.TestCase):
         self.assertIn("打不開 https://b.example/", results[1][2])
         self.assertIsNotNone(results[2][1])
 
+    def test_known_pages_caps_near_results_to_five_newest(self):
+        root = Path(scratch.new_dir("hermes-known-cap-"))
+        now = time.time()
+        for i in range(8):
+            page_evidence.save_snapshot(root, f"https://spa{i}.example/", f"礁溪 湯屋 {300 + i * 50}元",
+                                        now=now - (8 - i) * 60)
+        urls = page_evidence.known_pages(root, "礁溪")
+        self.assertEqual(len(urls), 5)
+        self.assertEqual(urls[0], "https://spa7.example/")
+        self.assertEqual(urls[-1], "https://spa3.example/")
+
 
 if __name__ == "__main__":
     unittest.main()
