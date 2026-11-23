@@ -94,7 +94,8 @@ class WeatherCheckTests(unittest.TestCase):
         )
         self.assertEqual(sunny["status"], "ok")
         self.assertFalse(sunny["rainy"])
-        self.assertIn("適合出遊", sunny["summary"])
+        self.assertNotIn("適合出遊", sunny["summary"])
+        self.assertEqual(sunny["summary"], "🌤 11/28 礁溪：17–23°C，降雨 15%")
 
         rainy = weather_check.check_weather(
             "烏來", datetime.date(2026, 11, 28), today=today,
