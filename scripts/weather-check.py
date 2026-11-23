@@ -65,9 +65,9 @@ def summarize(place, date, payload):
     rain_pct = int(round(rain)) if rain is not None else None
     rainy = rain_pct is not None and rain_pct >= 50
     icon = "🌧" if rainy else "🌤"
-    advice = "建議改室內雨備" if rainy else "適合出遊"
+    advice = "（建議改室內雨備）" if rainy else ""
     rain_text = f"，降雨 {rain_pct}%" if rain_pct is not None else ""
-    summary = f"{icon} {date.month}/{date.day} {place}：{round(tmin)}–{round(tmax)}°C{rain_text}（{advice}）"
+    summary = f"{icon} {date.month}/{date.day} {place}：{round(tmin)}–{round(tmax)}°C{rain_text}{advice}"
     return {
         "status": "ok",
         "place": place,
