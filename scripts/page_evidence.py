@@ -404,9 +404,9 @@ def cheapest(lines, date=None, people=2):
     return best
 
 
-def known_pages(hermes_root, near, limit=8):
+def known_pages(hermes_root, near, limit=5):
     """Pages page-prices.py read before whose text mentions `near` (a place name like 礁溪), newest
-    first: their addresses only. Their prices are read again, never reused."""
+    first (capped at `limit` so one parallel wave stays fast): their addresses only."""
     pages = []
     for path in snapshot_dir(hermes_root).glob("*.json"):
         try:
