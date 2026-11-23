@@ -480,3 +480,40 @@ class ReviewedCardAmountsTests(unittest.TestCase):
     def test_a_card_closed_by_hand_or_not_done_confirms_nothing(self):
         for home in (home_with_card(how="hand"), home_with_card(status="review")):
             self.assertNotIn("NT$", send(home, PLAN_REPLY))
+
+
+class FormatPlanEvidenceTests(unittest.TestCase):
+    def test_format_plan_output_counts_for_costs_and_booking_links(self):
+        home = Path(scratch.new_dir("hermes-format-evidence-"))
+        db_path = home / "profiles" / "travel-commander" / "state.db"
+        db_path.parent.mkdir(parents=True)
+        plan_out = (
+            "12/14 礁溪泡湯 2人\n"
+            "總計 NT$300，預算剩 NT$1,700\n"
+            "• 溫泉湯屋 50分鐘 NT$300\n"
+            "📍 [Google 地圖・查空房](https://www.google.com/maps/search/?api=1&query=%E7%8E%AB%E7%91%B0%E5%9C%92)\n"
+            "🏨 [官網訂房](https://spa.example/rooms)\n"
+            "📞 039883364"
+        )
+        db = sqlite3.connect(db_path)
+        db.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT, tool_calls TEXT, tool_call_id TEXT)")
+        db.execute("INSERT INTO messages VALUES (1, 'sf1', 'assistant', '', ?, NULL)",
+                   (json.dumps([{"id": "c1", "function": {"name": "terminal", "arguments": '{"command": "python format-plan.py --header ..."}'}}]),))
+        db.execute("INSERT INTO messages VALUES (2, 'sf1', 'tool', ?, NULL, 'c1')",
+                   (json.dumps({"output": plan_out}, ensure_ascii=False),))
+        db.commit()
+        db.close()
+
+        self.assertEqual(check.latest_cost_output("sf1", home), "總計 NT$300，預算剩 NT$1,700\n• 溫泉湯屋 50分鐘 NT$300")
+        old = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(home)
+        try:
+            verdict = check.pre_tool_call("clarify", {"question": plan_out + "\n要選這間嗎？", "choices": ["去這間", "換別間"]},
+                                          session_id="sf1", turn_id="t1")
+        finally:
+            if old is None:
+                del os.environ["HERMES_HOME"]
+            else:
+                os.environ["HERMES_HOME"] = old
+        # Only link formatting modification, never blocked for missing trip-cost.py / booking-links.py.
+        self.assertNotEqual((verdict or {}).get("action"), "block")
