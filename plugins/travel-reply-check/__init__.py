@@ -101,28 +101,50 @@ def question_text(args):
 UNKNOWN = object()  # the conversation is in no readable database: nothing to check against
 
 
+COST_TOOLS = (TOOL, "format-plan.py")
+
+
+def cost_block(output):
+    """Extract the '總計…' headline and its following '• …' item lines from trip-cost.py or format-plan.py output."""
+    lines = output.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip().startswith("總計"):
+            block = [line.strip()]
+            for nxt in lines[i + 1:]:
+                if nxt.strip().startswith("•"):
+                    block.append(nxt.strip())
+                else:
+                    break
+            return "\n".join(block)
+    return None
+
+
 def latest_cost_output(session_id, home):
-    """Output of the last trip-cost.py run in this conversation, None if it has none yet,
+    """Output of the last trip-cost.py or format-plan.py run in this conversation, None if none yet,
     or UNKNOWN if the conversation cannot be found."""
-    outputs = tool_outputs(session_id, home, TOOL)
+    outputs = tool_outputs(session_id, home, COST_TOOLS)
     if outputs is UNKNOWN:
         return UNKNOWN
-    headed = [o for o in outputs if o.startswith("總計")]
-    return headed[-1] if headed else None
+    blocks = [b for o in outputs if (b := cost_block(o))]
+    return blocks[-1] if blocks else None
 
 
 def tool_outputs(session_id, home, tool):
-    """Outputs of every run of `tool` in this conversation, oldest first (empty if none),
-    or UNKNOWN if the conversation cannot be found."""
+    """Outputs of every run of `tool` (str or tuple of str) in this conversation, oldest first
+    (empty if none), or UNKNOWN if the conversation cannot be found."""
+    names = (tool,) if isinstance(tool, str) else tuple(tool)
+    where = " OR ".join("tool_calls LIKE ?" for _ in names)
+    params = (session_id, *(f"%{name}%" for name in names))
     for path in sessions.databases(home):
         try:
             with sessions.read_only(path) as db:
                 if not db.execute("SELECT 1 FROM messages WHERE session_id = ? LIMIT 1", (session_id,)).fetchone():
                     continue
                 ids = [call_id for (value,) in db.execute(
-                           "SELECT tool_calls FROM messages WHERE session_id = ? AND tool_calls LIKE ? ORDER BY id",
-                           (session_id, f"%{tool}%"))
-                       for call_id, _, arguments in sessions.calls(value) if tool in arguments]
+                           f"SELECT tool_calls FROM messages WHERE session_id = ? AND ({where}) ORDER BY id",
+                           params)
+                       for call_id, _, arguments in sessions.calls(value)
+                       if any(name in arguments for name in names)]
                 outputs = []
                 for call_id in ids:
                     row = db.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'tool' "
@@ -238,6 +260,7 @@ def steps_problem(args, session_id, turn_id):
 # 2026-11-16: booking-links.py printed the map link for 「山口溫泉飯店」, and the question showed
 # one for 「山口溫泉館」 that 小居 had typed itself. Booking lines are pasted as printed.
 LINKS_TOOL = "booking-links.py"
+LINK_TOOLS = (LINKS_TOOL, "format-plan.py")
 BOOKING_LINE = re.compile(r"^[\s•\-*]*(📍|🏨|🛏|📞)")
 ADDRESS = re.compile(r"https?://[^\s)\]）]+")
 MAPS = re.compile(r"https?://(?:www\.google\.[^/\s]+/maps|maps\.google\.[^/\s]+|maps\.app\.goo\.gl)")
@@ -288,7 +311,7 @@ def links_problem(text, outputs):
 # travel-workflow/pages holds page-prices.py's snapshots of what pages showed: the evidence itself.
 GUARDED = re.compile(r"(?:shared[\\/]+travel-workflow[\\/]+(?:[\w.-]+\.py|pages\b)|travel-reply-check[\\/]|travel[-_]rules"
                      r"|\.db\b|sqlite3|profiles[\\/]+[\w-]+[\\/]+cache\b|page_cache|sys\.path\.(?:append|insert)|spec_from_file_location"
-                     r"|\bimport\s+(?:page_evidence|travel_money|hermes_sessions|trip_cost|place_photo|booking_links|phone_check))", re.I)
+                     r"|\bimport\s+(?:page_evidence|travel_money|hermes_sessions|trip_cost|format_plan|place_photo|booking_links|phone_check))", re.I)
 WRITES = ("patch", "write_file")
 # `python …/trip-cost.py …`: the script right after a Python interpreter is being run, not read.
 RUN_TOOL = re.compile(r"""((?:^|[\s;&|(])["']?[^\s"';&|]*python[\w.]*["']?\s+)["']?[^\s"']*"""
@@ -345,7 +368,7 @@ def pre_tool_call(tool_name, args, task_id="", session_id="", turn_id="", **kwar
                 why = problem(text, output)
         if not why and session_id and any(BOOKING_LINE.match(line) or MAPS.search(line)
                                           for line in text.splitlines()):
-            outputs = tool_outputs(session_id, home, LINKS_TOOL)
+            outputs = tool_outputs(session_id, home, LINK_TOOLS)
             if outputs is not UNKNOWN:
                 why = links_problem(text, outputs)
         if why:
@@ -653,8 +676,8 @@ def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
         home = os.environ.get("HERMES_HOME") or Path.home() / ".hermes"
         hide = confirmed_only(home)
         if hide or TOTAL_AMOUNT.search(fixed):
-            outputs = tool_outputs(session_id, home, TOOL)
-            outputs = [] if outputs is UNKNOWN else [o for o in outputs if o.startswith("總計")]
+            outputs = tool_outputs(session_id, home, COST_TOOLS)
+            outputs = [] if outputs is UNKNOWN else [b for o in outputs if (b := cost_block(o))]
             fixed = corrected_costs(fixed, outputs) if outputs else fixed
             if hide:
                 fixed = without_unconfirmed(fixed, outputs, reviewed_card_amounts(session_id, home))
