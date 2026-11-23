@@ -95,6 +95,9 @@ PACKAGE_SCRIPTS = (
     ("scripts/booking-links.py", "shared/travel-workflow/booking-links.py"),
     ("scripts/trip-cost.py", "shared/travel-workflow/trip-cost.py"),
     ("scripts/format-plan.py", "shared/travel-workflow/format-plan.py"),
+    ("scripts/weather-check.py", "shared/travel-workflow/weather-check.py"),
+    ("scripts/trip-reminders.py", "shared/travel-workflow/trip-reminders.py"),
+    ("scripts/weekend-scout.py", "shared/travel-workflow/weekend-scout.py"),
     ("scripts/archive-opportunities.py", "shared/travel-workflow/archive-opportunities.py"),
     ("scripts/page_evidence.py", "shared/travel-workflow/page_evidence.py"),
     *((f"scripts/{name}", f"shared/travel-workflow/{name}") for name in SHARED_MODULES),
@@ -551,6 +554,19 @@ def check(root):
     return 0
 
 
+def enable_weekend(root, delivery=None):
+    """Create and enable the optional Thursday 20:00 effortless weekend proposal cron job."""
+    root, receipt = managed(root)
+    target = delivery or receipt.get("delivery") or "local"
+    prompt = rendered(PACKAGE / "prompts/weekend.md", root).decode("utf-8")
+    name = "travel-workflow/weekend"
+    ensure_job(root, "travel-commander", name, "0 20 * * 4", prompt, target, continuity=True)
+    job = managed_job(root, "travel-commander", name)
+    if job.get("enabled") is not True:
+        run(root, "-p", "travel-commander", "cron", "resume", job["id"])
+    print(f"{name}: enabled (Thu 20:00, deliver={target})")
+
+
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -572,6 +588,9 @@ def main():
     command = sub.add_parser("delivery", help="switch digest/alert delivery")
     command.add_argument("target", choices=("local", "telegram"))
     command.add_argument("--root", type=Path, required=True)
+    command = sub.add_parser("enable-weekend", help="enable Thursday 20:00 automatic weekend trip proposal")
+    command.add_argument("--root", type=Path, required=True)
+    command.add_argument("--deliver", choices=("local", "telegram"))
     args = parser.parse_args()
     try:
         if args.command == "check":
@@ -580,6 +599,8 @@ def main():
             set_state(args.root, args.command)
         elif args.command == "delivery":
             set_delivery(args.root, args.target)
+        elif args.command == "enable-weekend":
+            enable_weekend(args.root, args.deliver)
         elif args.command == "upgrade":
             upgrade(args.root, force=args.force, include_models=not args.no_model_defaults)
         else:
