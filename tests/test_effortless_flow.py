@@ -166,6 +166,12 @@ class WeekendScoutTests(unittest.TestCase):
         self.assertEqual(res_busy["status"], "busy")
         self.assertEqual(res_busy["free_days"], [])
 
+    def test_weekend_cron_prompt_does_not_ask_for_interactive_clarify(self):
+        # Cron runs have no interactive clarify tool; asking for it made the job loop searching for it.
+        prompt = (REPO / "prompts/weekend.md").read_text(encoding="utf-8")
+        self.assertIn("沒有 `clarify`", prompt)
+        self.assertNotIn("用 `clarify`", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()
