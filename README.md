@@ -3,13 +3,13 @@
 用 Hermes 把掃描、全年行程和旅行提案串在一起。這個專案包含 Trip Bot 掃描器、三個 Hermes 角色、交接看板、排程和空白資料範本。
 
 ```mermaid
-flowchart LR
-    trip["Trip Agent<br/>掃描機票、查核海外機加酒"] <-->|"看板派工與覆核"| command["Travel Commander<br/>整合預算、日期與旅行方案"]
-    trip --> db[("掃描紀錄")] --> command
-    schedule["Schedule Manager<br/>維護全年行程與時段核對"] <-->|"時段查核／入曆"| command
-    tools["即時查核工具與把關外掛<br/>平行比價、天氣、看圖、導航、排版檢查"] --> command
-    command --> proposal["週摘要、機票提醒、週四週末提案<br/>含價格、真照片、導航與預約話術"]
-    proposal --> owner["本人決定、訂位與付款"]
+flowchart TD
+    trip["Trip Agent<br/>掃描機票、查海外實價"] <-->|"看板派工與覆核"| cmd["Travel Commander<br/>整合預算、日期與方案"]
+    sched["Schedule Manager<br/>全年行程與時段核對"] <-->|"時段核對／入曆"| cmd
+    tools["即時查核工具＋把關外掛<br/>比價、天氣、看圖、導航、排版"] --> cmd
+
+    cmd --> out["週摘要、機票提醒、週四週末提案<br/>含價格、真照片、導航與預約話術"]
+    out --> owner["本人決定、訂位與付款"]
     owner -->|"確認成行"| remind["自動行前提醒<br/>免費取消前24h、前一晚清單、出發前1h導航"]
 ```
 
