@@ -54,7 +54,7 @@ class CardRulesTest(unittest.TestCase):
                 self.assertIn("不要自己找別的預算", text)
 
     def test_a_done_card_is_always_reported(self):
-        # The same card: after compressing, 想出去玩居 answered its "done" notice with NO_REPLY.
+        # The same card: after compressing, the commander answered its "done" notice with NO_REPLY.
         for name, text in texts("travel-commander", "project-manager"):
             with self.subTest(name):
                 self.assertIn("「已完成」通知就是新成果：一定要讀成果、照規則回報使用者，絕不回 `NO_REPLY`", text)
@@ -62,7 +62,7 @@ class CardRulesTest(unittest.TestCase):
                 self.assertNotIn("show <卡號> --json", text)
 
     def test_opportunities_is_searched_not_read_whole(self):
-        # The retry: 想出去玩居 read all 38K characters of opportunities.json first and compressed.
+        # The retry: the commander read all 38K characters of opportunities.json first and compressed.
         for name, text in texts("travel-commander", "project-manager"):
             with self.subTest(name):
                 self.assertIn("先用 `search_files` 在 opportunities.json 找 `pending_question`", text)

@@ -680,7 +680,7 @@ async function tripSearch(cityArg: string | undefined, outboundDate: string | un
 }
 
 /**
- * Flights and hotels for a city and dates, for another agent's Kanban card. 2026-11-21: 想出去玩居 sent
+ * Flights and hotels for a city and dates, for another agent's Kanban card. 2026-11-21: the commander sent
  * Trip Agent a card for Osaka, and since `trip` and `hotels-for` replace the user's Telegram list, it
  * answered from airline home pages instead ("Peach about NT$8,000" where Google had NT$13,310). This
  * reads the same prices and saves nothing: no T1, no hotel list, no buttons, and the party size is for

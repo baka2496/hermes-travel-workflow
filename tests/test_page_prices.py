@@ -152,7 +152,7 @@ class TripCostWithSnapshotTests(unittest.TestCase):
         self.assertEqual(out.splitlines()[0], "總計 NT$699，預算剩 NT$1,301")
 
     def test_a_missing_price_names_what_the_page_shows_to_the_agent_only(self):
-        # 2026-11-19: told only 「沒看到這個價格」, 小居 spent half an hour finding out why.
+        # 2026-11-19: told only 「沒看到這個價格」, the commander spent half an hour finding out why.
         status, out, err = self.cost(snapshot(CHUNHE), f"雙人池 40分鐘=250@{PAGE}")
         self.assertEqual(status, 0, err)
         self.assertIn("• 雙人池 40分鐘 NT$250，未確認（來源網頁上沒看到這個價格）", out)
@@ -182,7 +182,7 @@ class RecordsAndSnapshotsInThePluginTests(unittest.TestCase):
     RECORDS = "C:/hermes/shared/travel-workflow/opportunities.json"
 
     def test_reading_a_recorded_price_comes_with_a_reminder_to_recheck(self):
-        # 2026-11-19: 小居 planned on the record's 「春和雙人湯屋 40 分鐘 250 元」.
+        # 2026-11-19: the commander planned on the record's 「春和雙人湯屋 40 分鐘 250 元」.
         result = '{"content": "207| \\"jiaoxi_chunhe\\": \\"雙人湯屋 40 分鐘 250 元\\""}'
         noted = check.transform_tool_result("read_file", {"path": self.RECORDS}, result, session_id="s1")
         self.assertTrue(noted.startswith(result))

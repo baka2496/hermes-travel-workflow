@@ -89,7 +89,7 @@ def parse(text):
 
 def page_says(source, hermes_root):
     """The prices the page shows, for an item whose price it does not show (2026-11-19: told only
-    「沒看到這個價格」, 小居 spent half an hour finding out why)."""
+    「沒看到這個價格」, the commander spent half an hour finding out why)."""
     lines = page_evidence.price_lines(page_evidence.latest_page_text(hermes_root, source), limit=12)
     if lines:
         return f"{source} 上寫的價格是：" + "；".join(lines) + "。要用就照這些寫，再跑一次。"
@@ -205,7 +205,7 @@ def report_hints(items):
     for item in items:
         if item.get("hint"):
             sys.stdout.flush()
-            print(f"給小居：{item['name']}：{item['hint']}", file=sys.stderr)
+            print(f"給代理：{item['name']}：{item['hint']}", file=sys.stderr)
 
 
 def confirmed_only(preferences):
@@ -221,7 +221,7 @@ def report_hidden(hidden):
     if hidden:
         sys.stdout.flush()
         names = "、".join(f"{item['name']}（{item.get('why') or '沒有網頁確認'}）" for item in hidden)
-        print(f"給小居，不要貼進回覆：使用者只要確認過的價格，這些沒列出也沒算進總計：{names}。"
+        print(f"給代理，不要貼進回覆：使用者只要確認過的價格，這些沒列出也沒算進總計：{names}。"
               "回覆裡不要提它們、不要寫估算金額或「待確認」。"
               "這是最後結果：不要再查原因或改程式，也不要換寫法重跑同一個價格；"
               "要推薦更便宜的地方，就打開另一家有標價的官網再跑一次。", file=sys.stderr)

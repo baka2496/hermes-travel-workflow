@@ -228,7 +228,7 @@ class TripCostTests(unittest.TestCase):
         self.assertIn("全部未確認", out)
 
     def test_pages_opened_at_once_each_count_for_their_own_price(self):
-        # 小居 opens pages with browser_exec new_tab('<url>'), often several in one batch; a price on
+        # the commander opens pages with browser_exec new_tab('<url>'), often several in one batch; a price on
         # one hotel's page must not confirm the same price claimed for another.
         records, root = fake_hermes()
         add_parallel_reads(root, [("https://hotel-a.example.com/rooms", "雙人房 NT$1,100"),

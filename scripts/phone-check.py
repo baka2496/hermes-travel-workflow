@@ -27,7 +27,7 @@ MARKDOWN_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
 BARE_LINK = re.compile(r"(https?://|tel:)\S+")
 LOCAL_PATH = re.compile(r"(?<![\w/])([A-Za-z]:[\\/]|\\\\|~/|/Users/|/home/)\S*|\S+\.(md|json|txt|ics|py)\b")
 BOOKING_LINKS = "Google 地圖・查空房"  # booking-links.py output: a place is being recommended
-# 2026-11-21: 想出去玩居 answered 「下一步｜派工補查機票住宿」 and ended its turn with no card made, so
+# 2026-11-21: the commander answered 「下一步｜派工補查機票住宿」 and ended its turn with no card made, so
 # nobody looked. A reply that says work was handed on names the card it made (with --card; the user
 # never sees the ID), and the card must be on the board, made in the last few hours.
 # 2026-11-21: 「已為你送出福岡機票與住宿查詢」 was checked against a card ID the agent made up.
@@ -90,7 +90,7 @@ def card_problem(card, now=None):
 def result_problem(card):
     """Why *card* cannot back a message that reports its results, or None when the reviewer really passed it.
 
-    2026-11-21: the Fukuoka card's workers crashed, so 想出去玩居 attached a plan itself and ran
+    2026-11-21: the Fukuoka card's workers crashed, so the commander attached a plan itself and ran
     `hermes -p commander kanban complete` — the card said done but nobody had reviewed it. A real review
     is a reviewer worker the dispatcher spawned; a card closed by hand has no spawned run.
     """

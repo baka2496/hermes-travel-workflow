@@ -156,7 +156,7 @@ class ProfileSettingsTests(unittest.TestCase):
                 self.assertIn("不要猜", text)
         commander = setup.expand_includes((Path(setup.__file__).parent / "roles" / "travel-commander.md").read_text(encoding="utf-8"))
         self.assertIn("寫進那筆機會紀錄的 `pending_question`", commander)
-        # Test 13c: 小居 rewrote a record's source to another hotel's page; the plugin now blocks it.
+        # Test 13c: the commander rewrote a record's source to another hotel's page; the plugin now blocks it.
         self.assertIn("紀錄裡已有的 `source`、`queried_at`、候選日期不要改寫或刪掉", commander)
 
     def test_the_answer_goes_out_with_its_buttons(self):
@@ -200,10 +200,10 @@ class ProfileSettingsTests(unittest.TestCase):
                 self.assertIn("照那些改，不要換網址或改數字去湊", text)
                 # Test 11: a meal estimate of NT$1,348 made the total exactly the NT$6,000 budget.
                 self.assertIn("不要為了湊預算調數字", text)
-                # Same tests: web_extract failed on every page (a search-only backend), so 小居 never
+                # Same tests: web_extract failed on every page (a search-only backend), so the commander never
                 # read a price; browser_exec worked. Pages are opened one per call so each price is
                 # checked against its own page.
-                # 2026-11-20: page-prices.py prints only the prices a visitor sees, so 小居 no longer reads whole pages.
+                # 2026-11-20: page-prices.py prints only the prices a visitor sees, so the commander no longer reads whole pages.
                 self.assertIn("查價格先跑", text)
                 self.assertIn("--near <地區> --date <出發日 YYYY-MM-DD>", text)  # 2026-11-20: compare first
                 self.assertIn("推薦的地方要附它印的電話", text)
@@ -259,7 +259,7 @@ class ProfileSettingsTests(unittest.TestCase):
                     self.assertNotIn(real, example)
 
     def test_older_talks_are_searched_and_lasting_preferences_remembered(self):
-        # 2026-11-12: after the daily reset, "昨天那間飯店" could not be traced, and 小居 never saved
+        # 2026-11-12: after the daily reset, "昨天那間飯店" could not be traced, and the commander never saved
         # lasting preferences (its memories folder was empty).
         for role in ("travel-commander", "trip", "schedule-manager"):
             with self.subTest(role=role):
@@ -346,6 +346,21 @@ class UpgradeTests(unittest.TestCase):
         problems = setup.growth_problems(self.root)
         self.assertTrue(any("opportunities.json" in p for p in problems), problems)
         self.assertTrue(any("snapshots" in p for p in problems), problems)
+
+    def test_no_personal_bot_nicknames_in_public_repo(self):
+        # Keep personal Telegram bot nicknames out of the public GitHub repository.
+        forbidden = ("\u5c0f\u5c45", "\u60f3\u51fa\u53bb\u73a9\u5c45", "\u8a8d\u771f\u7528\u529f\u5c45")
+        hits = []
+        for path in REPO.rglob("*"):
+            if not path.is_file() or any(part in {".git", "node_modules", "__pycache__", ".claude"} for part in path.parts):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            if any(word in text for word in forbidden):
+                hits.append(str(path.relative_to(REPO)))
+        self.assertEqual(hits, [], f"Personal bot nickname leaked into: {hits}")
 
 
 if __name__ == "__main__":

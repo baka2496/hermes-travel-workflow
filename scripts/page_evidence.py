@@ -71,7 +71,7 @@ def opened_page_text(hermes_root, key, pattern, now):
 
 
 # 2026-11-19 (Telegram): trip-cost.py said only 「來源網頁上沒看到這個價格」 for 春和's 「雙人池 40分鐘
-# NT$250」 (a price from an old record), and 小居 spent half an hour in state.db and the checkers'
+# NT$250」 (a price from an old record), and the commander spent half an hour in state.db and the checkers'
 # code to find out why. page-prices.py opens the page itself, keeps what a visitor sees as a
 # snapshot here, and prints its prices (「冬季(10-4月)：699元 / 60分鐘」); trip-cost.py checks a
 # price against that snapshot and, when it is not there, names the prices the page does show.
@@ -126,7 +126,7 @@ def price_lines(text, headings=(), limit=40):
     for line in (text or "").splitlines():
         line = re.sub(r"\s+", " ", line).strip()
         if line in names:
-            # 2026-11-20: 春和's 「價位資訊」 heading is followed by its English 「Price」, and 小居 named
+            # 2026-11-20: 春和's 「價位資訊」 heading is followed by its English 「Price」, and the commander named
             # the item 「Price 60分鐘」. An English heading right after a Chinese one is its translation.
             if not (just_named and CJK.search(heading) and not CJK.search(line)):
                 heading = line
@@ -347,7 +347,7 @@ def in_months(month, months):
 
 
 # 2026-11-20: a reply named 春和 without its phone, though the page shows it. The page's own
-# numbers are printed with the price lines so 小居 has them; a fax number is not a phone.
+# numbers are printed with the price lines so the commander has them; a fax number is not a phone.
 PHONE_ON_PAGE = re.compile(r"(?<![\d-])(?:\(0\d{1,2}\)\s?|0\d{1,2}-?)\d{3,4}-?\d{3,4}(?:\s?#\s?\d{1,4})?(?![\d-])"
                            r"|(?<![\d-])09\d{2}-?\d{3}-?\d{3}(?![\d-])")
 FAX = re.compile(r"傳真|fax", re.I)

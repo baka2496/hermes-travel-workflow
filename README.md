@@ -5,7 +5,7 @@
 ```mermaid
 flowchart LR
     trip["Trip Agent<br/>掃描機票與查核住宿"] --> db[("掃描紀錄")]
-    db --> command["旅遊總指揮官 小居<br/>篩選機會與比較整趟費用"]
+    db --> command["Travel Commander<br/>篩選機會與比較整趟費用"]
     schedule["Schedule Manager<br/>維護全年行程"] --> command
     command --> proposal["週摘要、符合條件的提醒、旅行方案"]
     proposal --> owner["本人決定是否成行及確認交易"]
@@ -14,7 +14,7 @@ flowchart LR
 | Hermes profile | Telegram 顯示名稱 | 工作 |
 | --- | --- | --- |
 | `trip` | Trip Agent | 掃描機票，查詢住宿與價差 |
-| `travel-commander` | 旅遊總指揮官 小居 | 整合日期、整趟費用與候選方案 |
+| `travel-commander` | Travel Commander | 整合日期、整趟費用與候選方案 |
 | `schedule-manager` | Schedule Manager | 管理滾動十二個月的行程，核對完整出遊時段 |
 
 表中的名稱用來對照聊天機器人。舊版使用 `project-manager` 與 `us-market` 作為 profile ID；用舊版裝好的 Hermes 資料目錄請保留原 ID，或改用新的資料目錄重新安裝。Telegram Bot 的名稱由 Telegram 帳號端設定。三個 profile 使用原生 Hermes 的 `command-center` Kanban 交接。專員在原卡片附上可核對的成果，旅遊總指揮官覆核後才結案。日曆由 Schedule Manager 寫入，旅行偏好與機會紀錄由旅遊總指揮官維護。

@@ -52,7 +52,7 @@ def add_tool_result(root, tool, content, call_args):
 
 def add_parallel_reads(root, pages, tool="browser_exec"):
     """One assistant message opening several pages at once, each call new_tab('<url>') then
-    printing the page text, the way 小居 calls browser_exec; results come back in order."""
+    printing the page text, the way the commander calls browser_exec; results come back in order."""
     db = sqlite3.connect(Path(root) / "profiles" / "trip" / "state.db")
     calls = [{"id": f"call_par_{n}", "type": "function", "function": {"name": tool, "arguments": json.dumps(
         {"code": f"new_tab('{url}')\nwait_for_load()\nprint(js('document.body.innerText'))"})}}

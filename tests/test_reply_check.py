@@ -181,7 +181,7 @@ class ButtonQuestionTests(unittest.TestCase):
 
     def test_booking_lines_must_be_what_the_tool_printed(self):
         # 2026-11-16 (Telegram): booking-links.py printed the map search for 「山口溫泉飯店」, and the
-        # question showed 「山口溫泉館」, a link 小居 had typed itself.
+        # question showed 「山口溫泉館」, a link the commander had typed itself.
         printed = ("📍 [Google 地圖・查空房](https://www.google.com/maps/search/?api=1&query=%E5%B1%B1%E5%8F%A3"
                    "%E6%BA%AB%E6%B3%89%E9%A3%AF%E5%BA%97)\n"
                    "🛏 [Booking](https://www.booking.com/hotel/tw/shan-kou-wen-quan-fan-dian.zh-tw.html)")
@@ -332,7 +332,7 @@ class ButtonQuestionTests(unittest.TestCase):
 
 
 class CheckersAreOffLimitsTests(unittest.TestCase):
-    # 2026-11-19 (Telegram): a cheaper-hot-spring request took 42 minutes; 小居 queried state.db,
+    # 2026-11-19 (Telegram): a cheaper-hot-spring request took 42 minutes; the commander queried state.db,
     # read the checkers' code and patched page_evidence.py to make a price pass.
     TOOLS = "C:/Users/shiro/AppData/Local/hermes/shared/travel-workflow"
 
@@ -386,7 +386,7 @@ class RecordEditTests(unittest.TestCase):
                                    session_id="s1")
 
     def test_a_records_source_cannot_be_rewritten(self):
-        # 2026-11-14 (Telegram test 13c): 小居 replaced this record's source with 龍山's page and its
+        # 2026-11-14 (Telegram test 13c): the commander replaced this record's source with 龍山's page and its
         # queried_at with that day, so 捷絲旅's prices looked sourced to a page that never showed them.
         after = BEFORE.replace("官方旅宿網站（捷絲旅宜蘭礁溪館、品文旅礁溪、礁溪老爺酒店）與宜蘭勁好玩官方觀光網",
                                "礁溪龍山溫泉旅館官網（https://www.ls-hotel.com.tw/rooms01.php）與葛瑪蘭客運票價網")
