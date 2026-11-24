@@ -211,7 +211,7 @@ class HandoffTests(unittest.TestCase):
 
 
 class ResultTests(unittest.TestCase):
-    # 2026-11-21: the Fukuoka card's workers crashed; 想出去玩居 ran `hermes -p commander kanban complete`
+    # 2026-11-21: the Fukuoka card's workers crashed; the commander ran `hermes -p commander kanban complete`
     # itself, so the card said done with no review, and the user got a plan nobody had checked.
     RESULT = "福岡 2/2–2/6 兩人機酒\n首選｜Plus One Nishikoen，機酒 41,310 元"
 

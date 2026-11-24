@@ -1,6 +1,6 @@
 """Hold back a button question whose cost figures do not match trip-cost.py's output.
 
-2026-11-14 (Telegram test 10): 小居 sent its clarify in the same batch as trip-cost.py, so the
+2026-11-14 (Telegram test 10): the commander sent its clarify in the same batch as trip-cost.py, so the
 question said "總計 NT$2,932 ... (NT$800 未確認)" while the tool printed "(全部未確認)": the
 tool had found that none of the prices was on its source page. The role already says to call
 clarify alone, after the tools; this hook enforces it for the figures:
@@ -232,7 +232,7 @@ def readable_questions(args):
     return None
 
 
-# 2026-11-19: 「我要跟小居去泡溫泉」 took three button questions in a row — keep the plan that was
+# 2026-11-19: 「我要去泡溫泉」 took three button questions in a row — keep the plan that was
 # already set, then "看費用明細", then another "下一步". A choice is a decision, never a way to
 # see information, and one message from the user gets at most one button question.
 INFO_CHOICE = re.compile(r"^\s*(?:\d+[.、]\s*)?(?:看|查看|顯示|列出|展開|瀏覽)")
@@ -258,7 +258,7 @@ def steps_problem(args, session_id, turn_id):
 
 
 # 2026-11-16: booking-links.py printed the map link for 「山口溫泉飯店」, and the question showed
-# one for 「山口溫泉館」 that 小居 had typed itself. Booking lines are pasted as printed.
+# one for 「山口溫泉館」 that the commander had typed itself. Booking lines are pasted as printed.
 LINKS_TOOL = "booking-links.py"
 LINK_TOOLS = (LINKS_TOOL, "format-plan.py")
 BOOKING_LINE = re.compile(r"^[\s•\-*]*(📍|🏨|🛏|📞)")
@@ -302,9 +302,9 @@ def links_problem(text, outputs):
             f"要換地方就用正確名稱重跑 {LINKS_TOOL}，再把輸出原樣貼上。")
 
 
-# 2026-11-19 (Telegram): asked for a cheaper hot spring, 小居 took 42 minutes. trip-cost.py
+# 2026-11-19 (Telegram): asked for a cheaper hot spring, the commander took 42 minutes. trip-cost.py
 # rightly left out 「雙人池 40分鐘 NT$250」 (the official page shows no price; its price page was
-# 404), and 小居 spent half an hour querying state.db, reading the checkers' code and patching
+# 404), and the commander spent half an hour querying state.db, reading the checkers' code and patching
 # page_evidence.py to make the price pass; the failed patch's warning reached the user's phone.
 # The checkers' verdict is final: the workflow's own scripts, this plugin and the session
 # databases are off limits to the bot.
@@ -379,7 +379,7 @@ def pre_tool_call(tool_name, args, task_id="", session_id="", turn_id="", **kwar
     return {"action": "modify", "args": readable} if readable else None
 
 
-# 2026-11-15: a button question went unanswered for 10 minutes; clarify gave up, and 小居's
+# 2026-11-15: a button question went unanswered for 10 minutes; clarify gave up, and the commander's
 # reply then repeated the whole plan as a second message under buttons that no longer worked.
 # After a timed-out question the reply says so in one line and lists the choices to type.
 TIMED_OUT = sessions.Recent()  # session_id -> {"turn", "question", "choices", "minutes"}
@@ -387,7 +387,7 @@ TIMEOUT_NOTE = ("使用者還沒選，按鈕已失效。最後回覆不要重貼
                 "只說一句按鈕已失效、想繼續就直接回覆編號或打字，並列出選項。")
 
 
-# 2026-11-19 (Telegram): the record said 「礁溪春和泡湯官網：雙人湯屋 40 分鐘 250 元」; 小居 planned on
+# 2026-11-19 (Telegram): the record said 「礁溪春和泡湯官網：雙人湯屋 40 分鐘 250 元」; the commander planned on
 # it, and the plan, its button question and two context summaries carried it on. The official
 # page now says 699元 for 60 minutes in winter. A recorded price tells where to look, not the price.
 RECORD_PRICE = money.PRICE

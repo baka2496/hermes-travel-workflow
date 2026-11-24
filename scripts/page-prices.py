@@ -9,9 +9,9 @@ and keeps what the page showed as a snapshot. trip-cost.py checks an item's pric
 snapshot (for a few hours), so run this first and pick prices from its lines; a price from a
 record, a blog or a search result is not on the page until this shows it.
 
-2026-11-19 (Telegram): asked for a cheaper hot spring, 小居 planned 春和's 「雙人池 40分鐘 NT$250」
+2026-11-19 (Telegram): asked for a cheaper hot spring, the commander planned 春和's 「雙人池 40分鐘 NT$250」
 from an old record. The official page shows 699元 for 60 minutes in winter; trip-cost.py could
-only say the price was not there, and 小居 spent half an hour finding out why.
+only say the price was not there, and the commander spent half an hour finding out why.
 
 A page that builds its prices with scripts may show none here: open it with the browser and
 read it there (trip-cost.py also accepts a page opened that way), or say the price was not found.

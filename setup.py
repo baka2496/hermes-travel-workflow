@@ -13,7 +13,7 @@ import sys
 
 PACKAGE = Path(__file__).resolve().parent
 PROFILES = ("trip", "travel-commander", "schedule-manager")
-PROFILE_NAMES = ("Trip Agent", "旅遊總指揮官 小居", "Schedule Manager")
+PROFILE_NAMES = ("Trip Agent", "Travel Commander", "Schedule Manager")
 REPLY_CHECK = "travel-reply-check"
 REPLY_CHECK_FILES = ("plugin.yaml", "__init__.py")
 # Modules the scripts and the plugin share (the price format; how Hermes stores conversations):
