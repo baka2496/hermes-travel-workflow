@@ -60,6 +60,7 @@ class FormatPlanTests(unittest.TestCase):
             "--preferences", str(self.prefs),
         )
         self.assertEqual(rc, 0, err)
+        self.assertIn("不用再重跑 phone-check.py", err)
         self.assertIn("12/14 礁溪泡湯 2人", out)
         self.assertIn("總計 NT$699，預算剩 NT$1,301", out)
         self.assertIn("• 雙人湯屋 60分鐘 NT$699", out)
