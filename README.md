@@ -4,11 +4,13 @@
 
 ```mermaid
 flowchart LR
-    trip["Trip Agent<br/>掃描機票與查核住宿"] --> db[("掃描紀錄")]
-    db --> command["Travel Commander<br/>篩選機會與比較整趟費用"]
-    schedule["Schedule Manager<br/>維護全年行程"] --> command
-    command --> proposal["週摘要、符合條件的提醒、旅行方案"]
-    proposal --> owner["本人決定是否成行及確認交易"]
+    trip["Trip Agent<br/>掃描機票、查核海外機加酒"] <-->|"看板派工與覆核"| command["Travel Commander<br/>整合預算、日期與旅行方案"]
+    trip --> db[("掃描紀錄")] --> command
+    schedule["Schedule Manager<br/>維護全年行程與時段核對"] <-->|"時段查核／入曆"| command
+    tools["即時查核工具與把關外掛<br/>平行比價、天氣、看圖、導航、排版檢查"] --> command
+    command --> proposal["週摘要、機票提醒、週四週末提案<br/>含價格、真照片、導航與預約話術"]
+    proposal --> owner["本人決定、訂位與付款"]
+    owner -->|"確認成行"| remind["自動行前提醒<br/>免費取消前24h、前一晚清單、出發前1h導航"]
 ```
 
 | Hermes profile | Telegram 顯示名稱 | 工作 |
@@ -66,8 +68,9 @@ py -3 .\setup.py resume --root "$workflowRoot"
 | `travel-workflow/scanner` | 每 15 分鐘 | 按掃描器內部節奏更新 SQLite，將狀態寫進本機排程紀錄 |
 | `travel-workflow/weekly` | 週一 09:00 | 彙整近期機會、等待中的查核及必要的資料缺口 |
 | `travel-workflow/alerts` | 每 15 分鐘檢查 | Hermes 只在掃描訊號改變時啟動評估。符合日期、預算、行程與時效條件才提醒 |
+| `travel-workflow/weekend`（選用） | 週四 20:00 | 檢查本週末行事曆空檔與天氣，有空檔時主動推播一個完整一日遊提案（用 `setup.py enable-weekend --root "$workflowRoot"` 啟用） |
 
-預算或行程涵蓋資料不足時，提醒保持靜默。需要專員補查的機會留在看板，由旅遊總指揮官覆核，也會在週摘要接續。票價觀測可能與即時價格不同，請在決定前重新查價。訂位、付款、改票及取消由本人逐次確認。
+預算或行程涵蓋資料不足時，提醒保持靜默。需要專員補查的機會留在看板，由旅遊總指揮官覆核，也會在週摘要接續。票價觀測可能與即時價格不同，請在決定前重新查價。訂位、付款、改票及取消由本人逐次確認；確認成行後可用 `trip-reminders.py` 自動排好免費取消前 24 小時、出發前一晚清單與出發前 1 小時導航提醒，長期累積的過期機會紀錄可用 `archive-opportunities.py` 歸檔。
 
 ## 檢查與移機
 
