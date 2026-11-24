@@ -173,6 +173,7 @@ def main():
         for problem in problems:
             print(f"- {problem}", file=sys.stderr)
         return 1
+    print("已通過 phone-check.py 手機排版檢查，可直接原樣送出，不用再重跑 phone-check.py。", file=sys.stderr)
     print(message)
     return 0
 
