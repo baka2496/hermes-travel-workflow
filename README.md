@@ -3,14 +3,24 @@
 用 Hermes 把掃描、全年行程和旅行提案串在一起。這個專案包含 Trip Bot 掃描器、三個 Hermes 角色、交接看板、排程和空白資料範本。
 
 ```mermaid
-flowchart TD
-    trip["Trip Agent<br/>掃描機票、查海外實價"] <-->|"看板派工與覆核"| cmd["Travel Commander<br/>整合預算、日期與方案"]
-    sched["Schedule Manager<br/>全年行程與時段核對"] <-->|"時段核對／入曆"| cmd
-    tools["即時查核工具＋把關外掛<br/>比價、天氣、看圖、導航、排版"] --> cmd
+flowchart TB
+    subgraph S1["1. 專員分工與即時查核"]
+        trip["Trip Agent<br/>掃描機票・查海外實價"]
+        sched["Schedule Manager<br/>全年行程・時段核對"]
+        tools["查核工具與外掛<br/>比價・天氣・看圖・導航"]
+    end
 
-    cmd --> out["週摘要、機票提醒、週四週末提案<br/>含價格、真照片、導航與預約話術"]
-    out --> owner["本人決定、訂位與付款"]
-    owner -->|"確認成行"| remind["自動行前提醒<br/>免費取消前24h、前一晚清單、出發前1h導航"]
+    cmd["Travel Commander<br/>整合預算與日期・產出方案"]
+
+    subgraph S2["2. 交付與行前閉環"]
+        direction LR
+        out["提案推播<br/>週摘要・機票・週四週末"] --> owner["本人決策<br/>確認訂位與付款"] --> remind["自動行前提醒<br/>取消前24h・前一晚・前1h"]
+    end
+
+    trip <-->|"看板派工"| cmd
+    sched <-->|"核對／入曆"| cmd
+    tools --> cmd
+    cmd --> S2
 ```
 
 | Hermes profile | Telegram 顯示名稱 | 工作 |
