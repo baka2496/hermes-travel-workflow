@@ -43,7 +43,7 @@ class RoleSizeTest(unittest.TestCase):
         self.assertNotIn("先 `--list`", skill)
 
     def test_card_rules_keep_their_point_without_the_whole_story(self):
-        text = (ROOT / "roles" / "trip.md").read_text(encoding="utf-8")
+        text = setup.expand_includes((ROOT / "roles" / "trip.md").read_text(encoding="utf-8"))
         for rule in ("不寫航空公司首頁價或自己估的「約」價", "已含它算的托運行李，不要再加", "要寫「未含托運行李」",
                      "最多重跑一次 `plan`", "不要讀 trip-bot 的程式碼、cache 或設定來除錯", "也不要自己挑沒查過價格的飯店"):
             self.assertIn(rule, text)
@@ -99,6 +99,20 @@ class LiveProfilesTest(unittest.TestCase):
             with self.subTest(profile=profile):
                 size = len((HERMES / profile / "SOUL.md").read_text(encoding="utf-8").replace("\r", ""))
                 self.assertLessEqual(size, limit, f"{profile} SOUL is {size} characters: tighten an old rule first")
+
+    def test_live_souls_are_built_from_the_repo(self):
+        # 2026-11-26: the hand-kept SOULs had drifted (the live trip still pasted trip-cost.py by hand).
+        # Fix a difference with `py -3 setup.py live-souls --root <hermes> --write` (it backs up first).
+        import re
+        for profile in setup.LIVE_SOULS:
+            head = HERMES / profile / setup.LIVE_HEAD
+            if not head.is_file():
+                continue
+            with self.subTest(profile=profile):
+                current = (HERMES / profile / "SOUL.md").read_bytes().decode("utf-8").replace("\r\n", "\n")
+                python = re.search(r'"([^"]*python[^"]*\.exe)"', current)
+                wanted = setup.live_soul(head, HERMES.parent, python.group(1) if python else None)
+                self.assertEqual(current, wanted, f"{profile} SOUL.md drifted from SOUL.head.md + roles/_shared")
 
     @staticmethod
     def yaml_list(profile, *path):

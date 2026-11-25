@@ -45,6 +45,85 @@ CARD_MAX_AGE_S = 6 * 3600
 # 2026-11-22: the card's budget arrived as "NT0,000": bash expanded `$4` inside a double-quoted --body,
 # and Trip filled in a NT$70,000 budget of its own. An amount that lost its `$` means the body is broken.
 LOST_DOLLAR = re.compile(r"NT(?=[0-9,])")
+# 2026-11-26: the owner only wants to pay, never to plan. A trip reply is three packages (①②③) that can be
+# booked as they stand: each with its total, transport, a link to book and a phone (format-plan.py --package).
+PACKAGE = re.compile(r"^\s*[①②③④⑤⑥⑦⑧⑨]")
+PACKAGES = 3
+FEW_FIT = re.compile(r"只有.{0,12}(符合|可行|排得進|有空|來得及)")
+# 「12/5–12/7 兩天一夜」 is three days and two nights: say so first and ask, never copy it (telegram-core.md).
+DATE_RANGE = re.compile(r"(?<![\d/])(\d{1,2})/(\d{1,2})\s*[–—\-~～至到]\s*(?:(\d{1,2})/)?(\d{1,2})(?![\d/:])")
+DAYS_NIGHTS = re.compile(r"([一二兩三四五六七1-7])天([一二兩三四五六0-6])夜")
+COUNTS = {c: n for n, chars in enumerate(("零0", "一1", "二兩2", "三3", "四4", "五5", "六6", "七7")) for c in chars}
+SAID_MISMATCH = re.compile(r"對不上|不一致|矛盾|其實是")
+# An official 「XX 起」 price holds for no date in particular: vacancy is 未確認 (telegram-research.md).
+VACANCY = re.compile(r"(?<!未確認)有空房|還有房|可以訂到")
+FROM_PRICE = re.compile(rf"起價|{travel_money.AMOUNT_PATTERN}\s*起")
+
+
+def package_problems(message):
+    """Why a reply's ①②③ packages are not three ready-to-book packages, or []."""
+    blocks = []
+    for line in message.splitlines():
+        if PACKAGE.match(line):
+            blocks.append([line.strip()])
+        elif blocks and line.strip():
+            blocks[-1].append(line.strip())
+    if not blocks:
+        return []
+    problems = []
+    if len(blocks) < PACKAGES and not FEW_FIT.search(message):
+        problems.append({"kind": "too_few_packages", "text": f"{len(blocks)} 個方案",
+                         "hint": f"give {PACKAGES} ready-to-book packages, or say 只有…符合 and why"})
+    elif len(blocks) > PACKAGES:
+        problems.append({"kind": "too_many_packages", "text": f"{len(blocks)} 個方案",
+                         "hint": f"keep the {PACKAGES} cheapest that fit; the owner only picks and pays"})
+    for block in blocks:
+        text = "\n".join(block)
+        missing = [what for what, found in (
+            ("總計 NT$", re.search(rf"總計\s*{travel_money.AMOUNT_PATTERN}", text)),
+            ("交通", "交通" in text),
+            ("可點的訂房連結", MARKDOWN_LINK.search(text)),
+            ("電話（或 電話：未取得）", "📞" in text or "電話：未取得" in text)) if not found]
+        if missing:
+            problems.append({"kind": "incomplete_package", "text": f"{block[0][:20]} 缺 {'、'.join(missing)}",
+                             "hint": "build the packages with format-plan.py --package and send its output as is"})
+    return problems
+
+
+def nights_between(start_month, start_day, end_month, end_day):
+    import datetime
+    year = datetime.date.today().year
+    try:
+        start = datetime.date(year, start_month, start_day)
+        end = datetime.date(year + (end_month < start_month), end_month, end_day)
+    except ValueError:
+        return None
+    return (end - start).days
+
+
+def days_problems(message):
+    """A date range and 「N天M夜」 that disagree, written as if they agreed."""
+    if SAID_MISMATCH.search(message):
+        return []
+    problems = []
+    for line in message.splitlines():
+        span, said = DATE_RANGE.search(line), DAYS_NIGHTS.search(line)
+        if not (span and said):
+            continue
+        month, day, end_month, end_day = span.groups()
+        nights = nights_between(int(month), int(day), int(end_month or month), int(end_day))
+        days, stated = COUNTS[said.group(1)], COUNTS[said.group(2)]
+        if nights is not None and 0 <= nights < 30 and (stated != nights or days != nights + 1):
+            problems.append({"kind": "days_mismatch", "text": f"{span.group(0)} 是 {nights + 1} 天 {nights} 夜，不是{said.group(0)}",
+                             "hint": "say the mismatch on the first line and ask which one with clarify buttons"})
+    return problems
+
+
+def vacancy_problems(message):
+    if VACANCY.search(message) and FROM_PRICE.search(message):
+        return [{"kind": "vacancy_from_price", "text": VACANCY.search(message).group(0),
+                 "hint": "a 「起」 price is not for a date: write 空房未確認 unless a dated booking page showed it"}]
+    return []
 
 
 def board_db():
@@ -359,6 +438,7 @@ def check(message, card=None):
                          "hint": "a lookup that read no prices was blocked or empty this time, not 'not on sale': "
                                  "write 這次沒讀到價格，未確認, and offer to look again"})
     problems += budget_problems(message)
+    problems += package_problems(message) + days_problems(message) + vacancy_problems(message)
     lines = message.strip("\n").splitlines()
     phone_lines = 0
     for number, line in enumerate(lines, 1):

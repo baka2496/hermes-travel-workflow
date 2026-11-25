@@ -104,9 +104,10 @@ UNKNOWN = object()  # the conversation is in no readable database: nothing to ch
 COST_TOOLS = (TOOL, "format-plan.py")
 
 
-def cost_block(output):
-    """Extract the '總計…' headline and its following '• …' item lines from trip-cost.py or format-plan.py output."""
-    lines = output.splitlines()
+def cost_blocks(output):
+    """Each '總計…' headline with its following '• …' item lines, from trip-cost.py or format-plan.py output.
+    format-plan.py --package prints one headline per package (2026-11-26: three packages in one reply)."""
+    lines, blocks = output.splitlines(), []
     for i, line in enumerate(lines):
         if line.strip().startswith("總計"):
             block = [line.strip()]
@@ -115,18 +116,23 @@ def cost_block(output):
                     block.append(nxt.strip())
                 else:
                     break
-            return "\n".join(block)
-    return None
+            blocks.append("\n".join(block))
+    return blocks
+
+
+def cost_block(output):
+    """The first cost block of an output, or None."""
+    return (cost_blocks(output) or [None])[0]
 
 
 def latest_cost_output(session_id, home):
-    """Output of the last trip-cost.py or format-plan.py run in this conversation, None if none yet,
-    or UNKNOWN if the conversation cannot be found."""
+    """Cost blocks of the last trip-cost.py or format-plan.py run in this conversation (one per package),
+    None if none yet, or UNKNOWN if the conversation cannot be found."""
     outputs = tool_outputs(session_id, home, COST_TOOLS)
     if outputs is UNKNOWN:
         return UNKNOWN
-    blocks = [b for o in outputs if (b := cost_block(o))]
-    return blocks[-1] if blocks else None
+    runs = [blocks for o in outputs if (blocks := cost_blocks(o))]
+    return "\n".join(runs[-1]) if runs else None
 
 
 def tool_outputs(session_id, home, tool):
@@ -162,7 +168,7 @@ def unconfirmed_amounts(output):
     """NT$ figures (item total and unit price) of each item trip-cost.py marked 未確認."""
     amounts = set()
     for line in output.splitlines()[1:]:
-        if "未確認" in line:
+        if "未確認" in line and not line.strip().startswith("總計"):
             amounts.update(money.amounts(line.split("，未確認")[0]))
     return amounts
 
@@ -173,12 +179,12 @@ def problem(text, output):
     if not totals:
         return None
     if output is None:
-        return (f"這則有「總計」，但這次對話還沒有 {TOOL} 的結果。先單獨執行 {TOOL}，等結果回來，"
-                "再用 clarify 問，總計照它印的第一行寫。")
-    headline = output.splitlines()[0].strip()
+        return ("這則有「總計」，但這次對話還沒有 format-plan.py 的結果。先單獨執行 format-plan.py，等結果回來，"
+                "再用 clarify 問，總計照它印的寫。")
+    headlines = [line.strip() for line in output.splitlines() if line.strip().startswith("總計")]
     for total in totals:
-        if total.strip() != headline:
-            return f"總計要照 {TOOL} 最後印的第一行寫：「{headline}」，不是「{total.strip()}」。改好再問。"
+        if total.strip() not in headlines:
+            return f"總計要照 format-plan.py 最後印的寫：「{'」「'.join(headlines)}」，不是「{total.strip()}」。改好再問。"
     missing = []
     for line in text.splitlines():
         if TOTAL.search(line) or "未確認" in line:
@@ -250,11 +256,17 @@ def choices_of(args):
     return [str(c) for c in args.get("choices") or []]
 
 
+COUNT_PROBLEM = "按鈕最多 3 個選項（推薦的放第一個），現在有 {n} 個：留最符合的三個。"
+
+
 def steps_problem(args, session_id, turn_id):
     if session_id and turn_id and ANSWERED.get(session_id) == turn_id:
         return SECOND_PROBLEM
-    info = [c for c in choices_of(args) if INFO_CHOICE.match(c)]
-    return INFO_PROBLEM.format(choice=info[0].strip()) if info else None
+    choices = choices_of(args)
+    info = [c for c in choices if INFO_CHOICE.match(c)]
+    if info:
+        return INFO_PROBLEM.format(choice=info[0].strip())
+    return COUNT_PROBLEM.format(n=len(choices)) if len(choices) > 3 else None
 
 
 # 2026-11-16: booking-links.py printed the map link for 「山口溫泉飯店」, and the question showed
@@ -335,6 +347,44 @@ def tamper_problem(tool_name, args):
     if tool_name in ("read_file", "search_files"):
         path = str(args.get("path") or args.get("file_path") or "")
         return TAMPER_PROBLEM if GUARDED.search(path) else None
+    return None
+
+
+# Kanban commands the commander's role used to spell out in prose (2026-11-26: rules that can be checked
+# are checked here, and the role only names the command to run).
+KANBAN = re.compile(r"\bkanban\b")
+# 2026-11-22: `kanban list --json` printed the whole board (57,736 characters) and compressed a hand-off.
+BOARD_JSON = re.compile(r"\bkanban\s+(?:--board[\s=]+\S+\s+)?(?:list|show)\b[^;&|\n]*\s--json\b")
+BOARD_JSON_PROBLEM = ("不要加 --json：整板 JSON 超過 10 萬字，會讓對話被壓縮。"
+                      "看卡片用 `hermes kanban --board command-center list --sort created-desc` 或 `show <卡號>`。")
+# 2026-11-22: bash expanded `$4` inside a double-quoted --body: NT$40,000 reached the card as NT0,000.
+DOUBLE_QUOTED_BODY = re.compile(r"""--body\s+"([^"]*)\"""")
+BODY_PROBLEM = ("卡片內容有 `$`，放在雙引號裡會被 bash 當成變數吃掉（11/22 NT$40,000 變成 NT0,000）。"
+                "--body 改用單引號，內容本身有單引號就改用 --body-file。")
+# 2026-11-21: a card number was made up because the card and its subscription ran in one batch.
+SAME_BATCH_PROBLEM = ("建卡和訂閱不能同一個指令跑：先單獨跑 create，等它回 \"id\": \"t_...\"，"
+                      "再用那個卡號跑 notify-subscribe。卡號絕不能自己編。")
+# 2026-11-21: the workers crashed, and the commander closed the card itself as another profile.
+AS_OTHER = re.compile(r"(?:^|\s)(?:-p|--profile)[\s=]+\S+\s+kanban\s+(?:--board[\s=]+\S+\s+)?complete\b")
+AS_OTHER_PROBLEM = ("不能用其他身分結案或送審（-p …）：專員或覆核當掉時最多 unblock 重試一次，"
+                    "還失敗就跟使用者說這次沒查成、沒有價格，用按鈕問要不要重試。")
+
+
+def kanban_problem(tool_name, args):
+    """Why this terminal command misuses the Kanban board, or None."""
+    if tool_name != "terminal":
+        return None
+    command = str(args.get("command") or "")
+    if not KANBAN.search(command):
+        return None
+    if BOARD_JSON.search(command):
+        return BOARD_JSON_PROBLEM
+    if re.search(r"\screate\b", command) and any("$" in body for body in DOUBLE_QUOTED_BODY.findall(command)):
+        return BODY_PROBLEM
+    if re.search(r"\screate\b", command) and "notify-subscribe" in command:
+        return SAME_BATCH_PROBLEM
+    if AS_OTHER.search(command):
+        return AS_OTHER_PROBLEM
     return None
 
 
@@ -467,7 +517,7 @@ def places_problem(args):
 def pre_tool_call(tool_name, args, task_id="", session_id="", turn_id="", **kwargs):
     if isinstance(args, dict):
         try:
-            why = tamper_problem(tool_name, args)
+            why = tamper_problem(tool_name, args) or kanban_problem(tool_name, args)
         except Exception:
             why = None
         if why:
@@ -847,10 +897,12 @@ def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
         hide = confirmed_only(home)
         if hide or TOTAL_AMOUNT.search(fixed):
             outputs = tool_outputs(session_id, home, COST_TOOLS)
-            outputs = [] if outputs is UNKNOWN else [b for o in outputs if (b := cost_block(o))]
-            fixed = corrected_costs(fixed, outputs) if outputs else fixed
-            if hide:
-                fixed = without_unconfirmed(fixed, outputs, reviewed_card_amounts(session_id, home))
+            runs = [] if outputs is UNKNOWN else [blocks for o in outputs if (blocks := cost_blocks(o))]
+            blocks = [b for run in runs for b in run]  # one per package of a format-plan.py --package run
+            fixed = corrected_costs(fixed, blocks) if blocks else fixed
+            if hide:  # every package of the latest run is printed, not only its first
+                latest = ["\n".join(runs[-1])] if runs else []
+                fixed = without_unconfirmed(fixed, latest, reviewed_card_amounts(session_id, home))
         return fixed if fixed != response_text else None
     except Exception:
         return None

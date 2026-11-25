@@ -211,13 +211,13 @@ class ProfileSettingsTests(unittest.TestCase):
                 self.assertIn("才用 `browser_exec`", text)
                 self.assertIn("一次只開一個網址", text)
                 self.assertIn("`web_extract` 在這台電腦讀不到網頁", text)
-                self.assertIn("總計下面原樣貼上 trip-cost.py 印的每一行明細，不要合併或改寫", text)
+                # 2026-11-26: format-plan.py prints the total and every item line itself; it is the only way.
+                self.assertIn("方案只用 format-plan.py 組，不要自己拼工具輸出", text)
                 # 2026-11-19: a record's 「TWD 120」 for another route confirmed a fare; records no longer
                 # vouch for prices, so reusing one means opening its page again.
                 self.assertIn("紀錄裡的價格只是去哪裡查的線索", text)
                 # 2026-11-19: 「湯屋 NT$600」 was 「$600 / 1小時」; and 「我都是騎車或開車，不要再給我大眾運輸了」.
                 self.assertIn("項目名稱寫推薦的是什麼（湯屋、房型），加時長或人數", text)
-                self.assertIn("它會寫「（每1小時）」「（假日價）」這類說明，照留", text)
                 self.assertIn("`public_transit` 是 false", text)
                 self.assertIn("交通費算油錢（估算）、停車費、國道通行費", text)
                 # 2026-11-19 (Telegram): 「客房泡湯2小時 NT$800」 used a 假日 1-hour price.
@@ -361,6 +361,54 @@ class UpgradeTests(unittest.TestCase):
             if any(word in text for word in forbidden):
                 hits.append(str(path.relative_to(REPO)))
         self.assertEqual(hits, [], f"Personal bot nickname leaked into: {hits}")
+
+
+OLD_SOUL = "手寫的舊版\n"
+
+
+class LiveSoulTests(unittest.TestCase):
+    """2026-11-26: the running bots' SOUL.md is built from their own SOUL.head.md and the shared rules."""
+
+    def setUp(self):
+        self.root = Path(scratch.new_dir("hermes-live-souls-"))
+        self.home = self.root / "profiles" / "trip"
+        self.home.mkdir(parents=True)
+        (self.home / "SOUL.head.md").write_text("# 自己的規則\n路徑 {{ROOT}}\n{{INCLUDE:roles/_shared/trip-telegram.md}}\n",
+                                                encoding="utf-8")
+        (self.home / "SOUL.md").write_text(OLD_SOUL, encoding="utf-8")
+
+    def run_live(self, **kwargs):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            status = setup.live_souls(self.root, python="C:/py/python.exe", stamp="20261126T120000", **kwargs)
+        return status, out.getvalue()
+
+    def test_a_drifted_soul_is_reported_and_left_alone(self):
+        status, out = self.run_live()
+        self.assertEqual(status, 1)
+        self.assertIn("trip: SOUL.md differs", out)
+        self.assertIn("project-manager: no SOUL.head.md", out)
+        self.assertEqual((self.home / "SOUL.md").read_text(encoding="utf-8"), OLD_SOUL)
+        self.assertFalse(list(self.home.glob("SOUL.before-*")))
+
+    def test_write_backs_up_then_builds_from_head_and_shared_rules(self):
+        self.run_live(write=True)
+        backup = self.home / "SOUL.before-generated-20261126T120000.md"
+        self.assertEqual(backup.read_text(encoding="utf-8"), OLD_SOUL)
+        soul = (self.home / "SOUL.md").read_bytes().decode("utf-8")
+        self.assertTrue(soul.startswith(f"# 自己的規則\n路徑 {self.root.as_posix()}\n"))
+        self.assertIn((REPO / "roles/_shared/trip-telegram.md").read_text(encoding="utf-8").splitlines()[0], soul)
+        self.assertIn('"C:/py/python.exe"', soul)
+        self.assertNotIn("\r", soul)
+        self.assertNotIn("{{", soul)
+        status, out = self.run_live()
+        self.assertIn("trip: SOUL.md matches", out)
+
+    def test_an_existing_backup_is_never_overwritten(self):
+        (self.home / "SOUL.before-generated-20261126T120000.md").write_text("更早的備份", encoding="utf-8")
+        with self.assertRaises(RuntimeError):
+            self.run_live(write=True)
+        self.assertEqual((self.home / "SOUL.md").read_text(encoding="utf-8"), OLD_SOUL)
 
 
 if __name__ == "__main__":

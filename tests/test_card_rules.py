@@ -6,14 +6,18 @@ back asking Trip to pick hotels it had not priced, which sent Trip back to Googl
 """
 import os
 from pathlib import Path
+import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+import setup  # noqa: E402  (roles share their card rules through {{INCLUDE:}} files)
 HERMES = Path(os.environ.get("LOCALAPPDATA", "")) / "hermes" / "profiles"
 
 
 def texts(repo_role, live_profile):
-    found = [(f"roles/{repo_role}.md", (ROOT / "roles" / f"{repo_role}.md").read_text(encoding="utf-8"))]
+    found = [(f"roles/{repo_role}.md",
+              setup.expand_includes((ROOT / "roles" / f"{repo_role}.md").read_text(encoding="utf-8")))]
     live = HERMES / live_profile / "SOUL.md"
     if live.is_file():
         found.append((f"live {live_profile}", live.read_text(encoding="utf-8")))

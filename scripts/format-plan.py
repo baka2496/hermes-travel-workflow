@@ -1,10 +1,21 @@
 """Assemble a verified, phone-ready Telegram travel plan from structured inputs.
 
-Instead of asking the model to hand-stitch outputs from trip-cost.py, booking-links.py,
-place-photo.py and phone-check.py across multiple turns, this tool runs them in one step,
-keeps every verified figure and link verbatim, and validates phone readability before printing.
+The one way to write a plan reply: it runs trip-cost.py, booking-links.py and phone-check.py in
+one step, keeps every verified figure and link verbatim, and validates phone readability before
+printing. Never stitch those tools' outputs together by hand.
 
-Example (made-up place; never copy into a reply):
+Three ready-to-book packages in one reply (2026-11-26: the owner only wants to pay, never to plan).
+Each `--package` starts one package; options before the first are shared (header, dates, guests):
+  format-plan.py --header "12/14–15 礁溪 2人" --date 2026-12-14 --checkout 2026-12-15 --guests 2 \\
+      --package --place "範例溫泉" --room "和室雙人房" --transport "開車約 50 分鐘" \\
+          --item "和室雙人房=3200@https://www.example.com/rooms" --official https://www.example.com/rooms \\
+          --phone 03-0000000 --phone-source https://www.example.com/rooms \\
+      --package ... --package ...
+Packages come out cheapest first. Each needs a confirmed total, its transport and a way to book
+(official page, booking-site page or phone). Fewer than three needs --few-reason 「只有…符合…」.
+
+One package in full (after the owner picks one, or for a scheduled weekend plan), example with a
+made-up place; never copy it into a reply:
   format-plan.py --header "12/14 礁溪泡湯 2人" --date 2026-12-14 \\
       --item "範例湯屋 60分鐘=699x1@https://www.example.com/hotspring.html" \\
       --place "範例溫泉" --official https://www.example.com/hotspring.html \\
@@ -14,6 +25,7 @@ Example (made-up place; never copy into a reply):
 import argparse
 import importlib.util
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -33,6 +45,73 @@ def run_tool(script, args):
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
 
+def run_costs(args, notes):
+    """trip-cost.py's output for args.item: (output, problem). Output is "" when nothing is confirmed."""
+    # No --budget when the user gave none (2026-11-25): trip-cost.py then prints the total alone.
+    cost_args = [] if args.budget is None else ["--budget", str(args.budget)]
+    if args.date:
+        cost_args += ["--date", args.date]
+    if args.hermes_root:
+        cost_args += ["--hermes-root", str(args.hermes_root)]
+    if args.records:
+        cost_args += ["--records", str(args.records)]
+    if args.preferences:
+        cost_args += ["--preferences", str(args.preferences)]
+    cost_args += list(args.item)
+    rc, out, err = run_tool("trip-cost.py", cost_args)
+    if err:
+        notes.append(err)
+    if rc != 0:
+        return None, err or f"trip-cost.py 失敗（exit {rc}）"
+    return ("" if not out or out.startswith("沒有確認過的價格") else out), None
+
+
+def run_links(args):
+    """booking-links.py's output for args.place: (output, problem)."""
+    link_args = [args.place]
+    if args.official:
+        link_args += ["--official", args.official]
+    if args.booking:
+        link_args += ["--booking", args.booking]
+    if args.booking_label:
+        link_args += ["--booking-label", args.booking_label]
+    if getattr(args, "checkin", None) or args.date:
+        link_args += ["--checkin", getattr(args, "checkin", None) or args.date]
+    if getattr(args, "checkout", None):
+        link_args += ["--checkout", args.checkout]
+    if getattr(args, "guests", None):
+        link_args += ["--guests", str(args.guests)]
+    if getattr(args, "route", None):
+        link_args += ["--route", *args.route]
+    if getattr(args, "reservation_script", False):
+        link_args.append("--reservation-script")
+        if getattr(args, "time_text", None):
+            link_args += ["--time", args.time_text]
+        if getattr(args, "script_item", None):
+            link_args += ["--item", args.script_item]
+    if args.phone:
+        link_args += ["--phone", args.phone]
+    if args.phone_source:
+        link_args += ["--phone-source", args.phone_source]
+    if args.hermes_root:
+        link_args += ["--hermes-root", str(args.hermes_root)]
+    if args.records:
+        link_args += ["--records", str(args.records)]
+    rc, out, err = run_tool("booking-links.py", link_args)
+    if rc != 0:
+        return None, err or f"booking-links.py 失敗（exit {rc}）"
+    return out, None
+
+
+def checked(message, for_clarify=False):
+    """phone-check.py's problems for message, formatted for stderr."""
+    problems = load_module("phone_check", "phone-check.py").check(message)["problems"]
+    if for_clarify:
+        # In clarify questions MEDIA is intentionally omitted; ignore missing_photo only in this mode.
+        problems = [p for p in problems if p.get("kind") != "missing_photo"]
+    return [f"{p['kind']}: {p.get('text', '')} {p.get('hint', '')}".strip() for p in problems]
+
+
 def build_plan(args):
     """Build the plan text and validate it. Returns (text, problems, stderr_notes)."""
     notes = []
@@ -40,23 +119,10 @@ def build_plan(args):
 
     # 1. Verified costs via trip-cost.py
     if args.item:
-        # No --budget when the user gave none (2026-11-25): trip-cost.py then prints the total alone.
-        cost_args = [] if args.budget is None else ["--budget", str(args.budget)]
-        if args.date:
-            cost_args += ["--date", args.date]
-        if args.hermes_root:
-            cost_args += ["--hermes-root", str(args.hermes_root)]
-        if args.records:
-            cost_args += ["--records", str(args.records)]
-        if args.preferences:
-            cost_args += ["--preferences", str(args.preferences)]
-        cost_args += list(args.item)
-        rc, out, err = run_tool("trip-cost.py", cost_args)
-        if err:
-            notes.append(err)
-        if rc != 0:
-            return None, [err or f"trip-cost.py 失敗（exit {rc}）"], notes
-        if out and not out.startswith("沒有確認過的價格"):
+        out, why = run_costs(args, notes)
+        if why:
+            return None, [why], notes
+        if out:
             sections.append(out)
 
     # 2. Optional weather & short notes (traffic, highlights, pros/cons)
@@ -81,56 +147,115 @@ def build_plan(args):
 
     # 4. Verified booking links, one-tap route, phone & reservation script via booking-links.py
     if args.place:
-        link_args = [args.place]
-        if args.official:
-            link_args += ["--official", args.official]
-        if args.booking:
-            link_args += ["--booking", args.booking]
-        if args.booking_label:
-            link_args += ["--booking-label", args.booking_label]
-        if getattr(args, "checkin", None) or args.date:
-            link_args += ["--checkin", getattr(args, "checkin", None) or args.date]
-        if getattr(args, "checkout", None):
-            link_args += ["--checkout", args.checkout]
-        if getattr(args, "guests", None):
-            link_args += ["--guests", str(args.guests)]
-        if getattr(args, "route", None):
-            link_args += ["--route", *args.route]
-        if getattr(args, "reservation_script", False):
-            link_args.append("--reservation-script")
-            if getattr(args, "time_text", None):
-                link_args += ["--time", args.time_text]
-            if getattr(args, "script_item", None):
-                link_args += ["--item", args.script_item]
-        if args.phone:
-            link_args += ["--phone", args.phone]
-        if args.phone_source:
-            link_args += ["--phone-source", args.phone_source]
-        if args.hermes_root:
-            link_args += ["--hermes-root", str(args.hermes_root)]
-        if args.records:
-            link_args += ["--records", str(args.records)]
-        rc, out, err = run_tool("booking-links.py", link_args)
-        if rc != 0:
-            return None, [err or f"booking-links.py 失敗（exit {rc}）"], notes
+        out, why = run_links(args)
+        if why:
+            return None, [why], notes
         if out:
             sections.append(out)
         if not args.phone:
             sections.append("電話：未取得")
 
     message = "\n".join(sections)
-
     # 5. Phone readability & photo/phone completeness check
-    phone_check = load_module("phone_check", "phone-check.py")
-    report = phone_check.check(message)
-    problems = report["problems"]
-    if args.for_clarify:
-        # In clarify questions MEDIA is intentionally omitted; ignore missing_photo only in this mode.
-        problems = [p for p in problems if p.get("kind") != "missing_photo"]
+    return message, checked(message, args.for_clarify), notes
+
+
+MARKS = "①②③"
+# 2026-11-25: 「只推一間給我選擇也太少」. Fewer than three only when the reply says why (phone-check.FEW_FIT).
+FEW_FIT = re.compile(r"只有.{0,12}(符合|可行|排得進|有空|來得及)")
+SHORT_LABELS = (("Google 地圖・查空房", "地圖"), ("官網訂房", "官網"), ("一鍵多點導航", "導航"))
+NO_PHONE = "電話：未取得"
+
+
+def one_line_links(output):
+    """booking-links.py's lines as one short phone line: 「📍 [地圖](…) 🏨 [官網](…) 📞 03-…」."""
+    line = " ".join(part.strip() for part in output.splitlines() if part.strip() and not part.startswith("💬"))
+    for long, short in SHORT_LABELS:
+        line = line.replace(f"[{long}]", f"[{short}]")
+    return line
+
+
+def total_of(cost_output):
+    found = load_module("travel_money", "travel_money.py").amounts(cost_output.splitlines()[0])
+    return int(found[0][3:].replace(",", "")) if found else 0
+
+
+def build_packages(common, packages):
+    """Up to three ready-to-book packages in one phone-width reply. Returns (text, problems, stderr_notes)."""
+    notes, problems, built = [], [], []
+    if len(packages) > len(MARKS):
+        return None, [f"最多 {len(MARKS)} 個方案，現在有 {len(packages)} 個：留最便宜、最符合的 {len(MARKS)} 個"], notes
+    few = (common.few_reason or "").strip()
+    if len(packages) < len(MARKS) and not FEW_FIT.search(few):
+        return None, [f"要給 {len(MARKS)} 個能直接訂的方案，現在只有 {len(packages)} 個：再找符合日期與交通方式、"
+                      "這次查過價格的地方；真的只有一兩個符合，加 --few-reason 「只有…符合…，因為…」"], notes
+    for number, package in enumerate(packages, 1):
+        name = package.place or f"第 {number} 個方案"
+        if not package.place or not package.transport or not package.item:
+            problems.append(f"{name}：每個方案都要 --place、--transport（交通方式與時間）和至少一個 --item")
+            continue
+        if not (package.official or package.booking or package.phone):
+            problems.append(f"{name}：沒有能訂的地方（--official 官網、--booking 訂房頁或 --phone 電話），換一個能直接訂的")
+            continue
+        own = {key: value for key, value in vars(package).items() if value not in (None, [])}
+        args = argparse.Namespace(**{**vars(common), **own})
+        cost, why = run_costs(args, notes)
+        if why:
+            problems.append(f"{name}：{why}")
+            continue
+        if not cost:
+            problems.append(f"{name}：沒有確認過的價格，不能當成能直接訂的方案；換一家官網或訂房頁有標價的地方")
+            continue
+        links, why = run_links(args)
+        if why:
+            problems.append(f"{name}：{why}")
+            continue
+        built.append((total_of(cost), package, cost.splitlines()[0].strip(), one_line_links(links)))
     if problems:
-        formatted = [f"{p['kind']}: {p.get('text', '')} {p.get('hint', '')}".strip() for p in problems]
-        return message, formatted, notes
-    return message, [], notes
+        return None, problems, notes
+    built.sort(key=lambda entry: entry[0])  # cheapest first: the recommended one unless its note says why not
+    header = common.header.strip()
+    lines = [f"{header}｜{few}" if few else f"{header}｜{len(built)} 個方案，點連結就能訂"]
+    for mark, (_, package, total, links) in zip(MARKS, built):
+        lines.append(f"{mark} {package.place.strip()}" + (f"｜{package.room.strip()}" if package.room else ""))
+        lines.append(total)
+        lines.append("｜".join(p.strip() for p in (package.dates, f"交通：{package.transport}", package.note)
+                              if p and p.strip()))
+        if package.photo:
+            lines.append(f"MEDIA:{Path(package.photo).as_posix()}")
+            if package.photo_caption:
+                caption = package.photo_caption.strip()
+                lines.append(caption if caption.startswith("📷") else f"📷 {caption}")
+        lines.append(links)
+        if not package.phone:  # its own line: with show_unconfirmed off the plugin drops it, not the links
+            lines.append(NO_PHONE)
+    message = "\n".join(lines)
+    return message, checked(message), notes
+
+
+def package_parser():
+    parser = argparse.ArgumentParser(prog="format-plan.py ... --package", add_help=False)
+    parser.add_argument("--place", help="the place's name as on its own page")
+    parser.add_argument("--room", help="room or bath being booked, as its page names it")
+    parser.add_argument("--transport", help="how to get there and how long, e.g. 開車約 50 分鐘")
+    parser.add_argument("--dates", help="this package's dates when they differ from the header")
+    parser.add_argument("--note", help="one short point: the key pro or con")
+    parser.add_argument("--item", action="append", default=[], help="cost item in trip-cost.py format (repeatable)")
+    for option in ("--official", "--booking", "--booking-label", "--phone", "--phone-source", "--photo",
+                   "--photo-caption", "--date", "--checkin", "--checkout"):
+        parser.add_argument(option)
+    return parser
+
+
+def split_packages(argv):
+    """argv before the first --package, and each package's own argv."""
+    chunks = [[]]
+    for token in argv:
+        if token == "--package":
+            chunks.append([])
+        else:
+            chunks[-1].append(token)
+    return chunks[0], chunks[1:]
 
 
 def main():
@@ -160,12 +285,17 @@ def main():
     parser.add_argument("--note", action="append", default=[], help="short note line (repeatable)")
     parser.add_argument("--for-clarify", action="store_true",
                         help="omit MEDIA line for a clarify button question (photo sent after user chooses)")
+    parser.add_argument("--few-reason", help="with fewer than three --package: 「只有…符合…，因為…」")
     parser.add_argument("--records", help=argparse.SUPPRESS)
     parser.add_argument("--hermes-root", help=argparse.SUPPRESS)
     parser.add_argument("--preferences", help=argparse.SUPPRESS)
-    args = parser.parse_args()
-
-    message, problems, notes = build_plan(args)
+    shared, packages = split_packages(sys.argv[1:])
+    args = parser.parse_args(shared)
+    if packages:
+        each = package_parser()
+        message, problems, notes = build_packages(args, [each.parse_args(chunk) for chunk in packages])
+    else:
+        message, problems, notes = build_plan(args)
     for note in notes:
         print(note, file=sys.stderr)
     if problems:
