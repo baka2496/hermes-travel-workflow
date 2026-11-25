@@ -338,11 +338,104 @@ def tamper_problem(tool_name, args):
     return None
 
 
+# 2026-11-25: 「…兩人整趟預算 NT$2,000…這次想先走哪一趟？」 The user never gave a budget: a handoff wrote
+# it into preferences.json on 2026-11-11. A budget may be written, passed to trip-cost.py/format-plan.py
+# (--budget) or put on a card only when the user's own words give that amount (this conversation, a
+# Telegram message from the last week, or a preferences.json budget whose `quote` has it).
+BUDGET_ARG = re.compile(r"--budget[\s=]+[\"']?(\d+)")
+PREFERENCES = "preferences.json"
+NEW_AMOUNT = re.compile(r'"amount"\s*:\s*(\d+)')
+BUDGET_ARG_PROBLEM = ("使用者沒說過預算 {amount}：拿掉 --budget（沒有預算時工具只算總計），"
+                      "回覆寫「預算未確認」或不提。")
+BUDGET_RECORD_PROBLEM = ("preferences.json 的 budget 只能記使用者親口說過的金額，並在 quote 寫他的原話；"
+                         "這次對話裡使用者沒說過 {amount}。沒說過就保持 null。")
+
+
+def owner_preferences(home):
+    for root in (Path(home), Path(home).parent.parent):
+        try:
+            return json.loads((root / "shared" / "travel-workflow" / PREFERENCES).read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def budget_problem(tool_name, args, session_id, home):
+    """Why this call states a budget the user never gave, or None."""
+    if tool_name == "clarify":
+        text = question_text(args)
+    elif tool_name == "terminal":
+        text = str(args.get("command") or "")
+    elif tool_name in WRITES:
+        text = ""
+    else:
+        return None
+    path = str(args.get("path") or args.get("file_path") or "").replace("\\", "/")
+    record = tool_name in WRITES and path.endswith(PREFERENCES)
+    arg = BUDGET_ARG.findall(text) if tool_name == "terminal" and re.search(r"trip-cost|format-plan", text) else []
+    card = tool_name == "terminal" and "kanban" in text and " create" in text
+    if not (record or arg or (tool_name == "clarify" or card) and money.stated_budgets(text)):
+        return None
+    said = sessions.owner_words(home, session_id)
+    if said is None:
+        return None
+    if record:
+        before = str(args.get("old_string", "")) if tool_name == "patch" else ""
+        after = str(args.get("new_string", "") if tool_name == "patch" else args.get("content", ""))
+        heard = set().union(*(money.spoken_amounts(t) for t in said)) if said else set()
+        new = [int(a) for a in NEW_AMOUNT.findall(after) if a not in NEW_AMOUNT.findall(before)]
+        unsaid = [a for a in new if a not in heard]
+        return BUDGET_RECORD_PROBLEM.format(amount=money.money(unsaid[0])) if unsaid else None
+    prefs = owner_preferences(home)
+    for amount in map(int, arg):
+        if money.unsaid_budgets(f"預算 {money.money(amount)}", said, prefs):
+            return BUDGET_ARG_PROBLEM.format(amount=money.money(amount))
+    unsaid = money.unsaid_budgets(text, said, prefs) if not arg else []
+    return f"「{unsaid[0][0]}」：{money.BUDGET_HINT}" if unsaid else None
+
+
+# 2026-11-25: asked 「我想出去玩」, the commander offered one place (烏來), its backup (礁溪) and a date with no
+# place (「這週末出發」); the user: 「只推一間給我選擇也太少」. A where-to-go question offers three different
+# places, each from a page or record this conversation read, unless it says only fewer fit the dates.
+WHERE_QUESTION = re.compile(r"去哪(?![間家])|哪一趟|走哪|哪個地方|哪裡玩|目的地")
+FEW_FIT = re.compile(r"只有.{0,12}(符合|可行|排得進|有空|來得及)")
+NOT_A_PLACE = re.compile(r"[（(][^）)]*[）)]|\d{1,2}/\d{1,2}|\d+天\d+夜|[一二兩三四五]天[一二兩三四]夜|一日遊?|半日遊?|"
+                         r"這週末?|下週末?|週末|本週|下週|[週周][一二三四五六日]|出發|改期|改天|別天|其他時間|"
+                         r"校慶補假|補假|連假|平日|假日|自駕|開車|騎車|行程|方案|推薦|Recommended|"
+                         r"泡湯|溫泉|之旅|[\s–—\-~～至到、，,.。]")
+MIN_PLACES = 3
+PLACES_PROBLEM = ("問去哪裡時要給 {need} 個不同的地點讓使用者選，現在只有 {have} 個（{places}）；"
+                  "日期不算地點（「{dateonly}」）。再找兩三個符合日期與交通方式、這次查過價格或紀錄裡有來源的地方；"
+                  "真的只有一兩個符合，就在問題裡寫「只有…符合」並說原因。已取消、已失效的紀錄不要拿來問。")
+
+
+def place_of(choice):
+    return NOT_A_PLACE.sub("", choice)
+
+
+def places_problem(args):
+    text = question_text(args)
+    if not WHERE_QUESTION.search(text) or FEW_FIT.search(text):
+        return None
+    choices = choices_of(args)
+    places = list(dict.fromkeys(p for p in map(place_of, choices) if p))
+    if len(places) >= MIN_PLACES:
+        return None
+    dateonly = "、".join(c for c in choices if not place_of(c)) or "無"
+    return PLACES_PROBLEM.format(need=MIN_PLACES, have=len(places), places="、".join(places) or "無", dateonly=dateonly)
+
+
 def pre_tool_call(tool_name, args, task_id="", session_id="", turn_id="", **kwargs):
     if isinstance(args, dict):
         try:
             why = tamper_problem(tool_name, args)
         except Exception:
+            why = None
+        if why:
+            return {"action": "block", "message": why}
+        try:
+            why = budget_problem(tool_name, args, session_id, os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+        except Exception:  # a broken check must never stop the bot
             why = None
         if why:
             return {"action": "block", "message": why}
@@ -360,7 +453,7 @@ def pre_tool_call(tool_name, args, task_id="", session_id="", turn_id="", **kwar
         text = question_text(args)
         if MEDIA.search(text):
             return {"action": "block", "message": MEDIA_PROBLEM}
-        why = steps_problem(args, session_id, turn_id)
+        why = steps_problem(args, session_id, turn_id) or places_problem(args)
         home = os.environ.get("HERMES_HOME") or Path.home() / ".hermes"
         if not why and TOTAL.search(text) and session_id:
             output = latest_cost_output(session_id, home)
@@ -664,6 +757,18 @@ def without_unseen_photos(text, session_id):
     return "\n".join(kept)
 
 
+def without_unsaid_budgets(text, session_id, home):
+    """A reply's budget the user never gave becomes 「預算未確認」 (2026-11-25)."""
+    if not money.stated_budgets(text):
+        return text
+    said = sessions.owner_words(home, session_id)
+    if said is None:
+        return text
+    for written, _ in money.unsaid_budgets(text, said, owner_preferences(home)):
+        text = text.replace(written, "預算未確認")
+    return text
+
+
 def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
     if not session_id or not isinstance(response_text, str):
         return None
@@ -674,6 +779,7 @@ def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
             return timeout_reply(response_text, pending)
         fixed = without_unseen_photos(response_text, session_id)
         home = os.environ.get("HERMES_HOME") or Path.home() / ".hermes"
+        fixed = without_unsaid_budgets(fixed, session_id, home)
         hide = confirmed_only(home)
         if hide or TOTAL_AMOUNT.search(fixed):
             outputs = tool_outputs(session_id, home, COST_TOOLS)
