@@ -98,7 +98,8 @@ def spoken_amounts(text):
         token = match.group(0).strip(".,")
         if not re.search(rf"[\d{CN_DIGITS}十]", token):
             continue
-        counted = match.end() < len(text) and text[match.end()] in COUNTED
+        # Only a count word splits it: 「1萬5/人」 is NT$15,000 per person (Antigravity's review of b74e794).
+        counted = match.end() < len(text) and text[match.end()] in COUNT_WORDS
         split = UNIT_THEN_COUNT.match(token) if counted else None
         parts = [split.group(1), split.group(2)] if split else [token]
         for part in parts:
@@ -113,7 +114,7 @@ def spoken_amounts(text):
 # comes next (a count or a date: 「預算 2 人」「預算 12/7」); 「/人」 after a currency or unit is per person
 # (Antigravity's review of db4a2e0).
 _TAIL_NUMBER = rf"(?:\d+[ 	]*千?|[{CN_DIGITS}]千?)(?![\d{COUNT_WORDS}])"
-_AMOUNT = (rf"{CURRENCY_BEFORE}[ 	]*\d[\d,]*(?:\.\d+)?[ 	]*[萬千kK]?(?:{_TAIL_NUMBER})?"
+_AMOUNT = (rf"{CURRENCY_BEFORE}[ 	]*\d[\d,]*(?:\.\d+)?(?:[ 	]*[萬千kK](?:{_TAIL_NUMBER})?)?"
            rf"|\d[\d,]*(?:\.\d+)?[ 	]*[萬千kK](?:{_TAIL_NUMBER})?"
            rf"|[{CN_DIGITS}十][{CN_DIGITS}十百千萬]*[千萬](?:[{CN_DIGITS}](?![{COUNT_WORDS}]))?"
            rf"|\d[\d,]*[ 	]*{CURRENCY_AFTER}"

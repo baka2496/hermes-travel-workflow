@@ -129,6 +129,15 @@ class BudgetWordsTests(unittest.TestCase):
             self.assertEqual(travel_money.spoken_amounts(text), set(), text)
         self.assertEqual(travel_money.unsaid_budgets("預算 NT$1,000", ["萬一下雨怎麼辦"]), [("預算 NT$1,000", 1000)])
 
+    def test_review_of_b74e794_per_person_and_a_digit_after_the_amount(self):
+        # Antigravity's review of b74e794: 「1萬5/人」 was split into 10000 and 5, so the owner's own per-person
+        # budget was called unsaid; 「預算 NT$2,000兩大一小」 was read as a budget of 2, so it slipped past 「2大1小」.
+        for text, amount in (("1萬5/人", 15000), ("1萬5000/人", 15000), ("兩千五/晚", 2500)):
+            self.assertIn(amount, travel_money.spoken_amounts(text), text)
+            self.assertEqual(travel_money.unsaid_budgets(f"預算 {text}", [f"預算 {text}"]), [], text)
+        self.assertEqual(travel_money.unsaid_budgets("預算 NT$2,000兩大一小", ["2大1小"]), [("預算 NT$2,000", 2000)])
+        self.assertEqual([a for _, a in travel_money.stated_budgets("預算 NT$1萬5")], [15000])
+
     def test_the_ways_a_person_writes_an_amount(self):
         # 「2000以內的」 is what the owner typed on 2026-10-17 (about Tokyo rooms).
         for text, amount in (("2000以內的", 2000), ("兩千", 2000), ("預算 4萬", 40000), ("一萬五", 15000),
