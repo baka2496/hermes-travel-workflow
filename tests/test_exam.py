@@ -1,6 +1,9 @@
+from contextlib import redirect_stdout
 import datetime as dt
 import importlib.util
+import io
 import json
+from unittest import mock
 from pathlib import Path
 import tempfile
 import unittest
@@ -32,8 +35,10 @@ class DatesTests(unittest.TestCase):
             path = Path(tmp) / "q.json"
             path.write_text(json.dumps({"questions": [{"id": "vague"}]}), encoding="utf-8")
             args = type("Args", (), {"questions": path, "only": ["vage"]})()
-            exam.gateway_started = lambda: None
-            self.assertEqual(exam.run(args), 2)
+            printed = io.StringIO()  # CI's console is not UTF-8
+            with mock.patch.object(exam, "gateway_started", return_value=None), redirect_stdout(printed):
+                self.assertEqual(exam.run(args), 2)
+            self.assertIn("沒有這些題目：vage", printed.getvalue())
 
     def test_every_question_is_well_formed(self):
         seen = set()
