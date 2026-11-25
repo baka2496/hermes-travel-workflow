@@ -477,3 +477,57 @@ class ResultTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PackageCheckTests(unittest.TestCase):
+    """2026-11-26: the owner only wants to pay. ①②③ in a reply are three packages that can be booked as they stand."""
+
+    PACKAGE = "{mark} 乙山莊｜雙人湯屋房\n總計 NT$2,800\n交通：開車約 50 分鐘\n🏨 [官網](https://b.example/rooms) 📞 03-9882222"
+
+    def packages(self, *marks):
+        return "12/14–15 礁溪 2人｜3 個方案\n" + "\n".join(self.PACKAGE.format(mark=m) for m in marks)
+
+    def kinds(self, text):
+        return [p["kind"] for p in phone_check.check(text)["problems"]]
+
+    def test_three_complete_packages_pass(self):
+        self.assertEqual(self.kinds(self.packages("①", "②", "③")), [])
+
+    def test_too_few_or_too_many(self):
+        self.assertIn("too_few_packages", self.kinds(self.packages("①", "②")))
+        self.assertNotIn("too_few_packages", self.kinds("只有兩間 12/14 排得進\n" + self.packages("①", "②")))
+        self.assertIn("too_many_packages", self.kinds(self.packages("①", "②", "③", "④")))
+
+    def test_a_package_without_total_transport_link_or_phone(self):
+        bare = "① 乙山莊\n② 甲溫泉\n③ 丙旅館"
+        problems = [p for p in phone_check.check(bare)["problems"] if p["kind"] == "incomplete_package"]
+        self.assertEqual(len(problems), 3)
+        self.assertIn("缺 總計 NT$、交通、可點的訂房連結、電話（或 電話：未取得）", problems[0]["text"])
+        no_phone = self.packages("①", "②", "③").replace(" 📞 03-9882222", "\n電話：未取得", 1)
+        self.assertEqual(self.kinds(no_phone), [])
+
+
+class DaysAndVacancyTests(unittest.TestCase):
+    def kinds(self, text):
+        return [p["kind"] for p in phone_check.check(text)["problems"]]
+
+    def test_a_range_that_disagrees_with_its_days_and_nights(self):
+        # 2026-11-14: 「12/5–12/7 兩天一夜」 is three days and two nights; the bot copied it.
+        self.assertIn("days_mismatch", self.kinds("12/5–12/7 兩天一夜 礁溪 2人"))
+        self.assertEqual(self.kinds("12/5–12/7 三天兩夜 礁溪 2人"), [])
+        self.assertEqual(self.kinds("12/14–15 兩天一夜 礁溪"), [])
+        self.assertEqual(self.kinds("12/31–1/1 兩天一夜 礁溪"), [])
+        self.assertEqual(self.kinds("12/5–12/7 和「兩天一夜」對不上：是三天兩夜，還是兩天一夜"), [])
+
+    def test_vacancy_is_not_read_off_a_starting_price(self):
+        self.assertIn("vacancy_from_price", self.kinds("春和 雙人房 NT$3,600 起\n12/6 有空房"))
+        self.assertEqual(self.kinds("春和 雙人房 NT$3,600 起\n空房未確認"), [])
+        # Antigravity's review of 646df05: a negation is not a claim, and each package stands alone.
+        for said in ("沒有空房", "是否有空房", "不確定有沒有空房"):
+            self.assertEqual(self.kinds(f"春和 雙人房 NT$3,600 起\n12/6 {said}"), [], said)
+        packages = ("12/6 礁溪 2人｜3 個方案\n"
+                    "① 甲｜雙人房\n總計 NT$2,800\n交通：開車約 50 分鐘\n12/6 有空房（訂房頁）\n🏨 [官網](https://a.example/) 📞 03-1\n"
+                    "② 乙｜雙人房 NT$3,600 起，空房未確認\n總計 NT$3,600\n交通：開車約 50 分鐘\n🏨 [官網](https://b.example/) 📞 03-2\n"
+                    "③ 丙｜雙人房\n總計 NT$4,100\n交通：開車約 50 分鐘\n🏨 [官網](https://c.example/) 📞 03-3")
+        self.assertEqual(self.kinds(packages), [])
+        self.assertIn("vacancy_from_price", self.kinds(packages.replace("12/6 有空房（訂房頁）", "NT$2,800 起，有空房")))

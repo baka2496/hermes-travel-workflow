@@ -166,6 +166,58 @@ def rendered(path, root):
             .replace("{{PYTHON}}", Path(sys.executable).resolve().as_posix()).encode("utf-8"))
 
 
+# The running bots' own profiles, which `install` does not manage. Until 2026-11-26 their SOUL.md was kept
+# by hand and drifted from roles/ (the live trip still said to paste trip-cost.py by hand). Each now keeps
+# only its own rules (who it is, its paths and IDs, which stay out of this public repo) in SOUL.head.md,
+# with {{INCLUDE:roles/_shared/…}} lines for the shared rules; `live-souls` builds SOUL.md from the two.
+LIVE_SOULS = ("trip", "project-manager")
+LIVE_HEAD = "SOUL.head.md"
+
+
+def live_soul(head, root, python=None):
+    """SOUL.md text for a live profile: its head with the repo's shared rules filled in."""
+    text = expand_includes(head.read_text(encoding="utf-8").replace("\r\n", "\n"))
+    python = python or Path(sys.executable).resolve().as_posix()
+    return text.replace("{{ROOT}}", root.as_posix()).replace("{{PYTHON}}", python)
+
+
+def live_souls(root, *, write=False, python=None, stamp=None):
+    """Report (or with *write*, fix) each live profile whose SOUL.md is not its head plus the shared rules.
+    Returns 1 when one differs or has no head and nothing was written, else 0."""
+    import datetime
+    import difflib
+    stamp = stamp or datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+    status = 0
+    for profile in LIVE_SOULS:
+        home = root / "profiles" / profile
+        head, soul = home / LIVE_HEAD, home / "SOUL.md"
+        if not head.is_file():
+            print(f"{profile}: no {LIVE_HEAD}; SOUL.md is still kept by hand")
+            status = 1
+            continue
+        wanted = live_soul(head, root, python)
+        current = soul.read_text(encoding="utf-8").replace("\r\n", "\n") if soul.is_file() else ""
+        if current == wanted:
+            print(f"{profile}: SOUL.md matches {LIVE_HEAD} + roles/_shared ({len(wanted):,} characters)")
+            continue
+        changed = sum(1 for line in difflib.unified_diff(current.splitlines(), wanted.splitlines(), lineterm="", n=0)
+                      if line[:1] in "+-" and line[:3] not in ("+++", "---"))
+        if not write:
+            print(f"{profile}: SOUL.md differs from {LIVE_HEAD} + roles/_shared ({changed} lines); run with --write")
+            status = 1
+            continue
+        if soul.is_file():
+            backup = home / f"SOUL.before-generated-{stamp}.md"
+            if backup.exists():
+                raise RuntimeError(f"backup already exists: {backup}")
+            shutil.copy2(soul, backup)
+            print(f"{profile}: backed up SOUL.md to {backup.name}")
+        with open(soul, "w", encoding="utf-8", newline="\n") as out:
+            out.write(wanted)
+        print(f"{profile}: SOUL.md written ({changed} lines changed, {len(wanted):,} characters)")
+    return status
+
+
 def managed_files(root):
     """All package-owned files as (relative_posix_path, bytes) for `root`."""
     entries = []
@@ -591,8 +643,14 @@ def main():
     command = sub.add_parser("enable-weekend", help="enable Thursday 20:00 automatic weekend trip proposal")
     command.add_argument("--root", type=Path, required=True)
     command.add_argument("--deliver", choices=("local", "telegram"))
+    command = sub.add_parser("live-souls", help="check (or --write) the running bots' SOUL.md against SOUL.head.md + roles/_shared")
+    command.add_argument("--root", type=Path, required=True)
+    command.add_argument("--write", action="store_true", help="back up and rewrite each SOUL.md that differs")
+    command.add_argument("--python", help="interpreter path for {{PYTHON}} (default: this one)")
     args = parser.parse_args()
     try:
+        if args.command == "live-souls":
+            return live_souls(args.root, write=args.write, python=args.python)
         if args.command == "check":
             return check(args.root)
         if args.command in ("resume", "pause"):

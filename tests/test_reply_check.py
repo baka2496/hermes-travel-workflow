@@ -75,7 +75,7 @@ class ReplyCheckTests(unittest.TestCase):
     def test_held_until_the_tool_has_run(self):
         result = ask(home_with(), GOOD)
         self.assertEqual(result["action"], "block")
-        self.assertIn("先單獨執行 trip-cost.py", result["message"])
+        self.assertIn("先單獨執行 format-plan.py", result["message"])
 
     def test_the_latest_run_counts(self):
         older = "總計 NT$2,432，預算剩 NT$3,568（NT$800 未確認）\n• 兩天餐飲 NT$800，未確認"
@@ -517,3 +517,83 @@ class FormatPlanEvidenceTests(unittest.TestCase):
                 os.environ["HERMES_HOME"] = old
         # Only link formatting modification, never blocked for missing trip-cost.py / booking-links.py.
         self.assertNotEqual((verdict or {}).get("action"), "block")
+
+
+PACKAGES_OUT = ("12/14–15 礁溪 2人｜3 個方案，點連結就能訂\n"
+                "① 乙山莊｜雙人湯屋房\n總計 NT$2,800\n交通：開車約 50 分鐘\n"
+                "📍 [地圖](https://www.google.com/maps/search/?api=1&query=b) 🏨 [官網](https://b.example/rooms) 📞 03-9882222\n"
+                "② 甲溫泉｜和室雙人房\n總計 NT$3,200\n交通：開車約 50 分鐘\n"
+                "📍 [地圖](https://www.google.com/maps/search/?api=1&query=a) 🏨 [官網](https://a.example/rooms) 📞 03-9881111\n"
+                "③ 丙旅館｜景觀雙人房\n總計 NT$4,100\n交通：開車約 50 分鐘\n"
+                "📍 [地圖](https://www.google.com/maps/search/?api=1&query=c) 🏨 [官網](https://c.example/rooms)\n電話：未取得")
+
+
+class PackageReplyTests(unittest.TestCase):
+    """2026-11-26: format-plan.py --package prints one total per package; every one of them is the tool's."""
+
+    def test_each_package_total_counts_in_a_button_question(self):
+        home = home_with(PACKAGES_OUT, tool="format-plan.py")
+        self.assertNotEqual((ask(home, PACKAGES_OUT) or {}).get("action"), "block")
+        wrong = PACKAGES_OUT.replace("總計 NT$3,200", "總計 NT$3,000")
+        result = ask(home, wrong)
+        self.assertEqual(result["action"], "block")
+        self.assertIn("「總計 NT$2,800」「總計 NT$3,200」「總計 NT$4,100」", result["message"])
+
+    def test_confirmed_only_keeps_every_package_and_its_links(self):
+        home = home_with(PACKAGES_OUT, tool="format-plan.py")
+        prefs = home / "shared" / "travel-workflow" / "preferences.json"
+        prefs.parent.mkdir(parents=True)
+        prefs.write_text(json.dumps({"show_unconfirmed": False}), encoding="utf-8")
+        old = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(home)
+        try:
+            fixed = check.transform_llm_output(response_text=PACKAGES_OUT, session_id="s1", turn_id="t1")
+        finally:
+            if old is None:
+                del os.environ["HERMES_HOME"]
+            else:
+                os.environ["HERMES_HOME"] = old
+        self.assertIsNotNone(fixed)  # only 「電話：未取得」 goes, as for a single plan
+        self.assertEqual(fixed, PACKAGES_OUT.replace("\n電話：未取得", ""))
+
+
+class KanbanCommandTests(unittest.TestCase):
+    """Rules the commander's role spelled out in prose, now checked (2026-11-26)."""
+
+    def blocked(self, command):
+        result = check.pre_tool_call("terminal", {"command": command})
+        return result["message"] if result and result.get("action") == "block" else None
+
+    def test_board_json_is_refused_but_create_json_is_not(self):
+        self.assertIn("不要加 --json", self.blocked("hermes kanban --board command-center list --json"))
+        self.assertIn("不要加 --json", self.blocked("hermes kanban --board command-center show t_12345678 --json"))
+        self.assertIsNone(self.blocked("hermes kanban --board command-center list --sort created-desc"))
+        self.assertIsNone(self.blocked("hermes kanban --board command-center create \"福岡\" --assignee trip "
+                                       "--body '請 show 價格，預算 NT$40,000' --json"))
+
+    def test_a_dollar_inside_a_double_quoted_body_is_refused(self):
+        self.assertIn("單引號", self.blocked('hermes kanban --board command-center create "福岡" --assignee trip '
+                                            '--body "預算 NT$40,000" --json'))
+        self.assertIsNone(self.blocked('hermes kanban --board command-center create "福岡" --assignee trip '
+                                       '--body "預算四萬" --json'))
+        self.assertIn("單引號", self.blocked('hermes kanban --board command-center create "福岡" --assignee trip '
+                                            '--body="預算 NT$40,000" --json'))
+
+    def test_create_and_subscribe_run_apart(self):
+        self.assertIn("不能同一個指令跑", self.blocked(
+            "hermes kanban --board command-center create \"福岡\" --assignee trip --body 'x' --json && "
+            "hermes kanban --board command-center notify-subscribe t_12345678 --platform telegram"))
+
+    def test_no_closing_a_card_as_another_profile(self):
+        self.assertIn("不能用其他身分", self.blocked("hermes -p commander kanban --board command-center complete t_12345678"))
+        self.assertIsNone(self.blocked("hermes kanban --board command-center complete t_12345678"))
+        self.assertIn("不能用其他身分", self.blocked("hermes -p commander kanban --board command-center request-review "
+                                                 "t_12345678 --reviewer travel-commander"))
+        self.assertIsNone(self.blocked("hermes kanban --board command-center request-review t_12345678 "
+                                       "--reviewer travel-commander"))
+
+    def test_at_most_three_choices(self):
+        result = check.pre_tool_call("clarify", {"question": "選哪天？", "choices": ["12/6", "12/7", "12/13", "12/14"]})
+        self.assertIn("最多 3 個選項", result["message"])
+        self.assertNotEqual((check.pre_tool_call("clarify", {"question": "選哪天？", "choices": ["12/6", "12/7", "12/13"]})
+                             or {}).get("action"), "block")
