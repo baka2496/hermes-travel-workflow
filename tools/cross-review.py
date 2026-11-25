@@ -123,15 +123,18 @@ def report_dir():
 
 
 def kill_tree(proc):
-    """Stop the reviewer and everything it started."""
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
-    else:
-        try:
+    """Stop the reviewer and everything it started; never raises, so the push always goes on."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=10)
+        else:
             os.killpg(proc.pid, 9)
-        except OSError:
-            pass
-    proc.kill()
+    except (OSError, subprocess.SubprocessError):
+        pass  # the reviewer itself is still stopped below
+    try:
+        proc.kill()
+    except OSError:
+        pass
 
 
 def run_killing_tree(command, *, input, timeout, env, **_):
@@ -146,12 +149,20 @@ def run_killing_tree(command, *, input, timeout, env, **_):
                             start_new_session=os.name != "nt")
     try:
         out, err = proc.communicate(input, timeout=timeout)
-    except subprocess.TimeoutExpired:
+    except BaseException as error:
+        # Timeout, Ctrl+C, anything: on macOS/Linux the reviewer has its own session, so Ctrl+C
+        # would not reach it and it would keep running (Antigravity's review of 408a1cb).
         kill_tree(proc)
-        try:
-            proc.communicate(timeout=5)
-        except (subprocess.TimeoutExpired, ValueError):
-            pass  # a child that outlived the kill still holds the pipe; its output is not needed
+        if isinstance(error, subprocess.TimeoutExpired):
+            try:
+                proc.communicate(timeout=5)
+            except (subprocess.TimeoutExpired, ValueError, OSError):
+                pass  # a child that outlived the kill still holds the pipe; its output is not needed
+        for pipe in (proc.stdin, proc.stdout, proc.stderr):
+            try:
+                pipe.close()
+            except (OSError, ValueError):
+                pass
         raise
     return subprocess.CompletedProcess(command, proc.returncode, out, err)
 
