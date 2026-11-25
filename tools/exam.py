@@ -59,8 +59,9 @@ def hermes_root():
 # ---- 題目 -------------------------------------------------------------------------------------
 
 def weekend(today):
-    """The coming weekend's Friday, Saturday and Sunday (on a Sunday, next week's)."""
-    saturday = today + dt.timedelta(days=(5 - today.weekday()) % 7)
+    """The coming weekend's Friday, Saturday and Sunday: next week's from Saturday on, so {週五} is
+    never already past (Antigravity's review of 67f8e37)."""
+    saturday = today + dt.timedelta(days=(5 - today.weekday()) % 7 or 7)
     return saturday - dt.timedelta(days=1), saturday, saturday + dt.timedelta(days=1)
 
 
@@ -253,7 +254,12 @@ def run(args):
         print("外掛改過但 gateway 還在用舊的，考了也不準。先跑 `hermes gateway restart` 再考：\n"
               + "\n".join(f"  {p}" for p in stale))
         return 2
-    picked = [q for q in questions(args.questions) if not args.only or q["id"] in args.only]
+    every = questions(args.questions)
+    unknown = sorted(set(args.only or ()) - {q["id"] for q in every})
+    if unknown:  # a typo would otherwise grade nothing and report 0/0 as a pass
+        print("沒有這些題目：" + "、".join(unknown) + "\n有的題目：" + "、".join(q["id"] for q in every))
+        return 2
+    picked = [q for q in every if not args.only or q["id"] in args.only]
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     before = snapshot(folder)
     results = []

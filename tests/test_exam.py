@@ -22,8 +22,18 @@ class DatesTests(unittest.TestCase):
         wednesday = dt.date(2026, 11, 25)
         self.assertEqual(exam.fill_dates("{週五}–{週日} 兩天一夜，{下週六} 也行", wednesday),
                          "11/27–11/29 兩天一夜，12/5 也行")
-        self.assertEqual(exam.fill_dates("{週六}", dt.date(2026, 11, 28)), "11/28")  # a Saturday: today
-        self.assertEqual(exam.fill_dates("{週六}", dt.date(2026, 11, 29)), "12/5")   # a Sunday: next week
+        self.assertEqual(exam.fill_dates("{週五}", dt.date(2026, 11, 27)), "11/27")  # a Friday: today
+        # From Saturday on, next week's: {週五} must never be a day already past.
+        self.assertEqual(exam.fill_dates("{週五}–{週日}", dt.date(2026, 11, 28)), "12/4–12/6")
+        self.assertEqual(exam.fill_dates("{週六}", dt.date(2026, 11, 29)), "12/5")
+
+    def test_an_unknown_question_is_refused_not_scored_zero_of_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "q.json"
+            path.write_text(json.dumps({"questions": [{"id": "vague"}]}), encoding="utf-8")
+            args = type("Args", (), {"questions": path, "only": ["vage"]})()
+            exam.gateway_started = lambda: None
+            self.assertEqual(exam.run(args), 2)
 
     def test_every_question_is_well_formed(self):
         seen = set()
@@ -66,6 +76,9 @@ class GradeTests(unittest.TestCase):
         question = {"id": "d", "expect": "ask_dates"}
         self.assertEqual(self.grade("12/5–12/7 其實是三天兩夜，要住兩晚還是一晚？", question=question,
                                     outputs=()), ["手機排版檢查沒過：text_question"])
+        # The question itself goes on clarify buttons (telegram rules), so the text only explains: a pass.
+        self.assertEqual(self.grade("12/5–12/7 其實是三天兩夜，跟兩天一夜對不上，請按下面的按鈕選住幾晚",
+                                    question=question, outputs=()), [])
         problems = self.grade(PLAN, question=question)
         self.assertIn("日期對不上卻直接出方案", problems)
         self.assertIn("沒講日期和天數對不上", problems)
