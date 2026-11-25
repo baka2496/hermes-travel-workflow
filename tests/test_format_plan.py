@@ -219,6 +219,15 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("甲溫泉：沒有確認過的價格", err)
 
+    def test_an_all_estimate_package_is_refused_when_estimates_are_shown_too(self):
+        # Antigravity's review of 646df05: with show_unconfirmed on, an estimate-only total still printed.
+        self.prefs.write_text(json.dumps({"public_transit": False}), encoding="utf-8")
+        rc, _, err = self.run_packages(self.package("a", price=1234), self.package("b"), self.package("c"))
+        self.assertEqual(rc, 1)
+        self.assertIn("甲溫泉：沒有確認過的價格", err)
+        rc, out, err = self.run_packages(self.package("a"), self.package("b"), self.package("c"))
+        self.assertEqual(rc, 0, err)
+
     def test_every_package_needs_transport_and_a_way_to_book(self):
         rc, _, err = self.run_packages(self.package("a", transport=None), self.package("b"),
                                        self.package("c", phone=False, official=False))

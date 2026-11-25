@@ -56,18 +56,25 @@ DAYS_NIGHTS = re.compile(r"([一二兩三四五六七1-7])天([一二兩三四�
 COUNTS = {c: n for n, chars in enumerate(("零0", "一1", "二兩2", "三3", "四4", "五5", "六6", "七7")) for c in chars}
 SAID_MISMATCH = re.compile(r"對不上|不一致|矛盾|其實是")
 # An official 「XX 起」 price holds for no date in particular: vacancy is 未確認 (telegram-research.md).
-VACANCY = re.compile(r"(?<!未確認)有空房|還有房|可以訂到")
+# Not 「沒有空房」「是否有空房」「有沒有空房」 (Antigravity's review of 646df05).
+VACANCY = re.compile(r"(?<!未確認)(?<![沒無否])有空房|(?<![沒不])還有房|(?<!不一定)(?<!不確定)可以訂到")
 FROM_PRICE = re.compile(rf"起價|{travel_money.AMOUNT_PATTERN}\s*起")
 
 
-def package_problems(message):
-    """Why a reply's ①②③ packages are not three ready-to-book packages, or []."""
+def package_blocks(message):
+    """Each ①②③ package of a message as its lines, in order ([] when it has none)."""
     blocks = []
     for line in message.splitlines():
         if PACKAGE.match(line):
             blocks.append([line.strip()])
         elif blocks and line.strip():
             blocks[-1].append(line.strip())
+    return blocks
+
+
+def package_problems(message):
+    """Why a reply's ①②③ packages are not three ready-to-book packages, or []."""
+    blocks = package_blocks(message)
     if not blocks:
         return []
     problems = []
@@ -120,10 +127,13 @@ def days_problems(message):
 
 
 def vacancy_problems(message):
-    if VACANCY.search(message) and FROM_PRICE.search(message):
-        return [{"kind": "vacancy_from_price", "text": VACANCY.search(message).group(0),
-                 "hint": "a 「起」 price is not for a date: write 空房未確認 unless a dated booking page showed it"}]
-    return []
+    """Vacancy claimed beside a starting price; each package on its own, since another one may have a dated page."""
+    problems = []
+    for text in ["\n".join(b) for b in package_blocks(message)] or [message]:
+        if VACANCY.search(text) and FROM_PRICE.search(text):
+            problems.append({"kind": "vacancy_from_price", "text": VACANCY.search(text).group(0),
+                             "hint": "a 「起」 price is not for a date: write 空房未確認 unless a dated booking page showed it"})
+    return problems
 
 
 def board_db():

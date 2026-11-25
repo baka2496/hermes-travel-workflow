@@ -203,7 +203,8 @@ def build_packages(common, packages):
         if why:
             problems.append(f"{name}：{why}")
             continue
-        if not cost:
+        # With show_unconfirmed off nothing is printed; otherwise the headline says 全部未確認 (Antigravity's review).
+        if not cost or "（全部未確認）" in cost.splitlines()[0]:
             problems.append(f"{name}：沒有確認過的價格，不能當成能直接訂的方案；換一家官網或訂房頁有標價的地方")
             continue
         links, why = run_links(args)
@@ -230,7 +231,7 @@ def build_packages(common, packages):
         if not package.phone:  # its own line: with show_unconfirmed off the plugin drops it, not the links
             lines.append(NO_PHONE)
     message = "\n".join(lines)
-    return message, checked(message), notes
+    return message, checked(message, common.for_clarify), notes
 
 
 def package_parser():

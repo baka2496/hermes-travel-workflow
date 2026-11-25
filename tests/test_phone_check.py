@@ -522,3 +522,12 @@ class DaysAndVacancyTests(unittest.TestCase):
     def test_vacancy_is_not_read_off_a_starting_price(self):
         self.assertIn("vacancy_from_price", self.kinds("春和 雙人房 NT$3,600 起\n12/6 有空房"))
         self.assertEqual(self.kinds("春和 雙人房 NT$3,600 起\n空房未確認"), [])
+        # Antigravity's review of 646df05: a negation is not a claim, and each package stands alone.
+        for said in ("沒有空房", "是否有空房", "不確定有沒有空房"):
+            self.assertEqual(self.kinds(f"春和 雙人房 NT$3,600 起\n12/6 {said}"), [], said)
+        packages = ("12/6 礁溪 2人｜3 個方案\n"
+                    "① 甲｜雙人房\n總計 NT$2,800\n交通：開車約 50 分鐘\n12/6 有空房（訂房頁）\n🏨 [官網](https://a.example/) 📞 03-1\n"
+                    "② 乙｜雙人房 NT$3,600 起，空房未確認\n總計 NT$3,600\n交通：開車約 50 分鐘\n🏨 [官網](https://b.example/) 📞 03-2\n"
+                    "③ 丙｜雙人房\n總計 NT$4,100\n交通：開車約 50 分鐘\n🏨 [官網](https://c.example/) 📞 03-3")
+        self.assertEqual(self.kinds(packages), [])
+        self.assertIn("vacancy_from_price", self.kinds(packages.replace("12/6 有空房（訂房頁）", "NT$2,800 起，有空房")))

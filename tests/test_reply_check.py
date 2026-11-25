@@ -576,6 +576,8 @@ class KanbanCommandTests(unittest.TestCase):
                                             '--body "預算 NT$40,000" --json'))
         self.assertIsNone(self.blocked('hermes kanban --board command-center create "福岡" --assignee trip '
                                        '--body "預算四萬" --json'))
+        self.assertIn("單引號", self.blocked('hermes kanban --board command-center create "福岡" --assignee trip '
+                                            '--body="預算 NT$40,000" --json'))
 
     def test_create_and_subscribe_run_apart(self):
         self.assertIn("不能同一個指令跑", self.blocked(
@@ -585,6 +587,10 @@ class KanbanCommandTests(unittest.TestCase):
     def test_no_closing_a_card_as_another_profile(self):
         self.assertIn("不能用其他身分", self.blocked("hermes -p commander kanban --board command-center complete t_12345678"))
         self.assertIsNone(self.blocked("hermes kanban --board command-center complete t_12345678"))
+        self.assertIn("不能用其他身分", self.blocked("hermes -p commander kanban --board command-center request-review "
+                                                 "t_12345678 --reviewer travel-commander"))
+        self.assertIsNone(self.blocked("hermes kanban --board command-center request-review t_12345678 "
+                                       "--reviewer travel-commander"))
 
     def test_at_most_three_choices(self):
         result = check.pre_tool_call("clarify", {"question": "選哪天？", "choices": ["12/6", "12/7", "12/13", "12/14"]})

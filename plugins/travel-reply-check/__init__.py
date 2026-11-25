@@ -358,14 +358,14 @@ BOARD_JSON = re.compile(r"\bkanban\s+(?:--board[\s=]+\S+\s+)?(?:list|show)\b[^;&
 BOARD_JSON_PROBLEM = ("不要加 --json：整板 JSON 超過 10 萬字，會讓對話被壓縮。"
                       "看卡片用 `hermes kanban --board command-center list --sort created-desc` 或 `show <卡號>`。")
 # 2026-11-22: bash expanded `$4` inside a double-quoted --body: NT$40,000 reached the card as NT0,000.
-DOUBLE_QUOTED_BODY = re.compile(r"""--body\s+"([^"]*)\"""")
+DOUBLE_QUOTED_BODY = re.compile(r"""--body[\s=]+"([^"]*)\"""")
 BODY_PROBLEM = ("卡片內容有 `$`，放在雙引號裡會被 bash 當成變數吃掉（11/22 NT$40,000 變成 NT0,000）。"
                 "--body 改用單引號，內容本身有單引號就改用 --body-file。")
 # 2026-11-21: a card number was made up because the card and its subscription ran in one batch.
 SAME_BATCH_PROBLEM = ("建卡和訂閱不能同一個指令跑：先單獨跑 create，等它回 \"id\": \"t_...\"，"
                       "再用那個卡號跑 notify-subscribe。卡號絕不能自己編。")
 # 2026-11-21: the workers crashed, and the commander closed the card itself as another profile.
-AS_OTHER = re.compile(r"(?:^|\s)(?:-p|--profile)[\s=]+\S+\s+kanban\s+(?:--board[\s=]+\S+\s+)?complete\b")
+AS_OTHER = re.compile(r"(?:^|\s)(?:-p|--profile)[\s=]+\S+\s+kanban\s+(?:--board[\s=]+\S+\s+)?(?:complete|request-review)\b")
 AS_OTHER_PROBLEM = ("不能用其他身分結案或送審（-p …）：專員或覆核當掉時最多 unblock 重試一次，"
                     "還失敗就跟使用者說這次沒查成、沒有價格，用按鈕問要不要重試。")
 
