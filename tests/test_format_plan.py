@@ -25,6 +25,14 @@ def run_format(*args):
     return result.returncode, result.stdout, result.stderr
 
 
+class SkipPhoneCheckRuleTests(unittest.TestCase):
+    def test_role_only_skips_phone_check_for_unedited_output(self):
+        # 2026-11-25 (Antigravity's review of ddb1750): the role said a passing format-plan.py means
+        # phone-check.py can be skipped, without "only if sent as is"; edited text went out unchecked.
+        role = (REPO / "roles/_shared/telegram-research.md").read_text(encoding="utf-8")
+        self.assertIn("原樣送出免重跑 `phone-check.py`，改字就重跑", role)
+
+
 class FormatPlanTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(scratch.new_dir("hermes-format-plan-"))
