@@ -110,7 +110,8 @@ class LiveProfilesTest(unittest.TestCase):
                 continue
             with self.subTest(profile=profile):
                 current = (HERMES / profile / "SOUL.md").read_bytes().decode("utf-8").replace("\r\n", "\n")
-                python = re.search(r'"([^"]*python[^"]*\.exe)"', current)
+                # The interpreter that runs the travel tools, not another one the SOUL names (the academic venv).
+                python = re.search(r'"([^"]*python[^"]*\.exe)" "[^"]*/shared/travel-workflow/', current)
                 wanted = setup.live_soul(head, HERMES.parent, python.group(1) if python else None)
                 self.assertEqual(current, wanted, f"{profile} SOUL.md drifted from SOUL.head.md + roles/_shared")
 
