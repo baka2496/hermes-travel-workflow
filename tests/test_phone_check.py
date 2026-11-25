@@ -242,6 +242,44 @@ class ResultTests(unittest.TestCase):
         status, report = check_handoff("福岡 3/2–3/6 兩人\n機票這次沒讀到價格，未確認", board([]))
         self.assertEqual(status, 0, report)
 
+    def test_flight_hotel_card_reply_requires_times_and_links(self):
+        # 2026-11-25: t_0569fddd's fukuoka_plan.md had flight times and booking links,
+        # but the Telegram reply sent only bare totals.
+        db = board([("t_0569fddd", 600, "trip")], done={"t_0569fddd": "review"})
+        attach = db.parent / "attachments" / "t_0569fddd"
+        attach.mkdir(parents=True)
+        (attach / "fukuoka_plan.md").write_text(
+            "## ✈️ 來回航班\n- 去程：華航 CI116 16:40→20:00\n- 回程：華航 CI111 11:00→12:30\n"
+            "[機票訂票連結](https://www.google.com/travel/flights/booking?tfs=abc)\n"
+            "## 🏨 住宿\nFukuoka UBL Hotel 雙人房 4晚 NT$7,960\n"
+            "[住宿頁面連結](https://www.google.com/travel/search?q=Fukuoka+UBL+Hotel)\n",
+            encoding="utf-8",
+        )
+        bare = ("06/05–06/09 福岡五天四夜（2人）\n"
+                "• 機票｜華航來回 NT$27,508\n"
+                "• 住宿｜UBL四晚 NT$7,960\n"
+                "• 總計｜NT$35,468（預算剩 NT$9,532）")
+        status, report = check_handoff(bare, db, "--card", "t_0569fddd")
+        self.assertEqual(status, 1)
+        self.assertEqual([p["kind"] for p in report["problems"]], ["card_missing_details"])
+        self.assertIn("去回程航班時間／班號", report["problems"][0]["text"])
+        self.assertIn("可點擊的機票與住宿連結", report["problems"][0]["text"])
+
+        complete = ("06/05–06/09 福岡五天四夜（2人）\n"
+                    "總計 NT$35,468（預算剩 NT$9,532）\n"
+                    "✈️ 華航 2人 NT$27,508（含托運行李）\n"
+                    "• 去 06/05 CI116 16:40→20:00\n"
+                    "• 回 06/09 CI111 11:00→12:30\n"
+                    "• [機票訂票連結](https://www.google.com/travel/flights/booking?tfs=abc)\n"
+                    "🏨 Fukuoka UBL Hotel 雙人房 4晚 NT$7,960\n"
+                    "• 中央區｜⭐4.3｜[住宿頁面連結](https://www.google.com/travel/search?q=Fukuoka+UBL+Hotel)")
+        status, report = check_handoff(complete, db, "--card", "t_0569fddd")
+        self.assertEqual(status, 0, report)
+
+        empty = "06/05–06/09 福岡五天四夜（2人）\n這次沒讀到價格，未確認。"
+        status, report = check_handoff(empty, db, "--card", "t_0569fddd")
+        self.assertEqual(status, 0, report)
+
     def test_the_live_fukuoka_card_is_caught(self):
         import os
         live = Path(os.environ.get("LOCALAPPDATA", "")) / "hermes/kanban/boards/command-center/kanban.db"
