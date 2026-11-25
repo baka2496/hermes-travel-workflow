@@ -231,6 +231,30 @@ class ReviewInRepoTests(unittest.TestCase):
         self.assertEqual(len(calls), 1, "the same commit is never sent twice")
         self.assertIn("已經審過", out_again)
 
+    def test_changes_merged_in_from_main_are_not_reviewed_again(self):
+        # 2026-11-25: pushing "merge main + one-line fix" sent #65's already-merged code for review.
+        subprocess.run(["git", "checkout", "-qb", "work"], check=True)
+        Path("mine.txt").write_text("我的修改\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], check=True)
+        subprocess.run(["git", "commit", "-qm", "我的修改"], check=True)
+        pushed = cross_review.git("rev-parse", "HEAD")
+        subprocess.run(["git", "checkout", "-q", "main"], check=True)
+        Path("others.txt").write_text("別人的 PR\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], check=True)
+        subprocess.run(["git", "commit", "-qm", "別人的 PR"], check=True)
+        subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "main"], check=True)
+        subprocess.run(["git", "checkout", "-q", "work"], check=True)
+        subprocess.run(["git", "merge", "-q", "--no-edit", "main"], check=True)
+        Path("mine.txt").write_text("我的修改 2\n", encoding="utf-8")
+        subprocess.run(["git", "commit", "-qam", "我的第二個修改"], check=True)
+        runner, calls = fake_run()
+        with mock.patch.object(cross_review.shutil, "which", return_value="agy"):
+            cross_review.review(pushed, cross_review.git("rev-parse", "HEAD"), "agy", {}, lambda *_: None, runner)
+        prompt = calls[0][1]["input"]
+        self.assertIn("我的第二個修改", prompt)
+        self.assertNotIn("別人的 PR", prompt)
+        self.assertNotIn("others.txt", prompt)
+
     def test_one_branch_failing_does_not_skip_the_others(self):
         # Claude's review of efed1b7 (2026-11-25): this was promised in a commit but had no test.
         stdin = io.StringIO(f"refs/heads/a {self.tip} refs/heads/a {self.base}\n"

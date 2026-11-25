@@ -197,7 +197,12 @@ def clean_review(text):
 def review(base, tip, reviewer, env, out=print, runner=run_killing_tree):
     name = REVIEWERS[reviewer]["name"]
     author = "Claude" if reviewer == "agy" else "Antigravity 或主人"
-    diff = git("diff", "--no-color", f"{base}..{tip}")
+    # Only the pusher's own commits. 2026-11-25: a range holding "merge main" sent #65's code (already
+    # reviewed and merged) to the reviewer instead of the one-line change being pushed.
+    commits = [f"{base}..{tip}", "--no-merges"]
+    if git("rev-parse", "--verify", "-q", "refs/remotes/origin/main", check=False):
+        commits += ["--not", "refs/remotes/origin/main"]
+    diff = git("log", "-p", "--no-color", "--format=commit %h %s", *commits)
     if not diff:
         out(f"[互審] {tip[:7]} 沒有程式改動，跳過")
         return None
@@ -207,7 +212,7 @@ def review(base, tip, reviewer, env, out=print, runner=run_killing_tree):
         out(f"[互審] {base[:7]}..{tip[:7]} 已經審過，以下是上次 {name} 的意見（{saved}）：")
         out(saved.read_text(encoding="utf-8"))
         return saved
-    log = git("log", "--no-color", "--format=%h %s%n%b", f"{base}..{tip}")
+    log = git("log", "--no-color", "--format=%h %s%n%b", *commits)
     out(f"[互審] 請 {name} 審查 {base[:7]}..{tip[:7]}（約 1 分鐘，不會擋推送）…")
     text, warning = run_reviewer(reviewer, build_prompt(author, log, diff), env, runner)
     if warning:
