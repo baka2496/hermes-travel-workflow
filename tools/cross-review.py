@@ -199,11 +199,18 @@ def review(base, tip, reviewer, env, out=print, runner=run_killing_tree):
     author = "Claude" if reviewer == "agy" else "Antigravity 或主人"
     # Only the pusher's own commits. 2026-11-25: a range holding "merge main" sent #65's code (already
     # reviewed and merged) to the reviewer instead of the one-line change being pushed.
-    commits = [f"{base}..{tip}", "--no-merges"]
-    if git("rev-parse", "--verify", "-q", "refs/remotes/origin/main", check=False):
-        commits += ["--not", "refs/remotes/origin/main"]
-    diff = git("log", "-p", "--no-color", "--format=commit %h %s", *commits)
-    if not diff:
+    # But a tip already on main (a manual review of main) keeps its whole range (Antigravity, 4c36b72).
+    main = "refs/remotes/origin/main"
+    off_main = (git("rev-parse", "--verify", "-q", main, check=False)
+                and git("rev-list", "-n", "1", f"{main}..{tip}", check=False))
+    commits = [f"{base}..{tip}", *(["--not", main] if off_main else [])]
+    diff = git("log", "-p", "--no-merges", "--no-color", "--format=commit %h %s", *commits)
+    # A merge shows only what was hand-edited to resolve it (--cc), where mistakes hide.
+    merges = git("log", "-p", "--merges", "--cc", "--no-color", "--format=commit %h %s（合併：只列解衝突時的改動）",
+                 *commits)
+    if "diff --cc" in merges:
+        diff += "\n" + merges
+    if "diff --git" not in diff and "diff --cc" not in diff:  # empty commits only
         out(f"[互審] {tip[:7]} 沒有程式改動，跳過")
         return None
     # Keyed on the whole range: the same tip pushed with an older base has more to review.

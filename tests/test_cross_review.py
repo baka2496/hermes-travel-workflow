@@ -255,6 +255,40 @@ class ReviewInRepoTests(unittest.TestCase):
         self.assertNotIn("別人的 PR", prompt)
         self.assertNotIn("others.txt", prompt)
 
+    def review_prompt(self, base, tip):
+        runner, calls = fake_run()
+        out = []
+        with mock.patch.object(cross_review.shutil, "which", return_value="agy"):
+            cross_review.review(base, tip, "agy", {}, out.append, runner)
+        return (calls[0][1]["input"] if calls else None), "\n".join(out)
+
+    def test_commits_already_on_main_can_still_be_reviewed_by_hand(self):
+        subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "main"], check=True)
+        prompt, _ = self.review_prompt(self.base, self.tip)
+        self.assertIn("+二", prompt)
+
+    def test_a_hand_resolved_merge_conflict_is_reviewed(self):
+        subprocess.run(["git", "checkout", "-qb", "work"], check=True)
+        Path("a.txt").write_text("我的版本\n", encoding="utf-8")
+        subprocess.run(["git", "commit", "-qam", "我的"], check=True)
+        before_merge = cross_review.git("rev-parse", "HEAD")
+        subprocess.run(["git", "checkout", "-q", "main"], check=True)
+        Path("a.txt").write_text("別人的版本\n", encoding="utf-8")
+        subprocess.run(["git", "commit", "-qam", "別人的"], check=True)
+        subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "main"], check=True)
+        subprocess.run(["git", "checkout", "-q", "work"], check=True)
+        subprocess.run(["git", "merge", "-q", "main"], capture_output=True)
+        Path("a.txt").write_text("手動解衝突的結果\n", encoding="utf-8")
+        subprocess.run(["git", "commit", "-qam", "合併 main"], check=True)
+        prompt, _ = self.review_prompt(before_merge, cross_review.git("rev-parse", "HEAD"))
+        self.assertIn("手動解衝突的結果", prompt)
+
+    def test_empty_commits_are_not_sent(self):
+        subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "重跑 CI"], check=True)
+        prompt, out = self.review_prompt(self.tip, cross_review.git("rev-parse", "HEAD"))
+        self.assertIsNone(prompt)
+        self.assertIn("沒有程式改動", out)
+
     def test_one_branch_failing_does_not_skip_the_others(self):
         # Claude's review of efed1b7 (2026-11-25): this was promised in a commit but had no test.
         stdin = io.StringIO(f"refs/heads/a {self.tip} refs/heads/a {self.base}\n"
