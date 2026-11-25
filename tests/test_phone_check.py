@@ -10,6 +10,11 @@ import scratch
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts/phone-check.py"
+sys.path.insert(0, str(REPO / "scripts"))  # phone-check imports travel_money from beside it
+import importlib.util  # noqa: E402
+_spec = importlib.util.spec_from_file_location("phone_check", SCRIPT)
+phone_check = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(phone_check)
 
 
 def check(text):
@@ -339,6 +344,39 @@ class ResultTests(unittest.TestCase):
         status, report = check_handoff(no_flight, db, "--card", "t_0569fddd")
         self.assertEqual(status, 1)
         self.assertIn("機票", report["problems"][0]["text"])
+
+    def test_link_kind_by_text_alone_and_by_site_alone(self):
+        # Antigravity's review of 3ed6613: the test above passes on either path; check each on its own,
+        # and that short words only match whole words / whole host parts.
+        kind = phone_check.link_kind
+        self.assertEqual(kind("https://example.com/a", "華航訂票"), "機票")          # text only
+        self.assertEqual(kind("https://example.com/b", "東橫INN 博多口"), "住宿")
+        self.assertEqual(kind("https://example.com/c", "Holiday Inn Osaka"), "住宿")
+        self.assertEqual(kind("https://www.china-airlines.com/x", "官網"), "機票")  # site only
+        self.assertEqual(kind("https://www.toyoko-inn.com/x", "官網"), "住宿")
+        self.assertEqual(kind("https://www.ana.co.jp/x"), "機票")
+        self.assertEqual(kind("https://www.finnair.com/x"), "機票")                  # not 住宿 via "inn"
+        self.assertEqual(kind("https://www.hotel-hana.co.jp/"), "住宿")              # not 機票 via "ana.co"
+        self.assertIsNone(kind("https://example.com/dinner", "晚餐 dinner"))
+        # Real attachment links (2026-11-25) that were left unsorted before:
+        self.assertEqual(kind("https://www.google.com/travel/lodging/clk?x=1", "Ikyu"), "住宿")
+        self.assertEqual(kind("https://deals.vio.com/", "Vio"), "住宿")
+        self.assertEqual(kind("https://www.priceline.com", "Priceline 預訂"), "住宿")
+        self.assertEqual(kind("https://www.jtb.co.jp/kokunai-hotel/htl/6492106/plan/", "官網方案"), "住宿")
+
+    def test_a_blank_line_under_a_leg_heading_keeps_the_leg(self):
+        # Antigravity's review of 3ed6613: 「### 回程」, a blank line, then the times was not read.
+        db = self.card_with("### 去程\n\n- CI116 16:40 → 20:00\n\n### 回程\n\n- CI111 11:00 → 12:30\n")
+        status, report = check_handoff("福岡 NT$27,508\n去 16:40→20:00\n15:00 入住", db, "--card", "t_0569fddd")
+        self.assertEqual(status, 1)
+        self.assertIn("回程", report["problems"][0]["text"])
+
+    def test_a_sentence_naming_a_leg_does_not_take_the_next_line(self):
+        # Antigravity's review of 3ed6613: 「- 回程含 20kg 行李」 then 「- 15:00 入住」 made 15:00 a return time.
+        db = self.card_with("- 去程：CI116 16:40→20:00\n- 回程：CI111 11:00→12:30\n- 回程含 20kg 行李\n- 15:00 入住\n")
+        status, report = check_handoff("福岡 NT$27,508\n去 16:40→20:00\n15:00 入住", db, "--card", "t_0569fddd")
+        self.assertEqual(status, 1)
+        self.assertIn("回程", report["problems"][0]["text"])
 
     def test_times_match_with_or_without_a_leading_zero(self):
         # Antigravity's review of 2f15bdc: 09:05 in the attachment and 9:05 in the reply did not match.

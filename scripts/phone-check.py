@@ -13,6 +13,7 @@ import math
 import re
 import sys
 import unicodedata
+import urllib.parse
 
 import travel_money
 
@@ -132,27 +133,45 @@ PRICE = travel_money.PRICE
 LEGS = ("去程", "回程")
 
 
-FLIGHT_NAMES = ("機票", "航班", "訂票", "航空", "班機", "flight")
-STAY_NAMES = ("住宿", "飯店", "旅館", "酒店", "民宿", "訂房", "房型", "hotel", "inn", "hostel", "resort")
-FLIGHT_SITES = ("flight", "airline", "airways", "china-airlines", "evaair", "starlux", "tigerair", "jal.co",
-                "ana.co", "flypeach", "jetstar", "vietjet", "cathaypacific", "flyscoot")
-STAY_SITES = ("hotel", "travel/search", "booking.com", "agoda", "airbnb", "trip.com", "jalan", "rakuten",
-              "expedia", "inn", "stay", "resort", "ryokan", "hostel")
+FLIGHT_NAMES = ("機票", "航班", "訂票", "航空", "班機", "flight", "flights", "airline", "airlines")
+# Booking sites' names count too: a reply's link is often just 「Agoda」「Ikyu」 (seen in real attachments).
+STAY_NAMES = ("住宿", "飯店", "旅館", "酒店", "民宿", "訂房", "房型", "hotel", "hotels", "inn", "hostel", "resort",
+              "agoda", "booking", "ikyu", "priceline", "vio", "expedia", "klook", "jalan", "rakuten", "trivago")
+# Matched against whole parts of the host name (split at . and -), so "inn" is not finnair.com and
+# "ana" is not hotel-hana.co.jp (Antigravity's review of 3ed6613).
+FLIGHT_SITES = {"china-airlines", "evaair", "starlux", "starlux-airlines", "tigerair", "tigerairtw", "jal", "ana",
+                "flypeach", "jetstar", "vietjetair", "cathaypacific", "flyscoot", "finnair", "airasia", "koreanair",
+                "skyscanner", "kayak"}
+STAY_SITES = {"booking", "agoda", "airbnb", "trip", "jalan", "rakuten", "expedia", "hotels", "inn", "stay", "resort",
+              "ryokan", "hostel", "hotel", "toyoko", "ikyu", "priceline", "vio", "klook", "trivago", "dealbase"}
+FLIGHT_PATHS = ("/flights", "/flight")
+STAY_PATHS = ("travel/search", "travel/lodging", "hotel", "lodging")
+
+
+def _has_word(text, words):
+    """A Chinese word anywhere; an English one only as a whole word (Holiday Inn, not dinner)."""
+    return any(re.search(rf"(?<![a-z]){re.escape(w)}(?![a-z])", text) if w.isascii() else w in text for w in words)
 
 
 def link_kind(url, name=""):
     """機票 or 住宿 for a booking/search link, else None.
 
     The link text decides first: an airline's or hotel's own site (china-airlines.com, toyoko-inn.com)
-    says neither "flight" nor "hotel" in its address (Antigravity's review of 2f15bdc).
+    says neither "flight" nor "hotel" in its address (Antigravity's review of 2f15bdc). Then the site.
     """
     name, url = name.lower(), url.lower()
-    for words, sites, kind in ((FLIGHT_NAMES, FLIGHT_SITES, "機票"), (STAY_NAMES, STAY_SITES, "住宿")):
-        if any(word in name for word in words):
-            return kind
-    for words, sites, kind in ((FLIGHT_NAMES, FLIGHT_SITES, "機票"), (STAY_NAMES, STAY_SITES, "住宿")):
-        if any(site in url for site in sites):
-            return kind
+    if _has_word(name, FLIGHT_NAMES):
+        return "機票"
+    if _has_word(name, STAY_NAMES):
+        return "住宿"
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname or ""
+    parts = set(re.split(r"[.\-]", host)) | {label for label in host.split(".")}
+    rest = parsed.path + "?" + parsed.query
+    if parts & FLIGHT_SITES or any(p in rest for p in FLIGHT_PATHS):
+        return "機票"
+    if parts & STAY_SITES or any(p in rest for p in STAY_PATHS):
+        return "住宿"
     return None
 
 
@@ -161,22 +180,38 @@ def times_in(text):
     return {t.zfill(5) for t in FLIGHT_TIME.findall(text)}
 
 
+def leg_heading(line):
+    """The leg a line only names, as a heading or label (「### 去程」「**回程**：」「去程（06/05）」), else None.
+
+    A sentence that merely mentions a leg (「- 回程含 20kg 行李」) is not one, or the next line's 15:00
+    check-in would count as a flight time (Antigravity's review of 3ed6613).
+    """
+    core = re.sub(r"[#*\-\s:：|]", "", line)
+    core = re.sub(r"[（(][^）)]*[）)]$", "", core)
+    return core if core in LEGS else None
+
+
 def leg_times(text):
-    """The times written for each leg: on the leg's own line, or, when that line is only a heading
-    (「### 去程」, no time on it), on the lines under it up to a blank line or the next heading."""
+    """The times written for each leg: on the leg's own line, or under a leg heading, up to the next
+    heading or a blank line after its content (a blank line right under the heading is skipped)."""
     found = {leg: set() for leg in LEGS}
-    under = None
+    under, seen = None, False
     for line in text.splitlines():
         legs = [leg for leg in LEGS if leg in line]
         times = times_in(line)
+        heading = leg_heading(line) if not times else None
+        if heading:
+            under, seen = heading, False
+            continue
         if legs:
             for leg in legs:
                 found[leg] |= times
-            under = legs[0] if not times and len(legs) == 1 else None
-        elif not line.strip() or line.lstrip().startswith("#"):
             under = None
-        elif under:
+        elif line.lstrip().startswith("#") or (not line.strip() and seen):
+            under = None
+        elif under and line.strip():
             found[under] |= times
+            seen = True
     return found
 
 
