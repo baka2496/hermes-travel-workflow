@@ -20,6 +20,7 @@ CROSS_REVIEW=off skips it; CROSS_REVIEW_REVIEWER=agy|claude picks the reviewer.
 """
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -140,7 +141,13 @@ def run_reviewer(reviewer, prompt, env, runner=subprocess.run):
     if result.returncode != 0 or not text:
         detail = (result.stderr or text or "").strip().splitlines()[-1:] or ["沒有輸出"]
         return None, f"{spec['name']} 審查失敗：{detail[0][:200]}"
-    return text, None
+    return clean_review(text), None
+
+
+def clean_review(text):
+    """From the verdict line on. 2026-11-25: Claude's review began with its English scratch notes."""
+    verdict = re.search(r"^\s*(\*\*)?結論：", text, re.M)
+    return text[verdict.start():].strip() if verdict else text
 
 
 def review(base, tip, reviewer, env, out=print, runner=subprocess.run):
@@ -165,7 +172,7 @@ def review(base, tip, reviewer, env, out=print, runner=subprocess.run):
     saved.parent.mkdir(parents=True, exist_ok=True)
     saved.write_text(f"# {name} 審查 {base[:7]}..{tip[:7]}\n\n{text}\n", encoding="utf-8")
     out(f"===== {name} 的審查意見 =====\n{text}\n===== 意見結束（存在 {saved}）=====")
-    if not text.startswith("結論：沒問題"):
+    if not re.match(r"(\*\*)?結論：沒問題", text):
         out("[互審] 請推送的一方照 AGENTS.md 的「互相審查」處理：真的問題就修，不同意的列給主人決定。")
     return saved
 

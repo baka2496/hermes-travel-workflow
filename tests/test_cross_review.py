@@ -104,6 +104,12 @@ class RunReviewerTests(unittest.TestCase):
         self.assertEqual(calls[0][1]["input"], "PROMPT")
         self.assertEqual(calls[0][1]["env"]["CROSS_REVIEW_RUNNING"], "1")
 
+    def test_scratch_notes_before_the_verdict_are_dropped(self):
+        noisy = "審查這份 diff。\n\nLook for real issues.\n1. maybe... skip.\n結論：沒問題"
+        self.assertEqual(cross_review.clean_review(noisy), "結論：沒問題")
+        self.assertEqual(cross_review.clean_review("**結論：有 1 個問題**\n[重要] x"), "**結論：有 1 個問題**\n[重要] x")
+        self.assertEqual(cross_review.clean_review("沒有照格式"), "沒有照格式")
+
     def test_reviewer_that_cannot_start_only_warns(self):
         def cannot_start(command, **kwargs):
             raise FileNotFoundError(command[0])
