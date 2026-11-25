@@ -143,7 +143,8 @@ STAY_WORDS = ("hotel", "hotels", "lodging", "ryokan", "hostel")
 FLIGHT_TEXT = ("機票", "航班", "訂票", "航空", "班機", *FLIGHT_WORDS)
 STAY_TEXT = ("住宿", "飯店", "旅館", "酒店", "民宿", "訂房", "房型", "inn", "resort", *STAY_WORDS)
 AIRLINE_SITES = {"china-airlines", "evaair", "starlux", "tigerair", "tigerairtw", "jal", "ana", "flypeach", "jetstar",
-                 "vietjetair", "cathaypacific", "flyscoot", "finnair", "airasia", "koreanair", "gotogate"}
+                 "vietjetair", "cathaypacific", "flyscoot", "finnair", "airasia", "koreanair", "gotogate",
+                 "britishairways", "singaporeair", "thaiairways", "emirates", "qatarairways", "united", "delta"}
 HOTEL_ONLY_SITES = {"booking", "agoda", "expedia", "airbnb", "jalan", "ikyu", "vio", "priceline", "toyoko", "trivago", "dealbase",
                     "gracery", "japanesque"}
 
@@ -170,7 +171,8 @@ def link_kind(url, name=""):
         return "住宿"
     if parts & AIRLINE_SITES:
         return "機票"
-    if parts & HOTEL_ONLY_SITES or "inn" in parts:
+    # Rakuten Travel, not Rakuten's shop (Antigravity's review of 55a7ae9: it was dropped from the list).
+    if parts & HOTEL_ONLY_SITES or "inn" in parts or {"travel", "rakuten"} <= parts:
         return "住宿"
     return None
 
@@ -190,7 +192,8 @@ def leg_heading(line):
     legs = [leg for leg in LEGS if leg in line]
     if len(legs) != 1:
         return None
-    if line.lstrip().startswith("#"):
+    if line.lstrip().startswith("#") and not _has_word(line.lower(), STAY_TEXT + ("入住", "退房")):
+        # 「### 去程當晚住宿」 heads a hotel, not a flight (Antigravity's review of 55a7ae9).
         return legs[0]
     core = re.sub(r"[#*\-\s:：|]", "", line)
     core = re.sub(r"[（(][^）)]*[）)]$", "", core)

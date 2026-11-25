@@ -377,7 +377,12 @@ class ResultTests(unittest.TestCase):
         self.assertEqual(kind("https://www.agoda.com/flights/x", "Agoda"), "機票")
         self.assertEqual(kind("https://www.skyscanner.com.tw/hotels/x", "Skyscanner"), "住宿")
         self.assertEqual(kind("https://www.skyscanner.com.tw/transport/flights/tpe/fuk/", "Skyscanner"), "機票")
-        self.assertEqual(kind("https://www.britishairways.com/x", ""), None)  # one word, not "airways"
+        # Antigravity's review of 55a7ae9: a real airline is not the example of a word boundary.
+        self.assertIsNone(kind("https://www.stairways.com/x", ""))  # one word, not "airways"
+        self.assertEqual(kind("https://www.britishairways.com/x", "官網"), "機票")
+        self.assertEqual(kind("https://travel.rakuten.co.jp/HOTEL/12345/", ""), "住宿")
+        self.assertEqual(kind("https://travel.rakuten.co.jp/", "樂天"), "住宿")
+        self.assertIsNone(kind("https://www.rakuten.co.jp/shop/", ""))
         self.assertEqual(kind("https://www.klook.com/activity/123", "Klook 門票"), None)
         self.assertEqual(kind("https://www.klook.com/hotels/123", "Klook"), "住宿")
         self.assertEqual(kind("https://example.com/x", "booking"), None)  # plain "booking" is not a hotel
@@ -405,6 +410,23 @@ class ResultTests(unittest.TestCase):
         ok = "福岡 NT$27,508\n去 16:40→20:00｜回 11:00→12:30"
         self.assertNotIn("card_missing_details",
                          [p["kind"] for p in check_handoff(ok, db, "--card", "t_0569fddd")[1]["problems"]])
+
+    def test_a_hotel_heading_naming_a_leg_is_not_a_flight_section(self):
+        # Antigravity's review of 55a7ae9: 「### 去程當晚住宿」 made the 15:00 check-in a flight time.
+        db = self.card_with("- 去程：CI116 16:40→20:00\n- 回程：CI111 11:00→12:30\n"
+                            "### 去程當晚住宿\n- 15:00 入住\n")
+        ok = "福岡 NT$27,508\n去 16:40→20:00｜回 11:00→12:30"
+        self.assertNotIn("card_missing_details",
+                         [p["kind"] for p in check_handoff(ok, db, "--card", "t_0569fddd")[1]["problems"]])
+        found = phone_check.leg_times("- 去程：CI116 16:40→20:00\n### 去程當晚住宿\n- 15:00 入住\n")
+        self.assertEqual(found["去程"], {"16:40", "20:00"})
+
+    def test_times_on_a_leg_heading_line_are_kept(self):
+        # Antigravity's review of 55a7ae9 asked; the heading check is skipped when the line has times.
+        db = self.card_with("### 去程 06/05 16:40 → 20:00\n\n### 回程 06/08 11:00 → 12:30\n")
+        status, report = check_handoff("福岡 NT$27,508\n去 16:40→20:00\n15:00 入住", db, "--card", "t_0569fddd")
+        self.assertEqual(status, 1)
+        self.assertIn("回程", report["problems"][0]["text"])
 
     def test_a_note_on_the_same_leg_keeps_the_section(self):
         # Antigravity's review of e363c3c: 「- 回程含 20kg 行李」 under 「### 回程」 dropped the time below it.
