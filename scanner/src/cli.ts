@@ -501,11 +501,20 @@ async function profileHotels(limit = PROFILES_PER_RUN): Promise<number> {
   return fetched;
 }
 
+const BOOKING_CHECK_CONCURRENCY = 3;
+
 async function ownBathrooms(picks: readonly Pick[], stay: Stay, currency: string): Promise<Pick[]> {
   const { nonSmoking } = readUserPrefs();
+  const roomLists: BookingRoom[][] = new Array(picks.length);
+  for (let start = 0; start < picks.length; start += BOOKING_CHECK_CONCURRENCY) {
+    const batch = picks.slice(start, start + BOOKING_CHECK_CONCURRENCY);
+    const fetched = await Promise.all(batch.map(pick => bookingRoomsFor(pick, stay, currency)));
+    fetched.forEach((rooms, offset) => { roomLists[start + offset] = rooms; });
+  }
   const result: Pick[] = [];
-  for (let pick of picks) {
-    const rooms = await bookingRoomsFor(pick, stay, currency);
+  for (let i = 0; i < picks.length; i++) {
+    let pick = picks[i]!;
+    const rooms = roomLists[i]!;
     // Google's room names hide bunk beds and shared bathrooms (Minn Kamata's "Quadruple Room" is bunks,
     // DOYANEN BAKURO's twin a bunk with a shared bathroom): a hotel whose rooms for the party on Booking
     // are all smoking, bunks or shared-bathroom is poor value for two and is left out.
@@ -689,7 +698,7 @@ async function tripSearch(cityArg: string | undefined, outboundDate: string | un
 // 2026-11-21: with no booking page read there is no bag line, and a card told the user NT$32,392 「在 4 萬
 // 預算內」 with no word that two checked bags (about NT$3,600) were not in it. But a full-service pair
 // (China Airlines both ways) has no bag line either, its fare holding the bags: three cases, not two.
-const PLAN_TOTAL_NOTE = '「含機票」總價＝住宿＋每人機票\n有「＋托運行李」那行：廉航行李費已加進去，不要再加\n有去回航班、沒有那行：一般航空，票價已含托運行李\n寫「這次沒讀到訂票頁」或「沒有符合時段的航班」：\n總價沒含托運行李，回報要寫「未含托運行李」';
+const PLAN_TOTAL_NOTE = '「含機票」總價＝住宿＋每人機票\n有「＋托運行李」那行：廉航行李費已加進去，不要再加\n有去回航班、沒有那行：一般航空，票價已含托運行李\n寫「這次沒讀到訂票頁」或「沒有符合時段的航班」：\n總價沒含托運行李，回報要寫「未含托運行李」\n以上已含完整機票與住宿價格，直接寫報告交付，不用重跑 plan';
 // 2026-11-21: plan read no flights for Fukuoka in March (Google blocked it once; a rerun had Tigerair at
 // NT$12,281), and the card said 「遠期尚未開賣」「預計 2026 年 3 月查價」 with two hotels nobody looked up.
 const PLAN_NO_FLIGHTS_NOTE = '這次讀不到＝被擋或暫時沒讀到，不是還沒開賣\n（Google 可訂約 11 個月內的航班）\n住宿也還沒查：機票、住宿都寫「未確認」\n不要自己挑飯店或猜原因，過幾分鐘再跑一次 plan';

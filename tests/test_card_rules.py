@@ -53,6 +53,21 @@ class CardRulesTest(unittest.TestCase):
             with self.subTest(name):
                 self.assertIn("不要自己找別的預算", text)
 
+    def test_plan_is_not_rerun_when_first_run_has_prices(self):
+        # 2026-11-25 Osaka card: Trip ran `deals plan` a second time (+77s) after the first succeeded.
+        for name, text in texts("trip", "trip"):
+            with self.subTest(name):
+                self.assertIn("第一次 `plan` 已印出機票與住宿價格時直接寫報告交付，不准重跑第二次 `plan`", text)
+
+    def test_reviewer_does_not_read_trip_bot_code_or_run_cli(self):
+        # 2026-11-25 Osaka card: reviewer wasted ~95s reading trip-bot code and running sqlite3/deals.
+        for name, text in texts("travel-commander", "commander"):
+            with self.subTest(name):
+                self.assertIn("覆核只看卡片內文與交付檔", text)
+                self.assertIn("無誤就直接結案", text)
+                plain = text.replace("`", "")
+                self.assertIn("不要搜或讀 trip-bot 程式碼、不要跑 sqlite3 或 deals", plain)
+
     def test_a_done_card_is_always_reported(self):
         # The same card: after compressing, the commander answered its "done" notice with NO_REPLY.
         for name, text in texts("travel-commander", "project-manager"):
@@ -60,6 +75,13 @@ class CardRulesTest(unittest.TestCase):
                 self.assertIn("「已完成」通知就是新成果：一定要讀成果、照規則回報使用者，絕不回 `NO_REPLY`", text)
                 self.assertIn("show <卡號>`，不加 `--json`", text)
                 self.assertNotIn("show <卡號> --json", text)
+
+    def test_card_report_requires_flight_times_hotel_and_links(self):
+        # 2026-11-25: Fukuoka card reply omitted flight times, room type, and booking links.
+        for name, text in texts("travel-commander", "project-manager"):
+            with self.subTest(name):
+                self.assertIn("回報機酒查價卡必附去回程班號與時間、行李說明、飯店全名與房型", text)
+                self.assertIn("不能只寫總價", text)
 
     def test_opportunities_is_searched_not_read_whole(self):
         # The retry: the commander read all 38K characters of opportunities.json first and compressed.
