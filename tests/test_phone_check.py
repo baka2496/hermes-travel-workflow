@@ -10,6 +10,11 @@ import scratch
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts/phone-check.py"
+sys.path.insert(0, str(REPO / "scripts"))  # phone-check imports travel_money from beside it
+import importlib.util  # noqa: E402
+_spec = importlib.util.spec_from_file_location("phone_check", SCRIPT)
+phone_check = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(phone_check)
 
 
 def check(text):
@@ -279,6 +284,187 @@ class ResultTests(unittest.TestCase):
         empty = "06/05–06/09 福岡五天四夜（2人）\n這次沒讀到價格，未確認。"
         status, report = check_handoff(empty, db, "--card", "t_0569fddd")
         self.assertEqual(status, 0, report)
+
+    def fukuoka_card(self):
+        db = board([("t_0569fddd", 600, "trip")], done={"t_0569fddd": "review"})
+        attach = db.parent / "attachments" / "t_0569fddd"
+        attach.mkdir(parents=True)
+        (attach / "fukuoka_plan.md").write_text(
+            "- **去程**：2027-06-05 華航 CI116 16:40（TPE）→ 20:00（FUK）\n"
+            "  - 飛行時間：2h20，預計約 21:15 抵達飯店\n"
+            "- **回程**：2027-06-09 華航 CI111 11:00（FUK）→ 12:30（TPE）\n"
+            "[機票訂票連結](https://www.google.com/travel/flights/booking?tfs=abc)\n"
+            "Fukuoka UBL Hotel 雙人房 4晚 NT$7,960 入住 15:00\n"
+            "[住宿頁面連結](https://www.google.com/travel/search?q=Fukuoka+UBL+Hotel)\n", encoding="utf-8")
+        return db
+
+    def test_an_unconfirmed_side_item_does_not_skip_the_detail_check(self):
+        # Antigravity's review (2026-11-25): any 「未確認」 skipped the check, so bare totals plus
+        # 「早餐未確認」 went out without times or links.
+        bare = "06/05–06/09 福岡（2人）\n• 機票 NT$27,508\n• 住宿 NT$7,960（早餐未確認）\n總計 NT$35,468"
+        status, report = check_handoff(bare, self.fukuoka_card(), "--card", "t_0569fddd")
+        self.assertEqual([p["kind"] for p in report["problems"]], ["card_missing_details"])
+
+    def test_times_written_right_after_chinese_are_seen(self):
+        # Antigravity's review (2026-11-25): \b does not split Chinese from digits, so 「去程16:40」 was missed.
+        reply = ("06/05–06/09 福岡（2人）總計 NT$35,468\n"
+                 "去程16:40起飛、20:00抵達；回程11:00起飛\n"
+                 "[機票訂票連結](https://www.google.com/travel/flights/booking?tfs=abc)｜"
+                 "[住宿頁面連結](https://www.google.com/travel/search?q=Fukuoka+UBL+Hotel)")
+        status, report = check_handoff(reply, self.fukuoka_card(), "--card", "t_0569fddd")
+        self.assertEqual(status, 0, report)
+
+    def test_half_the_details_is_not_enough(self):
+        # Antigravity's review (2026-11-25): one time of any kind (here the 15:00 check-in) and one link
+        # passed, though the return flight and the hotel link were missing.
+        reply = ("06/05–06/09 福岡（2人）總計 NT$35,468\n• 去 16:40→20:00\n• 15:00 入住\n"
+                 "[機票訂票連結](https://www.google.com/travel/flights/booking?tfs=abc)")
+        status, report = check_handoff(reply, self.fukuoka_card(), "--card", "t_0569fddd")
+        self.assertEqual(status, 1)
+        self.assertIn("回程", report["problems"][0]["text"])
+        self.assertIn("住宿", report["problems"][0]["text"])
+
+    def card_with(self, attachment):
+        db = board([("t_0569fddd", 600, "trip")], done={"t_0569fddd": "review"})
+        attach = db.parent / "attachments" / "t_0569fddd"
+        attach.mkdir(parents=True)
+        (attach / "plan.md").write_text(attachment, encoding="utf-8")
+        return db
+
+    def test_official_airline_and_hotel_sites_count_by_their_link_text(self):
+        # Antigravity's review of 2f15bdc: china-airlines.com / toyoko-inn.com have no "flight"/"hotel" in them.
+        db = self.card_with("- 去程：CI116 16:40→20:00\n- 回程：CI111 11:00→12:30\n"
+                            "[華航官網訂票](https://www.china-airlines.com/tw/zh/booking?x=1)\n"
+                            "[東橫INN 博多口](https://www.toyoko-inn.com/search/detail/00059)\n")
+        ok = ("福岡 2人 總計 NT$35,468\n去 16:40→20:00｜回 11:00→12:30\n"
+              "[華航官網訂票](https://www.china-airlines.com/tw/zh/booking?x=1)｜[東橫INN 博多口](https://www.toyoko-inn.com/search/detail/00059)")
+        self.assertEqual(check_handoff(ok, db, "--card", "t_0569fddd")[0], 0)
+        no_flight = ("福岡 2人 總計 NT$35,468\n去 16:40→20:00｜回 11:00→12:30\n"
+                     "[東橫INN 博多口](https://www.toyoko-inn.com/search/detail/00059)")
+        status, report = check_handoff(no_flight, db, "--card", "t_0569fddd")
+        self.assertEqual(status, 1)
+        self.assertIn("機票", report["problems"][0]["text"])
+
+    def test_link_kind_by_text_alone_and_by_site_alone(self):
+        # Antigravity's review of 3ed6613: the test above passes on either path; check each on its own,
+        # and that short words only match whole words / whole host parts.
+        kind = phone_check.link_kind
+        self.assertEqual(kind("https://example.com/a", "華航訂票"), "機票")          # text only
+        self.assertEqual(kind("https://example.com/b", "東橫INN 博多口"), "住宿")
+        self.assertEqual(kind("https://example.com/c", "Holiday Inn Osaka"), "住宿")
+        self.assertEqual(kind("https://www.china-airlines.com/x", "官網"), "機票")  # site only
+        self.assertEqual(kind("https://www.toyoko-inn.com/x", "官網"), "住宿")
+        self.assertEqual(kind("https://www.ana.co.jp/x"), "機票")
+        self.assertEqual(kind("https://www.finnair.com/x"), "機票")                  # not 住宿 via "inn"
+        self.assertEqual(kind("https://www.hotel-hana.co.jp/"), "住宿")              # not 機票 via "ana.co"
+        self.assertIsNone(kind("https://example.com/dinner", "晚餐 dinner"))
+        # Real attachment links (2026-11-25) that were left unsorted before:
+        # Neutral link text, so the address itself is what is tested (Antigravity's review of e363c3c).
+        self.assertEqual(kind("https://www.google.com/travel/lodging/clk?x=1", "官網"), "住宿")
+        self.assertEqual(kind("https://deals.vio.com/", ""), "住宿")
+        self.assertEqual(kind("https://www.priceline.com", "預訂"), "住宿")
+        self.assertEqual(kind("https://www.jtb.co.jp/kokunai-hotel/htl/6492106/plan/", "官網方案"), "住宿")
+
+    def test_sites_selling_both_are_sorted_by_the_address_first(self):
+        # Antigravity's review of e363c3c: the brand name won over the address.
+        kind = phone_check.link_kind
+        self.assertEqual(kind("https://flights.google.com/x", "Google"), "機票")
+        self.assertEqual(kind("https://flights.booking.com/x", "Booking.com"), "機票")
+        self.assertEqual(kind("https://www.expedia.com/flights?x=1", "Expedia"), "機票")
+        self.assertEqual(kind("https://www.expedia.com/hotels?x=1", "Expedia"), "住宿")
+        self.assertEqual(kind("https://www.expedia.com.tw/", "Expedia"), "住宿")  # real attachment links
+        self.assertEqual(kind("https://www.agoda.com/partners/partnersearch.aspx?hid=2264692", "Agoda"), "住宿")
+        self.assertEqual(kind("https://www.agoda.com/flights/x", "Agoda"), "機票")
+        self.assertEqual(kind("https://www.skyscanner.com.tw/hotels/x", "Skyscanner"), "住宿")
+        self.assertEqual(kind("https://www.skyscanner.com.tw/transport/flights/tpe/fuk/", "Skyscanner"), "機票")
+        # Antigravity's review of 55a7ae9: a real airline is not the example of a word boundary.
+        self.assertIsNone(kind("https://www.stairways.com/x", ""))  # one word, not "airways"
+        self.assertEqual(kind("https://www.britishairways.com/x", "官網"), "機票")
+        self.assertEqual(kind("https://travel.rakuten.co.jp/HOTEL/12345/", ""), "住宿")
+        self.assertEqual(kind("https://travel.rakuten.co.jp/", "樂天"), "住宿")
+        self.assertIsNone(kind("https://www.rakuten.co.jp/shop/", ""))
+        self.assertEqual(kind("https://www.klook.com/activity/123", "Klook 門票"), None)
+        self.assertEqual(kind("https://www.klook.com/hotels/123", "Klook"), "住宿")
+        self.assertEqual(kind("https://example.com/x", "booking"), None)  # plain "booking" is not a hotel
+
+    def test_a_blank_line_under_a_leg_heading_keeps_the_leg(self):
+        # Antigravity's review of 3ed6613: 「### 回程」, a blank line, then the times was not read.
+        db = self.card_with("### 去程\n\n- CI116 16:40 → 20:00\n\n### 回程\n\n- CI111 11:00 → 12:30\n")
+        status, report = check_handoff("福岡 NT$27,508\n去 16:40→20:00\n15:00 入住", db, "--card", "t_0569fddd")
+        self.assertEqual(status, 1)
+        self.assertIn("回程", report["problems"][0]["text"])
+
+    def test_a_sentence_naming_a_leg_does_not_take_the_next_line(self):
+        # Antigravity's review of 3ed6613: 「- 回程含 20kg 行李」 then 「- 15:00 入住」 made 15:00 a return time.
+        db = self.card_with("- 去程：CI116 16:40→20:00\n- 回程：CI111 11:00→12:30\n- 回程含 20kg 行李\n- 15:00 入住\n")
+        status, report = check_handoff("福岡 NT$27,508\n去 16:40→20:00\n15:00 入住", db, "--card", "t_0569fddd")
+        self.assertEqual(status, 1)
+        self.assertIn("回程", report["problems"][0]["text"])
+
+    def test_headings_with_more_than_the_leg_name_count(self):
+        # Antigravity's review of e363c3c: 「### 去程 06/05」「### ✈️ 回程航班」 were not read as headings.
+        db = self.card_with("### 去程 06/05\n- CI116 16:40 → 20:00\n\n### ✈️ 回程航班\n- CI111 11:00 → 12:30\n")
+        status, report = check_handoff("福岡 NT$27,508\n去 16:40→20:00\n15:00 入住", db, "--card", "t_0569fddd")
+        self.assertEqual(status, 1)
+        self.assertIn("回程", report["problems"][0]["text"])
+        ok = "福岡 NT$27,508\n去 16:40→20:00｜回 11:00→12:30"
+        self.assertNotIn("card_missing_details",
+                         [p["kind"] for p in check_handoff(ok, db, "--card", "t_0569fddd")[1]["problems"]])
+
+    def test_a_hotel_heading_naming_a_leg_is_not_a_flight_section(self):
+        # Antigravity's review of 55a7ae9: 「### 去程當晚住宿」 made the 15:00 check-in a flight time.
+        db = self.card_with("- 去程：CI116 16:40→20:00\n- 回程：CI111 11:00→12:30\n"
+                            "### 去程當晚住宿\n- 15:00 入住\n")
+        ok = "福岡 NT$27,508\n去 16:40→20:00｜回 11:00→12:30"
+        self.assertNotIn("card_missing_details",
+                         [p["kind"] for p in check_handoff(ok, db, "--card", "t_0569fddd")[1]["problems"]])
+        found = phone_check.leg_times("- 去程：CI116 16:40→20:00\n### 去程當晚住宿\n- 15:00 入住\n")
+        self.assertEqual(found["去程"], {"16:40", "20:00"})
+
+    def test_times_on_a_leg_heading_line_are_kept(self):
+        # Antigravity's review of 55a7ae9 asked; the heading check is skipped when the line has times.
+        db = self.card_with("### 去程 06/05 16:40 → 20:00\n\n### 回程 06/08 11:00 → 12:30\n")
+        status, report = check_handoff("福岡 NT$27,508\n去 16:40→20:00\n15:00 入住", db, "--card", "t_0569fddd")
+        self.assertEqual(status, 1)
+        self.assertIn("回程", report["problems"][0]["text"])
+
+    def test_a_note_on_the_same_leg_keeps_the_section(self):
+        # Antigravity's review of e363c3c: 「- 回程含 20kg 行李」 under 「### 回程」 dropped the time below it.
+        db = self.card_with("### 去程\n- CI116 16:40 → 20:00\n\n### 回程\n- 回程含 20kg 行李\n- CI111 11:00 → 12:30\n")
+        status, report = check_handoff("福岡 NT$27,508\n去 16:40→20:00\n15:00 入住", db, "--card", "t_0569fddd")
+        self.assertEqual(status, 1)
+        self.assertIn("回程", report["problems"][0]["text"])
+
+    def test_times_match_with_or_without_a_leading_zero(self):
+        # Antigravity's review of 2f15bdc: 09:05 in the attachment and 9:05 in the reply did not match.
+        db = self.card_with("- 去程：IT201 09:05→12:30\n- 回程：IT202 13:30→16:05\n")
+        status, report = check_handoff("大阪 NT$12,000\n去 9:05 起飛｜回 13:30 起飛", db, "--card", "t_0569fddd")
+        self.assertEqual(status, 0, report)
+
+    def test_leg_times_on_the_lines_under_a_heading_are_used(self):
+        # Antigravity's review of 2f15bdc: 「### 去程」 with the times on the next line was not read.
+        db = self.card_with("### 去程\nCI116 16:40 → 20:00\n\n### 回程\nCI111 11:00 → 12:30\n")
+        status, report = check_handoff("福岡 NT$27,508\n去 16:40→20:00\n15:00 入住", db, "--card", "t_0569fddd")
+        self.assertEqual(status, 1)
+        self.assertIn("回程", report["problems"][0]["text"])
+
+    def test_every_real_attachment_passes_when_its_details_are_copied(self):
+        # The stricter rule must not block a reply that does carry the attachment's details.
+        import os
+        root = Path(os.environ.get("LOCALAPPDATA", "")) / "hermes/kanban/boards/command-center/attachments"
+        if not root.is_dir():
+            self.skipTest("no live attachments on this machine")
+        for card_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+            texts = [f.read_text(encoding="utf-8", errors="ignore") for f in sorted(card_dir.iterdir())
+                     if f.suffix.lower() in (".md", ".txt")]
+            if not texts:
+                continue
+            db = board([(card_dir.name, 600, "trip")], done={card_dir.name: "review"})
+            copy = db.parent / "attachments" / card_dir.name
+            copy.mkdir(parents=True)
+            (copy / "plan.md").write_text("\n".join(texts), encoding="utf-8")
+            status, report = check_handoff("\n".join(texts), db, "--card", card_dir.name)
+            self.assertNotIn("card_missing_details", [p["kind"] for p in report["problems"]], card_dir.name)
 
     def test_the_live_fukuoka_card_is_caught(self):
         import os

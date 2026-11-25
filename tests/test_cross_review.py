@@ -152,7 +152,7 @@ class TimeoutTreeTests(unittest.TestCase):
 
     def test_ctrl_c_also_stops_the_reviewer(self):
         # Antigravity's review of 408a1cb: only a timeout stopped the tree; Ctrl+C left it running.
-        interrupted = []
+        interrupted, reaped = [], []
 
         class CtrlC(subprocess.Popen):  # only the reviewer's wait is interrupted, not taskkill's
             def communicate(self, *args, **kwargs):
@@ -161,11 +161,19 @@ class TimeoutTreeTests(unittest.TestCase):
                     raise KeyboardInterrupt
                 return super().communicate(*args, **kwargs)
 
+            def wait(self, *args, **kwargs):
+                if self in interrupted:
+                    reaped.append(self)
+                return super().wait(*args, **kwargs)
+
         with mock.patch.object(cross_review.subprocess, "Popen", CtrlC):
             with self.assertRaises(KeyboardInterrupt):
                 cross_review.run_killing_tree([sys.executable, "-c", "import time; time.sleep(60)"], input="",
                                               timeout=30, env=dict(os.environ))
-        self.assertIsNotNone(interrupted[0].wait(timeout=10), "the reviewer was stopped")
+        # Waited for by run_killing_tree itself, so no zombie is left on macOS/Linux (Antigravity's review
+        # of 2d2111c). On Windows kill() happens to record the exit code, so check the wait() call.
+        self.assertEqual(reaped, interrupted, "the stopped reviewer was waited for")
+        self.assertIsNotNone(interrupted[0].returncode, "the reviewer was stopped")
 
     def test_a_failing_taskkill_still_stops_the_reviewer_and_does_not_raise(self):
         # Antigravity's review of 408a1cb: a taskkill error skipped proc.kill() and hid the timeout.
@@ -331,6 +339,29 @@ class ReviewInRepoTests(unittest.TestCase):
             cross_review.main(["off"], env={})
             cross_review.main(["install"], env={})
         self.assertEqual(git("crossreview.enabled"), "true")
+
+    def test_status_does_not_name_a_reviewer_while_off_or_not_installed(self):
+        # Antigravity's review of a6e31a4: 「關閉（off）…這次推送會由 Claude 審」 contradicted itself.
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            cross_review.main(["status"], env={})
+            cross_review.main(["install"], env={})
+            cross_review.main(["off"], env={})
+            cross_review.main(["status"], env={})
+        not_installed, off = out.getvalue().splitlines()[0], out.getvalue().splitlines()[-1]
+        for line in (not_installed, off):
+            self.assertIn("推送時不會送審", line)
+            self.assertNotIn("這次推送會由", line)
+
+    def test_pushing_a_branch_fast_forwarded_to_main_sends_nothing(self):
+        # Antigravity's review of 9b41e70: an old branch moved to the latest main and pushed sent main's
+        # already-merged commits for review again.
+        subprocess.run(["git", "update-ref", "refs/remotes/origin/main", self.tip], check=True)
+        runner, calls = fake_run()
+        out = []
+        with mock.patch.object(cross_review.shutil, "which", return_value="agy"):
+            cross_review.review(self.base, self.tip, "agy", {}, out.append, runner, pushed=True)
+        self.assertEqual(calls, [])
+        self.assertIn("沒有程式改動", "\n".join(out))
 
     def test_status_shows_a_temporary_skip(self):
         with mock.patch("sys.stdout", new_callable=io.StringIO) as out:

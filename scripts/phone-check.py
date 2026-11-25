@@ -13,6 +13,9 @@ import math
 import re
 import sys
 import unicodedata
+import urllib.parse
+
+import travel_money
 
 LINE_WIDTH = 40          # 20 full-width characters per bubble line on a phone
 NARROW = 0.7             # width of a Latin letter or digit, in half full-width units
@@ -122,9 +125,106 @@ def result_problem(card):
     return None
 
 
-FLIGHT_TIME = re.compile(r"\b\d{1,2}:\d{2}\b")
+# Not \b: Chinese counts as a word character, so 「去程16:40起飛」 had no boundary (Antigravity, 2026-11-25).
+FLIGHT_TIME = re.compile(r"(?<!\d)\d{1,2}:\d{2}(?!\d)")
 ATTACHMENT_URL = re.compile(r"https?://[^\s)\]）]+")
 EMPTY_RESULT = re.compile(r"未確認|沒讀到價格|沒查成")
+PRICE = travel_money.PRICE
+LEGS = ("去程", "回程")
+
+
+# How a link is sorted, most specific evidence first (Antigravity's reviews of 2f15bdc, 3ed6613, e363c3c):
+# 1. the address itself: flights.booking.com, expedia.com/flights, skyscanner.com/hotels, …/lodging
+# 2. plain words in the link text: 「華航官網訂票」, 「東橫INN 博多口」 (official sites say neither)
+# 3. the site: an airline, or a site that is mostly rooms (Agoda, Expedia: their flight pages say /flights,
+#    caught in step 1). Klook, Skyscanner and the word "booking" alone are not sorted by name.
+FLIGHT_WORDS = ("flight", "flights", "airline", "airlines", "airways")
+STAY_WORDS = ("hotel", "hotels", "lodging", "ryokan", "hostel")
+FLIGHT_TEXT = ("機票", "航班", "訂票", "航空", "班機", *FLIGHT_WORDS)
+STAY_TEXT = ("住宿", "飯店", "旅館", "酒店", "民宿", "訂房", "房型", "inn", "resort", *STAY_WORDS)
+AIRLINE_SITES = {"china-airlines", "evaair", "starlux", "tigerair", "tigerairtw", "jal", "ana", "flypeach", "jetstar",
+                 "vietjetair", "cathaypacific", "flyscoot", "finnair", "airasia", "koreanair", "gotogate",
+                 "britishairways", "singaporeair", "thaiairways", "emirates", "qatarairways", "united", "delta"}
+HOTEL_ONLY_SITES = {"booking", "agoda", "expedia", "airbnb", "jalan", "ikyu", "vio", "priceline", "toyoko", "trivago", "dealbase",
+                    "gracery", "japanesque"}
+
+
+def _has_word(text, words):
+    """A Chinese word anywhere; an English one only as a whole word (Holiday Inn, not dinner or finnair)."""
+    return any(re.search(rf"(?<![a-z]){re.escape(w)}(?![a-z])", text) if w.isascii() else w in text for w in words)
+
+
+def link_kind(url, name=""):
+    """機票 or 住宿 for a booking/search link, else None."""
+    parsed = urllib.parse.urlparse(url.lower())
+    host = parsed.hostname or ""
+    parts = set(re.split(r"[.\-]", host))  # whole parts: "ana" is not hotel-hana.co.jp
+    address = " ".join(re.split(r"[.\-/_?=&]", host + parsed.path))
+    if _has_word(address, FLIGHT_WORDS):
+        return "機票"
+    if _has_word(address, STAY_WORDS) or "travel/search" in parsed.path:
+        return "住宿"
+    name = name.lower()
+    if _has_word(name, FLIGHT_TEXT):
+        return "機票"
+    if _has_word(name, STAY_TEXT):
+        return "住宿"
+    if parts & AIRLINE_SITES:
+        return "機票"
+    # Rakuten Travel, not Rakuten's shop (Antigravity's review of 55a7ae9: it was dropped from the list).
+    if parts & HOTEL_ONLY_SITES or "inn" in parts or {"travel", "rakuten"} <= parts:
+        return "住宿"
+    return None
+
+
+def times_in(text):
+    """Flight times as HH:MM, so 9:05 and 09:05 match (Antigravity's review of 2f15bdc)."""
+    return {t.zfill(5) for t in FLIGHT_TIME.findall(text)}
+
+
+def leg_heading(line):
+    """The leg a line heads, else None: a Markdown heading naming one leg (「### ✈️ 回程航班」「### 去程 06/05」),
+    or a bare label (「**回程**：」「去程（06/05）」).
+
+    A sentence that merely mentions a leg (「- 回程含 20kg 行李」) is not one, or the next line's 15:00
+    check-in would count as a flight time (Antigravity's review of 3ed6613).
+    """
+    legs = [leg for leg in LEGS if leg in line]
+    if len(legs) != 1:
+        return None
+    if line.lstrip().startswith("#") and not _has_word(line.lower(), STAY_TEXT + ("入住", "退房")):
+        # 「### 去程當晚住宿」 heads a hotel, not a flight (Antigravity's review of 55a7ae9).
+        return legs[0]
+    core = re.sub(r"[#*\-\s:：|]", "", line)
+    core = re.sub(r"[（(][^）)]*[）)]$", "", core)
+    return core if core in LEGS else None
+
+
+def leg_times(text):
+    """The times written for each leg: on the leg's own line, or under a leg heading, up to the next
+    heading or a blank line after its content (a blank line right under the heading is skipped)."""
+    found = {leg: set() for leg in LEGS}
+    under, seen = None, False
+    for line in text.splitlines():
+        legs = [leg for leg in LEGS if leg in line]
+        times = times_in(line)
+        heading = leg_heading(line) if not times else None
+        if heading:
+            under, seen = heading, False
+            continue
+        if legs:
+            for leg in legs:
+                found[leg] |= times
+            if legs == [under]:  # 「- 回程含 20kg 行李」 under 「### 回程」 does not end the section
+                seen = True
+            else:
+                under = None
+        elif line.lstrip().startswith("#") or (not line.strip() and seen):
+            under = None
+        elif under and line.strip():
+            found[under] |= times
+            seen = True
+    return found
 
 
 def card_detail_problem(card, message):
@@ -133,7 +233,9 @@ def card_detail_problem(card, message):
     2026-11-25: t_0569fddd's fukuoka_plan.md had CI116/CI111 times, room types and Google Flights/Hotels
     links, but the Telegram reply dropped all of them and sent only bare totals.
     """
-    if EMPTY_RESULT.search(message):
+    # A failed lookup (no price given) has no details to carry. Antigravity, 2026-11-25: any 「未確認」 used
+    # to skip this, so bare totals with 「早餐未確認」 went out without times or links.
+    if EMPTY_RESULT.search(message) and not PRICE.search(message):
         return None
     attach_dir = board_db().parent / "attachments" / card
     if not attach_dir.is_dir():
@@ -149,10 +251,27 @@ def card_detail_problem(card, message):
         return None
     combined = "\n".join(texts)
     missing = []
-    has_flight_times = bool(FLIGHT_TIME.search(combined) and ("去程" in combined or "航班" in combined or "→" in combined))
-    if has_flight_times and not FLIGHT_TIME.search(message):
-        missing.append("去回程航班時間／班號")
-    if ATTACHMENT_URL.search(combined) and not MARKDOWN_LINK.search(message):
+    # Each leg needs one of its own times. Antigravity, 2026-11-25: any one time passed, even the 15:00
+    # check-in with the return flight left out. A leg line may also hold e.g. 「預計 21:15 抵達飯店」, so
+    # one of the line's times is enough, not all.
+    replied_times = times_in(message)
+    legs = leg_times(combined)
+    missed_legs = [leg for leg, times in legs.items() if times and not times & replied_times]
+    if missed_legs:
+        missing.append(("去回程" if len(missed_legs) == 2 else missed_legs[0]) + "航班時間／班號")
+    elif not any(legs.values()):
+        has_flight_times = bool(FLIGHT_TIME.search(combined) and ("航班" in combined or "→" in combined))
+        if has_flight_times and not replied_times:
+            missing.append("去回程航班時間／班號")
+    # Each kind of link the attachment has (機票, 住宿) must be in the reply, not just one link.
+    named = MARKDOWN_LINK.findall(combined)
+    bare = ATTACHMENT_URL.findall(MARKDOWN_LINK.sub("", combined))
+    needed = {link_kind(url, name) for name, url in named} | {link_kind(url) for url in bare}
+    needed -= {None}
+    replied = {link_kind(url, name) for name, url in MARKDOWN_LINK.findall(message)}
+    if needed - replied:
+        missing.append("可點擊的" + "與".join(sorted(needed - replied, key="機票住宿".index)) + "連結（[名稱](網址)）")
+    elif ATTACHMENT_URL.search(combined) and not MARKDOWN_LINK.search(message):
         missing.append("可點擊的機票與住宿連結（[名稱](網址)）")
     if not missing:
         return None
