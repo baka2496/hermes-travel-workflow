@@ -289,6 +289,55 @@ class ReviewInRepoTests(unittest.TestCase):
         self.assertIsNone(prompt)
         self.assertIn("沒有程式改動", out)
 
+    def test_chinese_branch_names_are_read_as_utf8(self):
+        # Antigravity's review (2026-11-25): with a strict cp950 stdin (PYTHONIOENCODING set), "截止日"
+        # failed to decode and the review was skipped; by default it was only garbled.
+        line = f"refs/heads/截止日 {self.tip} refs/heads/截止日 {self.base}\n".encode("utf-8")
+        stdin = io.TextIOWrapper(io.BytesIO(line), encoding="cp950")
+        with mock.patch.object(cross_review, "review") as review, mock.patch("sys.stdout", new_callable=io.StringIO):
+            cross_review.main(["pre-push", "origin"], env={}, stdin=stdin)
+        self.assertEqual(review.call_args[0][:2], (self.base, self.tip))
+
+    def test_off_pauses_reviews_until_on(self):
+        # 2026-11-25: the owner asked to switch reviews off when an AI's quota runs low.
+        line = f"refs/heads/main {self.tip} refs/heads/main {self.base}\n"
+        with mock.patch.object(cross_review, "review") as review, \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            cross_review.main(["install"], env={})
+            cross_review.main(["off"], env={})
+            cross_review.main(["pre-push", "origin"], env={}, stdin=io.StringIO(line))
+            self.assertEqual(review.call_count, 0, "off: nothing is sent")
+            self.assertIn("已用 off 關閉", out.getvalue())
+            cross_review.main(["status"], env={})
+            self.assertIn("關閉", out.getvalue().splitlines()[-1])
+            cross_review.main(["on"], env={})
+            cross_review.main(["pre-push", "origin"], env={}, stdin=io.StringIO(line))
+            self.assertEqual(review.call_count, 1, "on: reviews again")
+
+    def test_off_still_allows_a_review_by_hand(self):
+        # Antigravity's review of b12c967: off also blocked `review`, wanted for one big change on low quota.
+        with mock.patch.object(cross_review, "review") as review, mock.patch("sys.stdout", new_callable=io.StringIO):
+            cross_review.main(["off"], env={})
+            cross_review.main(["review", "--base", self.base, "--tip", self.tip], env={})
+        self.assertEqual(review.call_count, 1)
+
+    def test_install_and_on_both_leave_it_really_on(self):
+        # Antigravity's review of b12c967: install after off said "on" but stayed off; on without
+        # install said "on" with no hook installed.
+        git = lambda *a: cross_review.git("config", "--get", *a, check=False)
+        with mock.patch("sys.stdout", new_callable=io.StringIO):
+            cross_review.main(["on"], env={})
+            self.assertEqual((git("core.hooksPath"), git("crossreview.enabled")), (".githooks", "true"))
+            cross_review.main(["off"], env={})
+            cross_review.main(["install"], env={})
+        self.assertEqual(git("crossreview.enabled"), "true")
+
+    def test_status_shows_a_temporary_skip(self):
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            cross_review.main(["install"], env={})
+            cross_review.main(["status"], env={"CROSS_REVIEW": "off"})
+        self.assertIn("這次推送會跳過：CROSS_REVIEW=off", out.getvalue())
+
     def test_one_branch_failing_does_not_skip_the_others(self):
         # Claude's review of efed1b7 (2026-11-25): this was promised in a commit but had no test.
         stdin = io.StringIO(f"refs/heads/a {self.tip} refs/heads/a {self.base}\n"
