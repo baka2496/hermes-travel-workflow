@@ -76,6 +76,13 @@ class CardRulesTest(unittest.TestCase):
                 self.assertIn("show <卡號>`，不加 `--json`", text)
                 self.assertNotIn("show <卡號> --json", text)
 
+    def test_card_report_requires_flight_times_hotel_and_links(self):
+        # 2026-11-25: Fukuoka card reply omitted flight times, room type, and booking links.
+        for name, text in texts("travel-commander", "project-manager"):
+            with self.subTest(name):
+                self.assertIn("回報機酒查價卡必附去回程班號與時間、行李說明、飯店全名與房型", text)
+                self.assertIn("不能只寫總價", text)
+
     def test_opportunities_is_searched_not_read_whole(self):
         # The retry: the commander read all 38K characters of opportunities.json first and compressed.
         for name, text in texts("travel-commander", "project-manager"):

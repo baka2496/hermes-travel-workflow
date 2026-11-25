@@ -122,6 +122,44 @@ def result_problem(card):
     return None
 
 
+FLIGHT_TIME = re.compile(r"\b\d{1,2}:\d{2}\b")
+ATTACHMENT_URL = re.compile(r"https?://[^\s)\]）]+")
+EMPTY_RESULT = re.compile(r"未確認|沒讀到價格|沒查成")
+
+
+def card_detail_problem(card, message):
+    """When a done flight/hotel card's attachment has flight times or links, the reply must include them.
+
+    2026-11-25: t_0569fddd's fukuoka_plan.md had CI116/CI111 times, room types and Google Flights/Hotels
+    links, but the Telegram reply dropped all of them and sent only bare totals.
+    """
+    if EMPTY_RESULT.search(message):
+        return None
+    attach_dir = board_db().parent / "attachments" / card
+    if not attach_dir.is_dir():
+        return None
+    texts = []
+    for path in sorted(attach_dir.iterdir()):
+        if path.is_file() and path.suffix.lower() in (".md", ".txt"):
+            try:
+                texts.append(path.read_text(encoding="utf-8", errors="ignore"))
+            except OSError:
+                continue
+    if not texts:
+        return None
+    combined = "\n".join(texts)
+    missing = []
+    has_flight_times = bool(FLIGHT_TIME.search(combined) and ("去程" in combined or "航班" in combined or "→" in combined))
+    if has_flight_times and not FLIGHT_TIME.search(message):
+        missing.append("去回程航班時間／班號")
+    if ATTACHMENT_URL.search(combined) and not MARKDOWN_LINK.search(message):
+        missing.append("可點擊的機票與住宿連結（[名稱](網址)）")
+    if not missing:
+        return None
+    return (f"{card} 的交付檔有{'、'.join(missing)}，但回覆漏掉了；"
+            "請直接附上航班時間與行李說明、飯店全名與房型，以及交付檔裡的 [機票訂票連結](網址) 與 [住宿頁面連結](網址)")
+
+
 def photo_problem(path_text):
     """A MEDIA photo must have the source record place-photo.py writes, matching the file."""
     path = Path(path_text)
@@ -163,6 +201,11 @@ def check(message, card=None):
         if problem:
             problems.append({"kind": "unreviewed_result", "text": problem,
                              "hint": "report a card's results only after its reviewer worker passed it"})
+        else:
+            detail_problem = card_detail_problem(card, message)
+            if detail_problem:
+                problems.append({"kind": "card_missing_details", "text": detail_problem,
+                                 "hint": "include flight times, hotel name/room type, and clickable [name](url) links from the card attachment"})
     if NOT_ON_SALE.search(message):
         problems.append({"kind": "guessed_not_on_sale", "text": NOT_ON_SALE.search(message).group(0),
                          "hint": "a lookup that read no prices was blocked or empty this time, not 'not on sale': "
