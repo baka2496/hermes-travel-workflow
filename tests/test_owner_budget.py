@@ -115,6 +115,20 @@ class BudgetWordsTests(unittest.TestCase):
             self.assertIn(amount, travel_money.spoken_amounts(text), text)
         self.assertNotIn(42000, travel_money.spoken_amounts("預算 4萬 2人"))
 
+    def test_review_of_db4a2e0_amounts(self):
+        # Antigravity's review of db4a2e0: per-person budgets and 「1萬5」 were missed, 「1萬5000」 was
+        # 5,010,000, 「萬一下雨」 was 1,000 (so a made-up NT$1,000 passed), 「4萬2人」 was 40,002.
+        for text, amount in (("預算 NT$2,000/人", 2000), ("預算 2000元/晚", 2000), ("預算 4萬/2人", 40000),
+                             ("預算 1萬5", 15000), ("預算 1萬5千元", 15000), ("1萬5預算", 15000), ("預算 4萬2", 42000),
+                             ("預算 4萬2人", 40000), ("預算兩千兩天一夜", 2000), ("預算 1萬5000", 15000)):
+            self.assertEqual([a for _, a in travel_money.stated_budgets(text)], [amount], text)
+        for text, amount in (("1萬5000", 15000), ("2千500", 2500), ("4萬2人", 40000), ("預算兩千兩天一夜", 2000)):
+            self.assertIn(amount, travel_money.spoken_amounts(text), text)
+        self.assertNotIn(40002, travel_money.spoken_amounts("4萬2人"))
+        for text in ("萬一下雨怎麼辦", "千萬一定要", "房型 k2"):
+            self.assertEqual(travel_money.spoken_amounts(text), set(), text)
+        self.assertEqual(travel_money.unsaid_budgets("預算 NT$1,000", ["萬一下雨怎麼辦"]), [("預算 NT$1,000", 1000)])
+
     def test_the_ways_a_person_writes_an_amount(self):
         # 「2000以內的」 is what the owner typed on 2026-10-17 (about Tokyo rooms).
         for text, amount in (("2000以內的", 2000), ("兩千", 2000), ("預算 4萬", 40000), ("一萬五", 15000),
@@ -220,7 +234,27 @@ class ButtonBudgetTests(unittest.TestCase):
         state.close()
         self.assertEqual(plugin.heard(home, "tg"), ["我想出去玩"])  # a listed card is not the owner talking
         self.assertEqual(clarify(home, QUESTION, CHOICES, session="tg")["action"], "block")
-        self.assertEqual(plugin.card_bodies(["看板任務 t_aaaa1111 已完成。"], home), ["整趟預算: NT$2,000"])
+        self.assertEqual(plugin.card_bodies(["看板任務 t_aaaa1111 已完成。"], home), ["預算: NT$2,000"])
+
+    def test_a_card_backs_its_budget_only(self):
+        # Antigravity's review of db4a2e0: a card's room price (NT$1,100) or year counted as the owner's
+        # words, and a card's one-trip budget could be written into preferences.json.
+        home = hermes_home("看板任務 t_bbbb2222 已完成。")
+        board = home / "kanban" / "boards" / "command-center" / "kanban.db"
+        board.parent.mkdir(parents=True)
+        db = sqlite3.connect(board)
+        db.execute("CREATE TABLE tasks (id TEXT, status TEXT, body TEXT)")
+        db.execute("INSERT INTO tasks VALUES ('t_bbbb2222', 'done', "
+                   "'城市: 礁溪 2026 年\n整趟預算: NT$3,000\n參考：山口溫泉飯店 NT$1,100')")
+        db.commit()
+        db.close()
+        self.assertEqual(plugin.card_bodies(["看板任務 t_bbbb2222 已完成。"], home), ["預算: NT$3,000"])
+        reply = "礁溪一日（2人）\n在預算 NT$3,000 內\n預算 NT$1,100 也夠"
+        fixed = with_home(home, lambda: plugin.transform_llm_output(reply, session_id="tg"))
+        self.assertEqual(fixed, "礁溪一日（2人）\n在預算 NT$3,000 內\n預算未確認 也夠")
+        quoted = '"budget": {"amount": 3000, "currency": "TWD", "scope": "entire_trip", "quote": "整趟預算: NT$3,000"}'
+        result = self.write_prefs(home, {"budget": None}, "patch", old_string='"budget": null', new_string=quoted)
+        self.assertEqual(result["action"], "block")
 
     def test_format_plan_gets_no_budget_the_owner_never_gave(self):
         command = ('"C:/Python313/python.exe" "C:/x/shared/travel-workflow/format-plan.py" --header "12/07 烏來 2人" '
@@ -289,7 +323,7 @@ class WhereToGoTests(unittest.TestCase):
 
     def test_other_ways_of_writing_a_date_are_not_places(self):
         # Antigravity's review of 0783149: 「11/28–29」 left 「29」, 「12月7日」 stayed, 「2026/12/07」 left 「20/07」.
-        for date in ("11/28–29 出發", "12月7日出發", "2026/12/07 出發"):
+        for date in ("11/28–29 出發", "12月7日出發", "2026/12/07 出發", "2026年12月7日出發"):
             result = self.ask("想去哪？", ["烏來一日遊", "礁溪兩天一夜", date])
             self.assertEqual(result["action"], "block", date)
         self.assertEqual(plugin.place_of("日月潭兩天一夜"), "日月潭")

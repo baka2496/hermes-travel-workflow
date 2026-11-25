@@ -32,11 +32,13 @@ from pathlib import Path
 ZERO = "0" * 40
 MAX_DIFF_CHARS = 150_000
 TIMEOUT_SECONDS = 300
+# 2026-11-26: the owner picked Medium over agy's default Gemini 4 Neon (High); `agy models` lists the ids.
+AGY_MODEL = "gemini-4-neon-medium"
 # Every permission kind agy has (read from its binary): commands, files, URLs and MCP tools.
 AGY_DENY_ALL = '{"permissions":{"deny":["command(*)","read_file(*)","write_file(*)","read_url(*)","mcp(*)"]}}'
 REVIEWERS = {
     "agy": {"name": "Antigravity",
-            "command": ["agy", "--print-timeout", f"{TIMEOUT_SECONDS}s", "--settings", AGY_DENY_ALL]},
+            "command": ["agy", "--model", AGY_MODEL, "--print-timeout", f"{TIMEOUT_SECONDS}s", "--settings", AGY_DENY_ALL]},
     "claude": {"name": "Claude",
                "command": ["claude", "-p", "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']},
 }

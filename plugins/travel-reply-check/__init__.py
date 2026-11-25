@@ -422,8 +422,8 @@ def budget_problem(tool_name, args, session_id, home):
     said = heard(home, session_id)
     if said is None:
         return None
-    if record:
-        return record_budget_problem(tool_name, args, path, said, home)
+    if record:  # a long-lasting budget only from the owner's own words, never a card (review of db4a2e0)
+        return record_budget_problem(tool_name, args, path, sessions.owner_words(home, session_id) or [], home)
     prefs = owner_preferences(home)
     for amount in map(int, arg):
         if money.unsaid_budgets(f"預算 {money.money(amount)}", said, prefs):
@@ -441,7 +441,7 @@ NOT_A_PLACE = re.compile(r"[（(][^）)]*[）)]|\d{4}/\d{1,2}/\d{1,2}|\d{1,2}/\d
                          r"\d{1,2}月\d{1,2}[日號]?|\d+天\d+夜|[一二兩三四五]天[一二兩三四]夜|一日遊?|半日遊?|"
                          r"這週末?|下週末?|週末|本週|下週|[週周][一二三四五六日]|出發|改期|改天|別天|其他時間|"
                          r"校慶補假|補假|連假|平日|假日|自駕|開車|騎車|行程|方案|推薦|Recommended|"
-                         r"泡湯|溫泉|之旅|\d+[月日號]?|[\s–—\-~～至到、，,.。]")
+                         r"泡湯|溫泉|之旅|\d+[年月日號]?|[\s–—\-~～至到、，,.。]")
 MIN_PLACES = 3
 PLACES_PROBLEM = ("問去哪裡時要給 {need} 個不同的地點讓使用者選，現在只有 {have} 個（{places}）；"
                   "日期不算地點（「{dateonly}」）。再找兩三個符合日期與交通方式、這次查過價格或紀錄裡有來源的地方；"
@@ -719,9 +719,11 @@ def card_bodies(said, home):
     try:
         with sessions.read_only(board) as db:
             marks = ",".join("?" * len(cards))
-            return [row[0] or "" for row in db.execute(f"SELECT body FROM tasks WHERE id IN ({marks})", cards)]
+            bodies = [row[0] or "" for row in db.execute(f"SELECT body FROM tasks WHERE id IN ({marks})", cards)]
     except sqlite3.Error:
         return []
+    # Only the card's budget, not its other figures (a room price, a year): Antigravity's review of db4a2e0.
+    return [written for body in bodies for written, _ in money.stated_budgets(body)]
 
 
 def heard(home, session_id):

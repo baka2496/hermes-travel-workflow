@@ -41,15 +41,18 @@ CN_DIGITS = "零一二兩三四五六七八九"
 CN_VALUE = {"零": 0, "一": 1, "二": 2, "兩": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 CN_UNITS = {"十": 10, "百": 100, "千": 1000, "k": 1000, "K": 1000, "萬": 10000}
 # What follows a count, not an amount: 「4萬 2人」 is NT$40,000 and two people (Antigravity's review of 0783149).
-COUNTED = "人天夜位間個晚月日號點/:"
+COUNT_WORDS = "人天夜位間個晚月日號點"
+COUNTED = COUNT_WORDS + "/:"
 NUMBER = re.compile(rf"[\d.,{CN_DIGITS}十百千萬kK]+")
 
 
 def _number(token, shorthand=True):
-    """「2,000」 2000, 「4萬」 40000, 「1萬5千」 15000, 「十二萬」 120000, 「2.5k」 2500. A last digit after a unit
-    is shorthand (「一萬五」 15000, 「兩千五」 2500) unless `shorthand` is off. None when it is no number."""
+    """「2,000」 2000, 「4萬」 40000, 「1萬5千」 15000, 「1萬5000」 15000, 「十二萬」 120000, 「2.5k」 2500.
+    One last digit right after a unit is shorthand (「一萬五」 15000, 「兩千五」 2500) unless `shorthand` is
+    off. None when it is no amount: a unit with no number before it (「萬一」「千萬」「k2」), except 十.
+    Antigravity's review of db4a2e0: 「1萬5000」 was 5,010,000 and 「萬一下雨」 1,000."""
     total = section = 0
-    num, last_unit, digits = None, None, ""
+    num, last_unit, digits, run = None, None, "", 0
     for ch in token.replace(",", "") + " ":
         if ch.isdigit() or ch == ".":
             digits += ch
@@ -59,20 +62,31 @@ def _number(token, shorthand=True):
                 num = float(digits)
             except ValueError:
                 return None
-            digits = ""
+            run, digits = len(digits), ""
         if ch in CN_DIGITS:
-            num = float(CN_VALUE[ch])
+            num, run = float(CN_VALUE[ch]), 1
         elif ch in CN_UNITS:
             unit = CN_UNITS[ch]
             if unit == 10000:
+                if num is None and not section:
+                    return None
                 total += (section + (num or 0)) * unit
                 section = 0
+            elif num is None and unit != 10:
+                return None
             else:
                 section += (1 if num is None else num) * unit
             num, last_unit = None, unit
+        elif ch != " ":
+            return None
     if num is not None:
-        section += num * (last_unit // 10 if shorthand and last_unit and last_unit >= 100 else 1)
+        short = shorthand and run == 1 and last_unit and last_unit >= 100 and 0 < num < 10
+        section += num * (last_unit // 10 if short else 1)
     return int(total + section)
+
+
+# A count written right after an amount with no space: 「4萬2人」 is 40000 and 2 people, 「兩千兩天」 2000 and 2 days.
+UNIT_THEN_COUNT = re.compile(rf"^(.*[十百千萬kK])([\d{CN_DIGITS}]+)$")
 
 
 def spoken_amounts(text):
@@ -85,22 +99,28 @@ def spoken_amounts(text):
         if not re.search(rf"[\d{CN_DIGITS}十]", token):
             continue
         counted = match.end() < len(text) and text[match.end()] in COUNTED
-        value = _number(token, shorthand=not counted)
-        if value is not None:
-            found.add(value)
+        split = UNIT_THEN_COUNT.match(token) if counted else None
+        parts = [split.group(1), split.group(2)] if split else [token]
+        for part in parts:
+            value = _number(part, shorthand=not counted)
+            if value is not None:
+                found.add(value)
     return found
 
 
-# An amount as written after 「預算」: with a currency (「NT$2,000」「2000元」), with 萬/千/k (「4萬」「兩千」),
-# or three or more plain digits not followed by a count or a date (「預算 2000」). Antigravity's review of
-# 0783149: only currency-marked amounts were caught, so 「兩人整趟預算 2,000」 went out unchecked.
-_AMOUNT = (rf"{CURRENCY_BEFORE}\s*\d[\d,]*|\d[\d,]*\s*{CURRENCY_AFTER}"
-           rf"|\d[\d,]*(?:\.\d+)?\s*[萬千kK]|[{CN_DIGITS}十][{CN_DIGITS}十百千萬]*[千萬][{CN_DIGITS}]?"
-           rf"|\d{{1,3}}(?:,\d{{3}})+|\d{{3,}}")
-_NOT_COUNTED = rf"(?![\d,]|\s*[{COUNTED}])"
+# An amount as written after 「預算」: with a currency (「NT$2,000/人」「2000元」), with 萬/千/k and what may follow
+# (「4萬」「1萬5」「1萬5千」「兩千五」), or three or more plain digits. Only plain digits are checked for what
+# comes next (a count or a date: 「預算 2 人」「預算 12/7」); 「/人」 after a currency or unit is per person
+# (Antigravity's review of db4a2e0).
+_TAIL_NUMBER = rf"(?:\d+[ 	]*千?|[{CN_DIGITS}]千?)(?![\d{COUNT_WORDS}])"
+_AMOUNT = (rf"{CURRENCY_BEFORE}[ 	]*\d[\d,]*(?:\.\d+)?[ 	]*[萬千kK]?(?:{_TAIL_NUMBER})?"
+           rf"|\d[\d,]*(?:\.\d+)?[ 	]*[萬千kK](?:{_TAIL_NUMBER})?"
+           rf"|[{CN_DIGITS}十][{CN_DIGITS}十百千萬]*[千萬](?:[{CN_DIGITS}](?![{COUNT_WORDS}]))?"
+           rf"|\d[\d,]*[ 	]*{CURRENCY_AFTER}"
+           rf"|(?:\d{{1,3}}(?:,\d{{3}})+|\d{{3,}})(?![\d,]|[ 	]*[{COUNT_WORDS}]|/\d|:\d)")
 BUDGET_CLAIM = re.compile(
-    rf"(?<!超出)(?<!超過)預算(?![剩內])[^\d\n，。,；;剩{CN_DIGITS}]{{0,6}}?(?P<a>(?:{_AMOUNT}){_NOT_COUNTED})"
-    rf"|(?P<b>(?:{_AMOUNT}){_NOT_COUNTED})\s*(?:的)?(?:總|整趟)?預算(?![剩])")
+    rf"(?<!超出)(?<!超過)預算(?![剩內])[^\d\n，。,；;剩{CN_DIGITS}]{{0,6}}?(?P<a>{_AMOUNT})"
+    rf"|(?P<b>{_AMOUNT})\s*(?:的)?(?:總|整趟)?預算(?![剩])")
 
 
 def stated_budgets(text):
@@ -110,7 +130,7 @@ def stated_budgets(text):
         written = match.group("a") or match.group("b")
         amounts = spoken_amounts(re.sub(CURRENCY_BEFORE, "", written))
         if amounts:
-            claims.append((match.group(0), max(amounts)))
+            claims.append((match.group(0).rstrip(" 	"), max(amounts)))
     return claims
 
 
