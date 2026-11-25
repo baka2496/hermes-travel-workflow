@@ -1,7 +1,7 @@
 """Add up a trip's costs and compare the total with the budget.
 
 Example (made-up names; never copy them into a reply):
-  trip-cost.py --budget 5000 "範例油錢來回=300" "範例停車費=100x2@https://www.example.com/parking" \
+  trip-cost.py "範例油錢來回=300" "範例停車費=100x2@https://www.example.com/parking" \
       "範例旅館雙人房=3200@https://www.example.com/rooms" "範例餐費=800"
 
 Each item is "name=amount" or "name=unit price x count" (x, *, or ×), followed by "@" and the
@@ -154,7 +154,9 @@ def main():
     for stream in (sys.stdout, sys.stderr):  # item names are Chinese; errors must name them legibly too
         stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--budget", type=int, required=True, help="whole-trip budget in NT$")
+    # 2026-11-25: a required --budget made the bot pass one the user never gave (NT$2,000). Without it
+    # the tool adds up the costs and says nothing about a budget.
+    parser.add_argument("--budget", type=int, help="whole-trip budget in NT$, only one the user gave")
     parser.add_argument("items", nargs="+", type=parse)
     parser.add_argument("--date", type=date_arg, help="trip date YYYY-MM-DD: a price for other months "
                         "(「夏季 (5-9月)」) or, on a Saturday or Sunday, a 平日 price is unconfirmed")
@@ -179,14 +181,14 @@ def main():
             report_hints(hidden)
             return 0
     total = sum(item["amount"] for item in args.items)
-    left = args.budget - total
-    verdict = f"預算剩 {money(left)}" if left >= 0 else f"超出預算 {money(-left)}"
+    left = None if args.budget is None else args.budget - total
+    verdict = "" if left is None else f"，預算剩 {money(left)}" if left >= 0 else f"，超出預算 {money(-left)}"
     if args.json:
         print(json.dumps({"total": total, "budget": args.budget, "left": left, "items": args.items}, ensure_ascii=False))
         return 0
     unsure = sum(item["amount"] for item in args.items if not item["confirmed"])
     note = "（全部未確認）" if unsure == total and total else f"（{money(unsure)} 未確認）" if unsure else ""
-    print(f"總計 {money(total)}，{verdict}{note}")  # short: it heads a phone-width reply
+    print(f"總計 {money(total)}{verdict}{note}")  # short: it heads a phone-width reply
     for item in args.items:
         each = f"（{money(item['unit'])}×{item['count']}）" if item["count"] > 1 else ""
         if item.get("per") or item.get("day"):  # what the page says the price is for

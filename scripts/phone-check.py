@@ -15,6 +15,7 @@ import sys
 import unicodedata
 import urllib.parse
 
+import hermes_sessions
 import travel_money
 
 LINE_WIDTH = 40          # 20 full-width characters per bubble line on a phone
@@ -52,6 +53,34 @@ def board_db():
     if os.environ.get("HERMES_KANBAN_DB"):
         return Path(os.environ["HERMES_KANBAN_DB"])
     return Path(__file__).resolve().parents[2] / "kanban/boards/command-center/kanban.db"
+
+
+def hermes_home():
+    """HERMES_HOME (a Hermes root or one profile's folder), else the root this script is installed under."""
+    import os
+    return Path(os.environ.get("HERMES_HOME") or Path(__file__).resolve().parents[2])
+
+
+def preferences(home):
+    """preferences.json under a Hermes root or a profile's folder, or None."""
+    for root in (home, home.parent.parent):
+        try:
+            return json.loads((root / "shared" / "travel-workflow" / "preferences.json").read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def budget_problems(message, home=None):
+    """Budgets the message states that the user never gave (see travel_money.BUDGET_CLAIM)."""
+    if not travel_money.stated_budgets(message):
+        return []
+    home = home or hermes_home()
+    said = hermes_sessions.owner_words(home)
+    if said is None:  # no conversation database here: nothing to check against
+        return []
+    return [{"kind": "unsaid_budget", "text": written, "hint": travel_money.BUDGET_HINT}
+            for written, _ in travel_money.unsaid_budgets(message, said, preferences(home))]
 
 
 def card_problem(card, now=None):
@@ -329,6 +358,7 @@ def check(message, card=None):
         problems.append({"kind": "guessed_not_on_sale", "text": NOT_ON_SALE.search(message).group(0),
                          "hint": "a lookup that read no prices was blocked or empty this time, not 'not on sale': "
                                  "write 這次沒讀到價格，未確認, and offer to look again"})
+    problems += budget_problems(message)
     lines = message.strip("\n").splitlines()
     phone_lines = 0
     for number, line in enumerate(lines, 1):

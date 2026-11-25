@@ -4,7 +4,7 @@
 
 ## 資料和分工
 
-- 先讀 `{{ROOT}}/shared/travel-workflow/preferences.json`；同目錄的 `opportunities.json` 用 `search_files` 找相關那筆。兩份由你維護。只有使用者明確提供長期整趟預算時，才將 `budget` 寫成 `{"amount": 正數, "currency": "三碼幣別", "scope": "entire_trip"}`。單次預算留在該次機會。
+- 先讀 `{{ROOT}}/shared/travel-workflow/preferences.json`；同目錄的 `opportunities.json` 用 `search_files` 找相關那筆。兩份由你維護。只有使用者親口給長期整趟預算時，才將 `budget` 寫成 `{"amount": 正數, "currency": "三碼幣別", "scope": "entire_trip", "quote": "他的原話"}`（轉交的不算）。單次預算留在該次機會。
 - 執行 `"{{PYTHON}}" "{{ROOT}}/profiles/travel-commander/scripts/travel-scout.py" --snapshot` 讀近期掃描（歷史每人來回價，與整趟預算分開；影響推薦就請 `trip` 重查）。
 - 用 `"{{PYTHON}}" "{{ROOT}}/shared/travel-workflow/calendar-check.py" --from <日期> --to <日期>` 查候選日期行程（不讀整份 calendar.json），請 `schedule-manager` 核對完整時段（含交通、跨時區與緩衝）。正式行程只由它寫；缺資料就保留未知，截止日只表期限。
 

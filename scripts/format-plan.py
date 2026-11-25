@@ -5,7 +5,7 @@ place-photo.py and phone-check.py across multiple turns, this tool runs them in 
 keeps every verified figure and link verbatim, and validates phone readability before printing.
 
 Example (made-up place; never copy into a reply):
-  format-plan.py --header "12/14 礁溪泡湯 2人" --budget 2000 --date 2026-12-14 \\
+  format-plan.py --header "12/14 礁溪泡湯 2人" --date 2026-12-14 \\
       --item "範例湯屋 60分鐘=699x1@https://www.example.com/hotspring.html" \\
       --place "範例溫泉" --official https://www.example.com/hotspring.html \\
       --phone 03-0000000 --phone-source https://www.example.com/hotspring.html \\
@@ -40,9 +40,8 @@ def build_plan(args):
 
     # 1. Verified costs via trip-cost.py
     if args.item:
-        if args.budget is None:
-            return None, ["有提供 --item 時必須同時指定 --budget"], notes
-        cost_args = ["--budget", str(args.budget)]
+        # No --budget when the user gave none (2026-11-25): trip-cost.py then prints the total alone.
+        cost_args = [] if args.budget is None else ["--budget", str(args.budget)]
         if args.date:
             cost_args += ["--date", args.date]
         if args.hermes_root:
@@ -139,7 +138,7 @@ def main():
         stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--header", required=True, help="first line: date, destination, party size")
-    parser.add_argument("--budget", type=int, help="whole-trip budget in NT$")
+    parser.add_argument("--budget", type=int, help="whole-trip budget in NT$, only one the user gave")
     parser.add_argument("--date", help="trip date YYYY-MM-DD")
     parser.add_argument("--item", action="append", default=[], help="cost item in trip-cost.py format (repeatable)")
     parser.add_argument("--place", help="recommended place name for booking-links.py")

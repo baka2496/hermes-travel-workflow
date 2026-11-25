@@ -108,3 +108,47 @@ class Recent(dict):
         if key not in self:
             self[key] = default
         return self[key]
+
+
+NOT_THE_USER = ("[CONTEXT COMPACTION", "[IMPORTANT:")
+def owner_words(home, session_id=None):
+    """What the user typed in this conversation (`session_id`), or, without one, in the latest
+    Telegram conversation (Hermes's `sessions.source`): the one the bot is answering. None when no
+    database can be read, so a check that needs them can stand aside instead of calling everything unsaid.
+
+    Only this conversation counts. 2026-11-25: other Telegram conversations held test requests such as
+    「12/14 想去礁溪泡湯，2人，預算 2000」, so a week of messages let the made-up NT$2,000 through; a budget
+    that outlives one conversation belongs in preferences.json with the owner's `quote`.
+    """
+    paths, latest = [], None
+    for path in databases(home):
+        try:
+            with read_only(path) as db:
+                db.execute("SELECT 1 FROM messages LIMIT 1")
+                if session_id:
+                    paths.append(path)
+                    continue
+                # Without a conversation, only a database that says which ones are Telegram's counts
+                # (Antigravity's review of 0783149: an older layout returned [] and flagged every budget).
+                row = db.execute("SELECT m.timestamp, m.session_id FROM messages m JOIN sessions s ON "
+                                 "s.id = m.session_id WHERE m.role = 'user' AND s.source = 'telegram' "
+                                 "ORDER BY m.timestamp DESC LIMIT 1").fetchone()
+                paths.append(path)
+                if row and (latest is None or row[0] > latest[0]):
+                    latest = row
+        except sqlite3.Error:  # unreadable, or an older layout without `sessions`
+            continue
+    if not paths:
+        return None
+    wanted = session_id or (latest[1] if latest else None)
+    words = []
+    for path in paths if wanted else []:
+        try:
+            with read_only(path) as db:
+                words += [row[0] for row in db.execute(
+                    "SELECT content FROM messages WHERE session_id = ? AND role = 'user'", (wanted,))]
+        except sqlite3.Error:
+            continue
+    # Hermes stores its own notes as user messages too: a compacted summary repeats what the agent
+    # wrote (an invented budget included), and a preloaded skill is not the user talking.
+    return [str(w) for w in words if w and not str(w).startswith(NOT_THE_USER)]

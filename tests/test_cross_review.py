@@ -97,6 +97,11 @@ class RunReviewerTests(unittest.TestCase):
         deny = json.loads(command[command.index("--settings") + 1])["permissions"]["deny"]
         self.assertEqual(set(deny), {"command(*)", "read_file(*)", "write_file(*)", "read_url(*)", "mcp(*)"})
 
+    def test_agy_reviews_with_the_model_the_owner_picked(self):
+        # 2026-11-26: 「改成中可以嗎」 — Gemini 4 Neon (Medium), not agy's default (High).
+        command = cross_review.REVIEWERS["agy"]["command"]
+        self.assertEqual(command[command.index("--model") + 1], "gemini-4-neon-medium")
+
     def test_review_runs_found_path_with_the_no_loop_flag_and_prompt_on_stdin(self):
         runner, calls = fake_run()
         with mock.patch.object(cross_review.shutil, "which", return_value=r"C:\bin\agy.cmd"):
