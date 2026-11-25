@@ -14,6 +14,8 @@ import re
 import sys
 import unicodedata
 
+import travel_money
+
 LINE_WIDTH = 40          # 20 full-width characters per bubble line on a phone
 NARROW = 0.7             # width of a Latin letter or digit, in half full-width units
 SCREEN_LINES = 30        # bubble lines visible on one phone screen
@@ -122,9 +124,23 @@ def result_problem(card):
     return None
 
 
-FLIGHT_TIME = re.compile(r"\b\d{1,2}:\d{2}\b")
+# Not \b: Chinese counts as a word character, so 「去程16:40起飛」 had no boundary (Antigravity, 2026-11-25).
+FLIGHT_TIME = re.compile(r"(?<!\d)\d{1,2}:\d{2}(?!\d)")
 ATTACHMENT_URL = re.compile(r"https?://[^\s)\]）]+")
 EMPTY_RESULT = re.compile(r"未確認|沒讀到價格|沒查成")
+PRICE = travel_money.PRICE
+LEGS = ("去程", "回程")
+
+
+def link_kind(url):
+    """機票 or 住宿 for a booking/search link, else None."""
+    lowered = url.lower()
+    if "flight" in lowered:
+        return "機票"
+    if any(word in lowered for word in ("hotel", "travel/search", "booking.com", "agoda", "airbnb", "trip.com",
+                                        "jalan", "rakuten", "expedia")):
+        return "住宿"
+    return None
 
 
 def card_detail_problem(card, message):
@@ -133,7 +149,9 @@ def card_detail_problem(card, message):
     2026-11-25: t_0569fddd's fukuoka_plan.md had CI116/CI111 times, room types and Google Flights/Hotels
     links, but the Telegram reply dropped all of them and sent only bare totals.
     """
-    if EMPTY_RESULT.search(message):
+    # A failed lookup (no price given) has no details to carry. Antigravity, 2026-11-25: any 「未確認」 used
+    # to skip this, so bare totals with 「早餐未確認」 went out without times or links.
+    if EMPTY_RESULT.search(message) and not PRICE.search(message):
         return None
     attach_dir = board_db().parent / "attachments" / card
     if not attach_dir.is_dir():
@@ -149,10 +167,25 @@ def card_detail_problem(card, message):
         return None
     combined = "\n".join(texts)
     missing = []
-    has_flight_times = bool(FLIGHT_TIME.search(combined) and ("去程" in combined or "航班" in combined or "→" in combined))
-    if has_flight_times and not FLIGHT_TIME.search(message):
-        missing.append("去回程航班時間／班號")
-    if ATTACHMENT_URL.search(combined) and not MARKDOWN_LINK.search(message):
+    # Each leg needs one of its own times. Antigravity, 2026-11-25: any one time passed, even the 15:00
+    # check-in with the return flight left out. A leg line may also hold e.g. 「預計 21:15 抵達飯店」, so
+    # one of the line's times is enough, not all.
+    replied_times = set(FLIGHT_TIME.findall(message))
+    leg_times = {leg: {t for line in combined.splitlines() if leg in line for t in FLIGHT_TIME.findall(line)}
+                 for leg in LEGS}
+    missed_legs = [leg for leg, times in leg_times.items() if times and not times & replied_times]
+    if missed_legs:
+        missing.append(("去回程" if len(missed_legs) == 2 else missed_legs[0]) + "航班時間／班號")
+    elif not any(leg_times.values()):
+        has_flight_times = bool(FLIGHT_TIME.search(combined) and ("航班" in combined or "→" in combined))
+        if has_flight_times and not replied_times:
+            missing.append("去回程航班時間／班號")
+    # Each kind of link the attachment has (機票, 住宿) must be in the reply, not just one link.
+    needed = {link_kind(url) for url in ATTACHMENT_URL.findall(combined)} - {None}
+    replied = {link_kind(url) for _, url in MARKDOWN_LINK.findall(message)}
+    if needed - replied:
+        missing.append("可點擊的" + "與".join(sorted(needed - replied, key="機票住宿".index)) + "連結（[名稱](網址)）")
+    elif ATTACHMENT_URL.search(combined) and not MARKDOWN_LINK.search(message):
         missing.append("可點擊的機票與住宿連結（[名稱](網址)）")
     if not missing:
         return None

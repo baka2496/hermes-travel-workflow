@@ -280,6 +280,63 @@ class ResultTests(unittest.TestCase):
         status, report = check_handoff(empty, db, "--card", "t_0569fddd")
         self.assertEqual(status, 0, report)
 
+    def fukuoka_card(self):
+        db = board([("t_0569fddd", 600, "trip")], done={"t_0569fddd": "review"})
+        attach = db.parent / "attachments" / "t_0569fddd"
+        attach.mkdir(parents=True)
+        (attach / "fukuoka_plan.md").write_text(
+            "- **去程**：2027-06-05 華航 CI116 16:40（TPE）→ 20:00（FUK）\n"
+            "  - 飛行時間：2h20，預計約 21:15 抵達飯店\n"
+            "- **回程**：2027-06-09 華航 CI111 11:00（FUK）→ 12:30（TPE）\n"
+            "[機票訂票連結](https://www.google.com/travel/flights/booking?tfs=abc)\n"
+            "Fukuoka UBL Hotel 雙人房 4晚 NT$7,960 入住 15:00\n"
+            "[住宿頁面連結](https://www.google.com/travel/search?q=Fukuoka+UBL+Hotel)\n", encoding="utf-8")
+        return db
+
+    def test_an_unconfirmed_side_item_does_not_skip_the_detail_check(self):
+        # Antigravity's review (2026-11-25): any 「未確認」 skipped the check, so bare totals plus
+        # 「早餐未確認」 went out without times or links.
+        bare = "06/05–06/09 福岡（2人）\n• 機票 NT$27,508\n• 住宿 NT$7,960（早餐未確認）\n總計 NT$35,468"
+        status, report = check_handoff(bare, self.fukuoka_card(), "--card", "t_0569fddd")
+        self.assertEqual([p["kind"] for p in report["problems"]], ["card_missing_details"])
+
+    def test_times_written_right_after_chinese_are_seen(self):
+        # Antigravity's review (2026-11-25): \b does not split Chinese from digits, so 「去程16:40」 was missed.
+        reply = ("06/05–06/09 福岡（2人）總計 NT$35,468\n"
+                 "去程16:40起飛、20:00抵達；回程11:00起飛\n"
+                 "[機票訂票連結](https://www.google.com/travel/flights/booking?tfs=abc)｜"
+                 "[住宿頁面連結](https://www.google.com/travel/search?q=Fukuoka+UBL+Hotel)")
+        status, report = check_handoff(reply, self.fukuoka_card(), "--card", "t_0569fddd")
+        self.assertEqual(status, 0, report)
+
+    def test_half_the_details_is_not_enough(self):
+        # Antigravity's review (2026-11-25): one time of any kind (here the 15:00 check-in) and one link
+        # passed, though the return flight and the hotel link were missing.
+        reply = ("06/05–06/09 福岡（2人）總計 NT$35,468\n• 去 16:40→20:00\n• 15:00 入住\n"
+                 "[機票訂票連結](https://www.google.com/travel/flights/booking?tfs=abc)")
+        status, report = check_handoff(reply, self.fukuoka_card(), "--card", "t_0569fddd")
+        self.assertEqual(status, 1)
+        self.assertIn("回程", report["problems"][0]["text"])
+        self.assertIn("住宿", report["problems"][0]["text"])
+
+    def test_every_real_attachment_passes_when_its_details_are_copied(self):
+        # The stricter rule must not block a reply that does carry the attachment's details.
+        import os
+        root = Path(os.environ.get("LOCALAPPDATA", "")) / "hermes/kanban/boards/command-center/attachments"
+        if not root.is_dir():
+            self.skipTest("no live attachments on this machine")
+        for card_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+            texts = [f.read_text(encoding="utf-8", errors="ignore") for f in sorted(card_dir.iterdir())
+                     if f.suffix.lower() in (".md", ".txt")]
+            if not texts:
+                continue
+            db = board([(card_dir.name, 600, "trip")], done={card_dir.name: "review"})
+            copy = db.parent / "attachments" / card_dir.name
+            copy.mkdir(parents=True)
+            (copy / "plan.md").write_text("\n".join(texts), encoding="utf-8")
+            status, report = check_handoff("\n".join(texts), db, "--card", card_dir.name)
+            self.assertNotIn("card_missing_details", [p["kind"] for p in report["problems"]], card_dir.name)
+
     def test_the_live_fukuoka_card_is_caught(self):
         import os
         live = Path(os.environ.get("LOCALAPPDATA", "")) / "hermes/kanban/boards/command-center/kanban.db"
