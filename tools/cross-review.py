@@ -122,7 +122,41 @@ def report_dir():
     return Path(git("rev-parse", "--path-format=absolute", "--git-common-dir")) / "cross-review"
 
 
-def run_reviewer(reviewer, prompt, env, runner=subprocess.run):
+def kill_tree(proc):
+    """Stop the reviewer and everything it started."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+    else:
+        try:
+            os.killpg(proc.pid, 9)
+        except OSError:
+            pass
+    proc.kill()
+
+
+def run_killing_tree(command, *, input, timeout, env, **_):
+    """subprocess.run, except a timeout also stops the reviewer's own children.
+
+    Claude's review of efed1b7 (2026-11-25): subprocess.run kills only the process it started. A
+    .cmd wrapper (cmd.exe) or any child left behind keeps the output pipe open, and run() then waits
+    for it forever, hanging the push. So the whole tree is stopped and the leftover output dropped.
+    """
+    proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8", errors="replace", env=env,
+                            start_new_session=os.name != "nt")
+    try:
+        out, err = proc.communicate(input, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        kill_tree(proc)
+        try:
+            proc.communicate(timeout=5)
+        except (subprocess.TimeoutExpired, ValueError):
+            pass  # a child that outlived the kill still holds the pipe; its output is not needed
+        raise
+    return subprocess.CompletedProcess(command, proc.returncode, out, err)
+
+
+def run_reviewer(reviewer, prompt, env, runner=run_killing_tree):
     """The review text, or None with a warning when the reviewer could not give one."""
     spec = REVIEWERS[reviewer]
     # The full path: Windows runs a found agy.cmd / claude.cmd only when named with its extension.
@@ -131,8 +165,7 @@ def run_reviewer(reviewer, prompt, env, runner=subprocess.run):
         return None, f"找不到 {spec['command'][0]}，跳過 {spec['name']} 審查"
     child_env = dict(env, CROSS_REVIEW_RUNNING="1")
     try:
-        result = runner([exe, *spec["command"][1:]], input=prompt, capture_output=True, text=True,
-                        encoding="utf-8", errors="replace", timeout=TIMEOUT_SECONDS + 30, env=child_env)
+        result = runner([exe, *spec["command"][1:]], input=prompt, timeout=TIMEOUT_SECONDS + 30, env=child_env)
     except subprocess.TimeoutExpired:
         return None, f"{spec['name']} 超過 {TIMEOUT_SECONDS} 秒沒回，這次跳過"
     except OSError as error:
@@ -150,7 +183,7 @@ def clean_review(text):
     return text[verdict.start():].strip() if verdict else text
 
 
-def review(base, tip, reviewer, env, out=print, runner=subprocess.run):
+def review(base, tip, reviewer, env, out=print, runner=run_killing_tree):
     name = REVIEWERS[reviewer]["name"]
     author = "Claude" if reviewer == "agy" else "Antigravity 或主人"
     diff = git("diff", "--no-color", f"{base}..{tip}")

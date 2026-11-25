@@ -9,7 +9,9 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -129,6 +131,32 @@ class RunReviewerTests(unittest.TestCase):
             self.assertIn("沒回", cross_review.run_reviewer("claude", "p", {}, slow)[1])
 
 
+class TimeoutTreeTests(unittest.TestCase):
+    def test_a_stuck_reviewer_and_its_children_are_stopped_on_time(self):
+        # Claude's review of efed1b7 (2026-11-25): subprocess.run kills only the reviewer itself; a
+        # child holding the output pipe made run() wait for it, hanging the push.
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        marker = Path(tmp.name) / "child-still-alive.txt"
+        grandchild = "import sys, time; time.sleep(4); open(sys.argv[1], 'w').write('alive')"
+        reviewer = ("import subprocess, sys, time; "
+                    f"subprocess.Popen([sys.executable, '-c', {grandchild!r}, sys.argv[1]], "
+                    "stdout=sys.stdout, stderr=sys.stderr); time.sleep(60)")
+        started = time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            cross_review.run_killing_tree([sys.executable, "-c", reviewer, str(marker)], input="",
+                                          timeout=1, env=dict(os.environ))
+        self.assertLess(time.monotonic() - started, 3.5, "the timeout let the push go on time")
+        time.sleep(max(0, started + 5.5 - time.monotonic()))
+        self.assertFalse(marker.exists(), "the reviewer's child was stopped too")
+
+    def test_a_normal_reviewer_still_returns_its_output(self):
+        result = cross_review.run_killing_tree(
+            [sys.executable, "-c", "import sys; sys.stdout.reconfigure(encoding='utf-8'); print('結論：' + sys.stdin.read())"],
+            input="沒問題", timeout=30, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, "結論：沒問題"))
+
+
 class ReviewInRepoTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -177,6 +205,17 @@ class ReviewInRepoTests(unittest.TestCase):
         saved_again, out_again = self.run_review(runner)
         self.assertEqual(len(calls), 1, "the same commit is never sent twice")
         self.assertIn("已經審過", out_again)
+
+    def test_one_branch_failing_does_not_skip_the_others(self):
+        # Claude's review of efed1b7 (2026-11-25): this was promised in a commit but had no test.
+        stdin = io.StringIO(f"refs/heads/a {self.tip} refs/heads/a {self.base}\n"
+                            f"refs/heads/b {self.tip} refs/heads/b {self.base}\n")
+        with mock.patch.object(cross_review, "review", side_effect=[RuntimeError("boom"), None]) as review, \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            code = cross_review.main(["pre-push", "origin"], env={}, stdin=stdin)
+        self.assertEqual(code, 0)
+        self.assertEqual(review.call_count, 2, "the second branch is still reviewed")
+        self.assertIn("審查出錯，這次跳過", out.getvalue())
 
     def test_pre_push_never_fails_even_when_the_review_breaks(self):
         stdin = io.StringIO(f"refs/heads/main {self.tip} refs/heads/main {self.base}\n")
