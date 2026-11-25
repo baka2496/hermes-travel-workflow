@@ -1,0 +1,28 @@
+{
+  "about": "考題集：主人真的傳過的訊息（日期改成會自動往後算的 {週六} 這類寫法，才能一直重考）。py -3 tools/exam.py run 一鍵跑完並打分數。expect 說每題要看到什麼：packages＝一則回覆三個能直接訂的方案；ask_dates＝日期矛盾，先講清楚再問，不出方案。",
+  "questions": [
+    {"id": "vague", "profile": "project-manager", "turns": ["我想出去玩"], "expect": "packages"},
+    {"id": "hot-spring", "profile": "project-manager", "turns": ["我想去泡溫泉"], "expect": "packages"},
+    {"id": "this-weekend", "profile": "project-manager", "turns": ["這週末想去泡溫泉"], "expect": "packages"},
+    {"id": "jiaoxi-budget", "profile": "project-manager",
+     "turns": ["{週六} 想去礁溪泡湯，2人，預算 2000，幫我比價找最便宜的雙人湯屋，給我完整方案"],
+     "expect": "packages", "place": "礁溪", "budget": 2000},
+    {"id": "cheaper-follow-up", "profile": "project-manager",
+     "turns": ["{週六} 想去礁溪泡湯，2人，預算 2000，幫我比價找最便宜的雙人湯屋，給我完整方案",
+               "一個小時六百也太貴，有沒有更便宜的湯屋"],
+     "expect": "packages", "place": "礁溪", "budget": 2000},
+    {"id": "wulai-day", "profile": "project-manager",
+     "turns": ["改問一下，{下週六} 週六想去烏來泡湯，當天來回，2人"],
+     "expect": "packages", "place": "烏來"},
+    {"id": "pick-one", "profile": "project-manager",
+     "turns": ["{週六} 礁溪過夜和 {週日} 烏來一日，你幫我挑一個"],
+     "expect": "packages"},
+    {"id": "dates-disagree", "profile": "project-manager",
+     "turns": ["{週五}–{週日} 兩天一夜去礁溪，兩個人預算 NT$8,000，幫我排方案"],
+     "expect": "ask_dates"},
+    {"id": "overnight-budget", "profile": "project-manager",
+     "turns": ["{週六} 礁溪住一晚，兩個人，預算 NT$8,000，幫我排"],
+     "expect": "packages", "place": "礁溪", "budget": 8000},
+    {"id": "trip-direct", "profile": "trip", "turns": ["這週末想去泡溫泉"], "expect": "packages"}
+  ]
+}

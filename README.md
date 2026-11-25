@@ -100,6 +100,10 @@ py -3 .\setup.py check --root "$workflowRoot"
 
 安裝命令可以重跑以檢查已安裝設定，並沿用這個資料目錄目前的投遞設定；若不想套用內建的個人輔助模型設定，安裝或升級時可加上 `--no-model-defaults`。拉下新版程式碼後，執行 `py -3 .\setup.py upgrade --root "$workflowRoot"` 可一次更新未經手改的角色規則、工具腳本、外掛與新設定，不會動到你的行程、偏好與機會紀錄（有手改過的檔案會停下來提醒，確認要覆蓋才加 `--force`）。要切換投遞方式時用 `setup.py delivery local|telegram`；重跑安裝時指定不同的 `--deliver`，安裝器會停止並提示改用這個指令，不會改動既有排程。若發現角色或排程定義衝突，先在本機檢視錯誤訊息。移機時使用新的 checkout 和 Hermes 資料目錄，按上面步驟配置帳號。需要延續原有行程和偏好時，在本機核對 schema 後移轉 `shared/annual-schedule/calendar.json` 及 `shared/travel-workflow/` 下的 `preferences.json` 與 `opportunities.json`。新安裝的 `runtime.json` 記錄新環境的路徑。個人資料、掃描 SQLite、帳號憑證、聊天紀錄和私人 Hermes 外掛由原環境獨立管理。
 
+## 考題集
+
+`exam/questions.json` 是主人真的傳過的訊息（日期寫成 `{週六}` 這類，會自動換成最近的週末）。`py -3 .\tools\exam.py run` 把每題丟給正在用的 bot（`hermes chat --source tool`，不會出現在對話清單），照固定標準打分數：三個能直接訂的方案、每個都是 `format-plan.py` 組的、手機排版檢查通過、沒寫主人沒說過的預算、日期對不上要先問。一題幾分鐘，全部約 30–60 分鐘；`--only <題目>` 只考幾題，`list` 列出題目。考完會把 bot 改到的 `opportunities.json`、`preferences.json` 放回考前（改過的版本另存 `*.exam-<時間>.json`），成績單在 `<Hermes>/shared/travel-workflow/exam-results/`。改規則後重考一次，分數沒掉才算改好；主人又抱怨新的事，就把那則訊息加成一題。
+
 ## 自動修問題
 
 在 GitHub 開一個 issue 寫下哪裡不對，代理會自動重現問題、修好、跑完全部測試，然後開 PR 等你審查。它不會自己合併。
