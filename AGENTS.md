@@ -15,4 +15,4 @@ Claude 和 Antigravity 會互相檢查對方的修改。`git push` 時，`.githo
 3. **最多修一輪**。修完再推，如果第二次審查又提出新意見，不要再改，直接整理給主人決定，免得兩個 AI 一直來回。
 4. 回報給主人時要附上：審查者是誰、提了幾點、哪些修了、哪些沒修和原因。
 
-想手動請對方審：`py tools/cross-review.py review --reviewer agy`（Antigravity 審）或 `--reviewer claude`（Claude 審）。暫時關掉（例如 AI 額度快用完）：`py tools/cross-review.py off`，要恢復跑 `py tools/cross-review.py on`，查狀態用 `status`。額度用完沒關也沒關係：審查者叫不動只會印警告，推送照常。
+想手動請對方審：`py tools/cross-review.py review --reviewer agy`（Antigravity 審）或 `--reviewer claude`（Claude 審）。暫時關掉（例如 AI 額度快用完）：`py tools/cross-review.py off`（只停推送時的自動審查，手動 `review` 照樣可用），要恢復跑 `py tools/cross-review.py on`，查狀態用 `status`。額度用完沒關也沒關係：審查者叫不動只會印警告，推送照常。
