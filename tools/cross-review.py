@@ -174,6 +174,10 @@ def run_killing_tree(command, *, input, timeout, env, **_):
                 pipe.close()
             except (OSError, ValueError):
                 pass
+        try:  # reap it, so no zombie is left behind (Antigravity's review of 2d2111c)
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
         raise
     return subprocess.CompletedProcess(command, proc.returncode, out, err)
 
@@ -205,15 +209,16 @@ def clean_review(text):
     return text[verdict.start():].strip() if verdict else text
 
 
-def review(base, tip, reviewer, env, out=print, runner=run_killing_tree):
+def review(base, tip, reviewer, env, out=print, runner=run_killing_tree, pushed=False):
     name = REVIEWERS[reviewer]["name"]
     author = "Claude" if reviewer == "agy" else "Antigravity 或主人"
     # Only the pusher's own commits. 2026-11-25: a range holding "merge main" sent #65's code (already
     # reviewed and merged) to the reviewer instead of the one-line change being pushed.
-    # But a tip already on main (a manual review of main) keeps its whole range (Antigravity, 4c36b72).
+    # A tip already on main keeps its whole range only for a review by hand (Antigravity, 4c36b72): a
+    # push of an old branch fast-forwarded to main has nothing of its own (Antigravity, 9b41e70).
     main = "refs/remotes/origin/main"
     off_main = (git("rev-parse", "--verify", "-q", main, check=False)
-                and git("rev-list", "-n", "1", f"{main}..{tip}", check=False))
+                and (pushed or git("rev-list", "-n", "1", f"{main}..{tip}", check=False)))
     commits = [f"{base}..{tip}", *(["--not", main] if off_main else [])]
     diff = git("log", "-p", "--no-merges", "--no-color", "--format=commit %h %s", *commits)
     # A merge shows only what was hand-edited to resolve it (--cc), where mistakes hide.
@@ -280,7 +285,14 @@ def main(argv=None, env=None, stdin=None):
         temporary = skip_reason(env)
         found = "、".join(f"{spec['name']} {'有' if shutil.which(spec['command'][0]) else '找不到'}"
                          for spec in REVIEWERS.values())
-        now = f"這次推送會跳過：{temporary}" if temporary else f"這次推送會由 {REVIEWERS[pick_reviewer(env)]['name']} 審"
+        who = REVIEWERS[pick_reviewer(env)]["name"]
+        # Antigravity's review of a6e31a4: while off or not installed it still said who "will review".
+        if not hooked or switched_off():
+            now = f"推送時不會送審（打開後由 {who} 審）"
+        elif temporary:
+            now = f"這次推送會跳過：{temporary}"
+        else:
+            now = f"這次推送會由 {who} 審"
         print(f"[互審] 狀態：{state}；審查者：{found}；{now}")
         return 0
 
@@ -310,7 +322,7 @@ def main(argv=None, env=None, stdin=None):
         lines = raw.splitlines()
         for base, tip in ranges_from_pre_push(lines, lambda sha: default_base(sha, args.remote)):
             try:  # one branch failing must not leave the other pushed branches unreviewed
-                review(base, tip, reviewer, env)
+                review(base, tip, reviewer, env, pushed=True)
             except Exception as error:
                 print(f"[互審] 警告：{tip[:7]} 審查出錯，這次跳過（{error}）")
     except Exception as error:  # the review must never stop a push
