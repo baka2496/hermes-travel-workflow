@@ -30,7 +30,7 @@ class SkipPhoneCheckRuleTests(unittest.TestCase):
         # 2026-11-25 (Antigravity's review of ddb1750): the role said a passing format-plan.py means
         # phone-check.py can be skipped, without "only if sent as is"; edited text went out unchecked.
         role = (REPO / "roles/_shared/telegram-research.md").read_text(encoding="utf-8")
-        self.assertIn("原樣送出免再重跑 `phone-check.py`；改過任何字就要重跑", role)
+        self.assertIn("原樣送出免重跑 `phone-check.py`，改字就重跑", role)
 
 
 class FormatPlanTests(unittest.TestCase):

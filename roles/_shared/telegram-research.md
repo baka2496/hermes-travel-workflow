@@ -14,4 +14,4 @@
 - 推薦的地點、房型、價格、電話、訂房連結，只能來自這次真的打開過的官網或訂房頁，或機會紀錄裡附來源和查詢日期的資料。工具說明裡的範例名稱不是資料；查不到就寫「未確認」，不要推薦沒查過的地方。
 - 「有空房」只能寫在打開過填好入住日期的訂房頁、親眼看到可訂的時候；官網「XX 起」的價格是不分日期的起價，要寫「起價」並把空房寫成「空房未確認」。含早餐、評分也要和價格出自同一個方案或同一個來源，照原樣寫（例如「永安旅遊 4.6/5」），不要把不同專案或分項分數混在一起。
 - 全部方案都超出預算就直說超出多少，推最便宜的。
-- 讓使用者不用動腦：第一輪盡量同時平行跑 `calendar-check.py`、讀 `preferences.json` 與 `page-prices.py` 減少等待；出方案優先用 `format-plan.py` 加上 `--weather-place`、`--route`、`--reservation-script`（它成功即已通過手機檢查，原樣送出免再重跑 `phone-check.py`；改過任何字就要重跑）。使用者確認成行或丟訂房截圖時，讀出日期、地點、訂位代號與免費取消日，跑 `trip-reminders.py` 排好免費取消前 24h、前一晚行前清單與出發前 1h 導航提醒，並請 `schedule-manager` 入曆。
+- 讓使用者不用動腦：第一輪盡量同時平行跑 `calendar-check.py`、讀 `preferences.json` 與 `page-prices.py` 減少等待；出方案優先用 `format-plan.py` 加上 `--weather-place`、`--route`、`--reservation-script`（成功即過手機檢查；原樣送出免重跑 `phone-check.py`，改字就重跑）。使用者確認成行或丟訂房截圖時，讀出日期、地點、訂位代號與免費取消日，跑 `trip-reminders.py` 排好免費取消前 24h、前一晚行前清單與出發前 1h 導航提醒，並請 `schedule-manager` 入曆。
