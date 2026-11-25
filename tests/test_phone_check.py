@@ -319,6 +319,40 @@ class ResultTests(unittest.TestCase):
         self.assertIn("回程", report["problems"][0]["text"])
         self.assertIn("住宿", report["problems"][0]["text"])
 
+    def card_with(self, attachment):
+        db = board([("t_0569fddd", 600, "trip")], done={"t_0569fddd": "review"})
+        attach = db.parent / "attachments" / "t_0569fddd"
+        attach.mkdir(parents=True)
+        (attach / "plan.md").write_text(attachment, encoding="utf-8")
+        return db
+
+    def test_official_airline_and_hotel_sites_count_by_their_link_text(self):
+        # Antigravity's review of 2f15bdc: china-airlines.com / toyoko-inn.com have no "flight"/"hotel" in them.
+        db = self.card_with("- 去程：CI116 16:40→20:00\n- 回程：CI111 11:00→12:30\n"
+                            "[華航官網訂票](https://www.china-airlines.com/tw/zh/booking?x=1)\n"
+                            "[東橫INN 博多口](https://www.toyoko-inn.com/search/detail/00059)\n")
+        ok = ("福岡 2人 總計 NT$35,468\n去 16:40→20:00｜回 11:00→12:30\n"
+              "[華航官網訂票](https://www.china-airlines.com/tw/zh/booking?x=1)｜[東橫INN 博多口](https://www.toyoko-inn.com/search/detail/00059)")
+        self.assertEqual(check_handoff(ok, db, "--card", "t_0569fddd")[0], 0)
+        no_flight = ("福岡 2人 總計 NT$35,468\n去 16:40→20:00｜回 11:00→12:30\n"
+                     "[東橫INN 博多口](https://www.toyoko-inn.com/search/detail/00059)")
+        status, report = check_handoff(no_flight, db, "--card", "t_0569fddd")
+        self.assertEqual(status, 1)
+        self.assertIn("機票", report["problems"][0]["text"])
+
+    def test_times_match_with_or_without_a_leading_zero(self):
+        # Antigravity's review of 2f15bdc: 09:05 in the attachment and 9:05 in the reply did not match.
+        db = self.card_with("- 去程：IT201 09:05→12:30\n- 回程：IT202 13:30→16:05\n")
+        status, report = check_handoff("大阪 NT$12,000\n去 9:05 起飛｜回 13:30 起飛", db, "--card", "t_0569fddd")
+        self.assertEqual(status, 0, report)
+
+    def test_leg_times_on_the_lines_under_a_heading_are_used(self):
+        # Antigravity's review of 2f15bdc: 「### 去程」 with the times on the next line was not read.
+        db = self.card_with("### 去程\nCI116 16:40 → 20:00\n\n### 回程\nCI111 11:00 → 12:30\n")
+        status, report = check_handoff("福岡 NT$27,508\n去 16:40→20:00\n15:00 入住", db, "--card", "t_0569fddd")
+        self.assertEqual(status, 1)
+        self.assertIn("回程", report["problems"][0]["text"])
+
     def test_every_real_attachment_passes_when_its_details_are_copied(self):
         # The stricter rule must not block a reply that does carry the attachment's details.
         import os

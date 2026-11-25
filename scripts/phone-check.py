@@ -132,15 +132,52 @@ PRICE = travel_money.PRICE
 LEGS = ("去程", "回程")
 
 
-def link_kind(url):
-    """機票 or 住宿 for a booking/search link, else None."""
-    lowered = url.lower()
-    if "flight" in lowered:
-        return "機票"
-    if any(word in lowered for word in ("hotel", "travel/search", "booking.com", "agoda", "airbnb", "trip.com",
-                                        "jalan", "rakuten", "expedia")):
-        return "住宿"
+FLIGHT_NAMES = ("機票", "航班", "訂票", "航空", "班機", "flight")
+STAY_NAMES = ("住宿", "飯店", "旅館", "酒店", "民宿", "訂房", "房型", "hotel", "inn", "hostel", "resort")
+FLIGHT_SITES = ("flight", "airline", "airways", "china-airlines", "evaair", "starlux", "tigerair", "jal.co",
+                "ana.co", "flypeach", "jetstar", "vietjet", "cathaypacific", "flyscoot")
+STAY_SITES = ("hotel", "travel/search", "booking.com", "agoda", "airbnb", "trip.com", "jalan", "rakuten",
+              "expedia", "inn", "stay", "resort", "ryokan", "hostel")
+
+
+def link_kind(url, name=""):
+    """機票 or 住宿 for a booking/search link, else None.
+
+    The link text decides first: an airline's or hotel's own site (china-airlines.com, toyoko-inn.com)
+    says neither "flight" nor "hotel" in its address (Antigravity's review of 2f15bdc).
+    """
+    name, url = name.lower(), url.lower()
+    for words, sites, kind in ((FLIGHT_NAMES, FLIGHT_SITES, "機票"), (STAY_NAMES, STAY_SITES, "住宿")):
+        if any(word in name for word in words):
+            return kind
+    for words, sites, kind in ((FLIGHT_NAMES, FLIGHT_SITES, "機票"), (STAY_NAMES, STAY_SITES, "住宿")):
+        if any(site in url for site in sites):
+            return kind
     return None
+
+
+def times_in(text):
+    """Flight times as HH:MM, so 9:05 and 09:05 match (Antigravity's review of 2f15bdc)."""
+    return {t.zfill(5) for t in FLIGHT_TIME.findall(text)}
+
+
+def leg_times(text):
+    """The times written for each leg: on the leg's own line, or, when that line is only a heading
+    (「### 去程」, no time on it), on the lines under it up to a blank line or the next heading."""
+    found = {leg: set() for leg in LEGS}
+    under = None
+    for line in text.splitlines():
+        legs = [leg for leg in LEGS if leg in line]
+        times = times_in(line)
+        if legs:
+            for leg in legs:
+                found[leg] |= times
+            under = legs[0] if not times and len(legs) == 1 else None
+        elif not line.strip() or line.lstrip().startswith("#"):
+            under = None
+        elif under:
+            found[under] |= times
+    return found
 
 
 def card_detail_problem(card, message):
@@ -170,19 +207,21 @@ def card_detail_problem(card, message):
     # Each leg needs one of its own times. Antigravity, 2026-11-25: any one time passed, even the 15:00
     # check-in with the return flight left out. A leg line may also hold e.g. 「預計 21:15 抵達飯店」, so
     # one of the line's times is enough, not all.
-    replied_times = set(FLIGHT_TIME.findall(message))
-    leg_times = {leg: {t for line in combined.splitlines() if leg in line for t in FLIGHT_TIME.findall(line)}
-                 for leg in LEGS}
-    missed_legs = [leg for leg, times in leg_times.items() if times and not times & replied_times]
+    replied_times = times_in(message)
+    legs = leg_times(combined)
+    missed_legs = [leg for leg, times in legs.items() if times and not times & replied_times]
     if missed_legs:
         missing.append(("去回程" if len(missed_legs) == 2 else missed_legs[0]) + "航班時間／班號")
-    elif not any(leg_times.values()):
+    elif not any(legs.values()):
         has_flight_times = bool(FLIGHT_TIME.search(combined) and ("航班" in combined or "→" in combined))
         if has_flight_times and not replied_times:
             missing.append("去回程航班時間／班號")
     # Each kind of link the attachment has (機票, 住宿) must be in the reply, not just one link.
-    needed = {link_kind(url) for url in ATTACHMENT_URL.findall(combined)} - {None}
-    replied = {link_kind(url) for _, url in MARKDOWN_LINK.findall(message)}
+    named = MARKDOWN_LINK.findall(combined)
+    bare = ATTACHMENT_URL.findall(MARKDOWN_LINK.sub("", combined))
+    needed = {link_kind(url, name) for name, url in named} | {link_kind(url) for url in bare}
+    needed -= {None}
+    replied = {link_kind(url, name) for name, url in MARKDOWN_LINK.findall(message)}
     if needed - replied:
         missing.append("可點擊的" + "與".join(sorted(needed - replied, key="機票住宿".index)) + "連結（[名稱](網址)）")
     elif ATTACHMENT_URL.search(combined) and not MARKDOWN_LINK.search(message):
