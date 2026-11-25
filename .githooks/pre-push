@@ -1,0 +1,14 @@
+#!/bin/sh
+# Claude and Antigravity review each other's pushes; see tools/cross-review.py. Never blocks a push.
+root=$(git rev-parse --show-toplevel) || exit 0
+script="$root/tools/cross-review.py"
+[ -f "$script" ] || exit 0
+# Windows' python.exe in WindowsApps can be a Store stub that exits 9009, so try that each one runs.
+for python in py python python3; do
+    if "$python" -c "" >/dev/null 2>&1; then
+        "$python" "$script" pre-push "$@"
+        exit 0
+    fi
+done
+echo "[互審] 找不到 python，跳過審查"
+exit 0
