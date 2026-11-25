@@ -37,27 +37,70 @@ def amounts(text):
 # a handoff on 2026-11-11 had written 「整趟預算：新台幣 2,000 元」 into preferences.json on the owner's
 # behalf. A budget is said only when the owner's own words give that amount; otherwise it is 未確認.
 # 「預算剩」「超出預算」「預算內」 are what trip-cost.py prints about a budget it was given, not a new claim.
-BUDGET_CLAIM = re.compile(
-    rf"(?<!超出)(?<!超過)預算(?![剩內])[^\d\n，。,；;剩]{{0,6}}?(?P<a>{CURRENCY_BEFORE}\s*\d[\d,]*|\d[\d,]*\s*{CURRENCY_AFTER})"
-    rf"|(?P<b>{CURRENCY_BEFORE}\s*\d[\d,]*|\d[\d,]*\s*{CURRENCY_AFTER})\s*(?:的)?(?:總|整趟)?預算(?![剩])")
-DIGITS = {"一": 1, "二": 2, "兩": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
-SPOKEN = re.compile(r"(\d+(?:\.\d+)?|[一二兩三四五六七八九])\s*([千萬kK])\s*([一二兩三四五六七八九]|\d)?(?![\d千萬])"
-                    r"|(\d[\d,]*)")
+CN_DIGITS = "零一二兩三四五六七八九"
+CN_VALUE = {"零": 0, "一": 1, "二": 2, "兩": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+CN_UNITS = {"十": 10, "百": 100, "千": 1000, "k": 1000, "K": 1000, "萬": 10000}
+# What follows a count, not an amount: 「4萬 2人」 is NT$40,000 and two people (Antigravity's review of 0783149).
+COUNTED = "人天夜位間個晚月日號點/:"
+NUMBER = re.compile(rf"[\d.,{CN_DIGITS}十百千萬kK]+")
+
+
+def _number(token, shorthand=True):
+    """「2,000」 2000, 「4萬」 40000, 「1萬5千」 15000, 「十二萬」 120000, 「2.5k」 2500. A last digit after a unit
+    is shorthand (「一萬五」 15000, 「兩千五」 2500) unless `shorthand` is off. None when it is no number."""
+    total = section = 0
+    num, last_unit, digits = None, None, ""
+    for ch in token.replace(",", "") + " ":
+        if ch.isdigit() or ch == ".":
+            digits += ch
+            continue
+        if digits:
+            try:
+                num = float(digits)
+            except ValueError:
+                return None
+            digits = ""
+        if ch in CN_DIGITS:
+            num = float(CN_VALUE[ch])
+        elif ch in CN_UNITS:
+            unit = CN_UNITS[ch]
+            if unit == 10000:
+                total += (section + (num or 0)) * unit
+                section = 0
+            else:
+                section += (1 if num is None else num) * unit
+            num, last_unit = None, unit
+    if num is not None:
+        section += num * (last_unit // 10 if shorthand and last_unit and last_unit >= 100 else 1)
+    return int(total + section)
 
 
 def spoken_amounts(text):
     """Every amount a person may have written: 「2000以內」「NT$2,000」「兩千」「4萬」「一萬五」「2.5k」."""
+    # 「4 萬」 is 40000, not 4 (a space before the unit).
+    text = re.sub(rf"(?<=[\d{CN_DIGITS}十])\s+(?=[千萬kK])", "", text or "")
     found = set()
-    for lead, unit, tail, plain in SPOKEN.findall(text or ""):
-        if plain:
-            found.add(int(plain.replace(",", "") or 0))
+    for match in NUMBER.finditer(text):
+        token = match.group(0).strip(".,")
+        if not re.search(rf"[\d{CN_DIGITS}十]", token):
             continue
-        base = {"千": 1000, "k": 1000, "K": 1000, "萬": 10000}[unit]
-        value = float(DIGITS.get(lead) or lead) * base
-        if tail:
-            value += (DIGITS.get(tail) or int(tail)) * base // 10
-        found.add(int(value))
+        counted = match.end() < len(text) and text[match.end()] in COUNTED
+        value = _number(token, shorthand=not counted)
+        if value is not None:
+            found.add(value)
     return found
+
+
+# An amount as written after 「預算」: with a currency (「NT$2,000」「2000元」), with 萬/千/k (「4萬」「兩千」),
+# or three or more plain digits not followed by a count or a date (「預算 2000」). Antigravity's review of
+# 0783149: only currency-marked amounts were caught, so 「兩人整趟預算 2,000」 went out unchecked.
+_AMOUNT = (rf"{CURRENCY_BEFORE}\s*\d[\d,]*|\d[\d,]*\s*{CURRENCY_AFTER}"
+           rf"|\d[\d,]*(?:\.\d+)?\s*[萬千kK]|[{CN_DIGITS}十][{CN_DIGITS}十百千萬]*[千萬][{CN_DIGITS}]?"
+           rf"|\d{{1,3}}(?:,\d{{3}})+|\d{{3,}}")
+_NOT_COUNTED = rf"(?![\d,]|\s*[{COUNTED}])"
+BUDGET_CLAIM = re.compile(
+    rf"(?<!超出)(?<!超過)預算(?![剩內])[^\d\n，。,；;剩{CN_DIGITS}]{{0,6}}?(?P<a>(?:{_AMOUNT}){_NOT_COUNTED})"
+    rf"|(?P<b>(?:{_AMOUNT}){_NOT_COUNTED})\s*(?:的)?(?:總|整趟)?預算(?![剩])")
 
 
 def stated_budgets(text):
@@ -65,7 +108,9 @@ def stated_budgets(text):
     claims = []
     for match in BUDGET_CLAIM.finditer(text or ""):
         written = match.group("a") or match.group("b")
-        claims.append((match.group(0), int(re.sub(r"\D", "", written))))
+        amounts = spoken_amounts(re.sub(CURRENCY_BEFORE, "", written))
+        if amounts:
+            claims.append((match.group(0), max(amounts)))
     return claims
 
 

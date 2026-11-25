@@ -125,13 +125,17 @@ def owner_words(home, session_id=None):
         try:
             with read_only(path) as db:
                 db.execute("SELECT 1 FROM messages LIMIT 1")
+                if session_id:
+                    paths.append(path)
+                    continue
+                # Without a conversation, only a database that says which ones are Telegram's counts
+                # (Antigravity's review of 0783149: an older layout returned [] and flagged every budget).
+                row = db.execute("SELECT m.timestamp, m.session_id FROM messages m JOIN sessions s ON "
+                                 "s.id = m.session_id WHERE m.role = 'user' AND s.source = 'telegram' "
+                                 "ORDER BY m.timestamp DESC LIMIT 1").fetchone()
                 paths.append(path)
-                if not session_id:
-                    row = db.execute("SELECT m.timestamp, m.session_id FROM messages m JOIN sessions s ON "
-                                     "s.id = m.session_id WHERE m.role = 'user' AND s.source = 'telegram' "
-                                     "ORDER BY m.timestamp DESC LIMIT 1").fetchone()
-                    if row and (latest is None or row[0] > latest[0]):
-                        latest = row
+                if row and (latest is None or row[0] > latest[0]):
+                    latest = row
         except sqlite3.Error:  # unreadable, or an older layout without `sessions`
             continue
     if not paths:

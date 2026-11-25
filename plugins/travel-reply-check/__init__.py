@@ -344,11 +344,10 @@ def tamper_problem(tool_name, args):
 # Telegram message from the last week, or a preferences.json budget whose `quote` has it).
 BUDGET_ARG = re.compile(r"--budget[\s=]+[\"']?(\d+)")
 PREFERENCES = "preferences.json"
-NEW_AMOUNT = re.compile(r'"amount"\s*:\s*(\d+)')
 BUDGET_ARG_PROBLEM = ("使用者沒說過預算 {amount}：拿掉 --budget（沒有預算時工具只算總計），"
                       "回覆寫「預算未確認」或不提。")
-BUDGET_RECORD_PROBLEM = ("preferences.json 的 budget 只能記使用者親口說過的金額，並在 quote 寫他的原話；"
-                         "這次對話裡使用者沒說過 {amount}。沒說過就保持 null。")
+BUDGET_RECORD_PROBLEM = ("preferences.json 的 budget 只能記使用者這次親口說過的金額，並在 quote 照抄他含這個金額的原話；"
+                         "{amount} 不符合（沒說過，或沒有 quote）。沒說過就保持 null。")
 
 
 def owner_preferences(home):
@@ -358,6 +357,50 @@ def owner_preferences(home):
         except (OSError, ValueError):
             continue
     return None
+
+
+def written_preferences(tool_name, args, path):
+    """preferences.json as it will be after this write, or None when that cannot be worked out."""
+    if tool_name == "write_file":
+        text = str(args.get("content", ""))
+    else:
+        try:
+            current = Path(path).read_text(encoding="utf-8-sig")
+        except OSError:
+            return None
+        old, new = str(args.get("old_string", "")), str(args.get("new_string", ""))
+        if not old or old not in current:
+            return None
+        text = current.replace(old, new, -1 if args.get("replace_all") else 1)
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
+def record_budget_problem(tool_name, args, path, said, home):
+    """A preferences.json budget must carry the owner's words (`quote`) with its amount, and the owner must
+    have said that amount in this conversation, or it is the quoted budget already kept (Antigravity's
+    review of 0783149: a made-up quote on an old relayed amount passed, a quote-less budget passed, and
+    rewriting the file over a kept quoted budget was blocked)."""
+    after = written_preferences(tool_name, args, path)
+    if not isinstance(after, dict):
+        return None
+    budget = after.get("budget")
+    if not isinstance(budget, dict) or not isinstance(budget.get("amount"), (int, float)):
+        return None
+    amount = int(budget["amount"])
+    if money.owner_budget(after) != amount:
+        return BUDGET_RECORD_PROBLEM.format(amount=money.money(amount))
+    heard = set().union(*(money.spoken_amounts(t) for t in said)) if said else set()
+    try:
+        before = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        before = None
+    kept = before.get("budget") if isinstance(before, dict) and money.owner_budget(before) is not None else None
+    if amount in heard or (kept and kept.get("amount") == amount and kept.get("quote") == budget.get("quote")):
+        return None
+    return BUDGET_RECORD_PROBLEM.format(amount=money.money(amount))
 
 
 def budget_problem(tool_name, args, session_id, home):
@@ -376,16 +419,11 @@ def budget_problem(tool_name, args, session_id, home):
     card = tool_name == "terminal" and "kanban" in text and " create" in text
     if not (record or arg or (tool_name == "clarify" or card) and money.stated_budgets(text)):
         return None
-    said = sessions.owner_words(home, session_id)
+    said = heard(home, session_id)
     if said is None:
         return None
     if record:
-        before = str(args.get("old_string", "")) if tool_name == "patch" else ""
-        after = str(args.get("new_string", "") if tool_name == "patch" else args.get("content", ""))
-        heard = set().union(*(money.spoken_amounts(t) for t in said)) if said else set()
-        new = [int(a) for a in NEW_AMOUNT.findall(after) if a not in NEW_AMOUNT.findall(before)]
-        unsaid = [a for a in new if a not in heard]
-        return BUDGET_RECORD_PROBLEM.format(amount=money.money(unsaid[0])) if unsaid else None
+        return record_budget_problem(tool_name, args, path, said, home)
     prefs = owner_preferences(home)
     for amount in map(int, arg):
         if money.unsaid_budgets(f"預算 {money.money(amount)}", said, prefs):
@@ -399,10 +437,11 @@ def budget_problem(tool_name, args, session_id, home):
 # places, each from a page or record this conversation read, unless it says only fewer fit the dates.
 WHERE_QUESTION = re.compile(r"去哪(?![間家])|哪一趟|走哪|哪個地方|哪裡玩|目的地")
 FEW_FIT = re.compile(r"只有.{0,12}(符合|可行|排得進|有空|來得及)")
-NOT_A_PLACE = re.compile(r"[（(][^）)]*[）)]|\d{1,2}/\d{1,2}|\d+天\d+夜|[一二兩三四五]天[一二兩三四]夜|一日遊?|半日遊?|"
+NOT_A_PLACE = re.compile(r"[（(][^）)]*[）)]|\d{4}/\d{1,2}/\d{1,2}|\d{1,2}/\d{1,2}(?:\s*[–—\-~～至到]\s*\d{1,2}(?:/\d{1,2})?)?|"
+                         r"\d{1,2}月\d{1,2}[日號]?|\d+天\d+夜|[一二兩三四五]天[一二兩三四]夜|一日遊?|半日遊?|"
                          r"這週末?|下週末?|週末|本週|下週|[週周][一二三四五六日]|出發|改期|改天|別天|其他時間|"
                          r"校慶補假|補假|連假|平日|假日|自駕|開車|騎車|行程|方案|推薦|Recommended|"
-                         r"泡湯|溫泉|之旅|[\s–—\-~～至到、，,.。]")
+                         r"泡湯|溫泉|之旅|\d+[月日號]?|[\s–—\-~～至到、，,.。]")
 MIN_PLACES = 3
 PLACES_PROBLEM = ("問去哪裡時要給 {need} 個不同的地點讓使用者選，現在只有 {have} 個（{places}）；"
                   "日期不算地點（「{dateonly}」）。再找兩三個符合日期與交通方式、這次查過價格或紀錄裡有來源的地方；"
@@ -668,6 +707,29 @@ def session_cards(session_id, home):
     return []
 
 
+def card_bodies(said, home):
+    """The bodies of the cards whose notices (「看板任務 t_… 已完成」) came into this conversation. A card's
+    budget was checked against the user's words when it was made, so its report may repeat it: the user
+    said 「整趟預算 4 萬」 in another conversation, and the report arrives in a new one. Only cards in those
+    notices count, not every card a `kanban list` printed (one of those had a 2000 of its own)."""
+    board = _board(home)
+    cards = list(dict.fromkeys(c for text in said for c in CARD_ID.findall(text))) if board else []
+    if not cards:
+        return []
+    try:
+        with sessions.read_only(board) as db:
+            marks = ",".join("?" * len(cards))
+            return [row[0] or "" for row in db.execute(f"SELECT body FROM tasks WHERE id IN ({marks})", cards)]
+    except sqlite3.Error:
+        return []
+
+
+def heard(home, session_id):
+    """What backs a budget in this conversation: the user's words and the cards it looked at; None if unknown."""
+    said = sessions.owner_words(home, session_id)
+    return None if said is None else said + card_bodies(said, home)
+
+
 def reviewed_card_amounts(session_id, home):
     """Amounts in the attachments and run summaries of this conversation's reviewed, done cards."""
     board = _board(home)
@@ -761,7 +823,7 @@ def without_unsaid_budgets(text, session_id, home):
     """A reply's budget the user never gave becomes 「預算未確認」 (2026-11-25)."""
     if not money.stated_budgets(text):
         return text
-    said = sessions.owner_words(home, session_id)
+    said = heard(home, session_id)
     if said is None:
         return text
     for written, _ in money.unsaid_budgets(text, said, owner_preferences(home)):

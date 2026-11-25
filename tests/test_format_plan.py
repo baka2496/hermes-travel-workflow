@@ -77,6 +77,18 @@ class FormatPlanTests(unittest.TestCase):
         self.assertIn("📞 03-9881892", out)
         self.assertIn("Google 地圖・查空房", out)
 
+    def test_a_plan_without_a_budget_adds_up_the_total_alone(self):
+        # 2026-11-25: the user gave no budget, so there is none to pass (Antigravity's review of 0783149).
+        rc, out, err = run_format(
+            "--header", "12/14 礁溪泡湯 2人", "--date", "2026-12-14",
+            "--item", f"雙人湯屋 60分鐘=699x1@{PAGE}", "--place", "範例溫泉", "--official", PAGE,
+            "--phone", "03-9881892", "--phone-source", PAGE, "--photo", str(self.photo),
+            "--photo-caption", "雙人湯屋 60分鐘（spring.example）",
+            "--hermes-root", str(self.root), "--records", str(self.records), "--preferences", str(self.prefs))
+        self.assertEqual(rc, 0, err)
+        self.assertIn("總計 NT$699", out)
+        self.assertNotIn("預算", out)
+
     def test_adds_fallbacks_when_phone_and_photo_absent(self):
         rc, out, err = run_format(
             "--header", "12/14 礁溪泡湯 2人",

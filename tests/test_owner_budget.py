@@ -100,6 +100,21 @@ class BudgetWordsTests(unittest.TestCase):
         for text in ("總計 NT$2,932，預算剩 NT$3,068", "超出預算 NT$32", "預算未確認", "超過預算 NT$500"):
             self.assertEqual(travel_money.stated_budgets(text), [], text)
 
+    def test_a_budget_written_without_a_currency_is_found(self):
+        # Antigravity's review of 0783149: only 「NT$」 or 「元」 amounts were found.
+        for text, amount in (("兩人整趟預算 2,000", 2000), ("預算 2000", 2000), ("預算 4萬", 40000), ("預算兩千", 2000),
+                             ("預算放寬至約兩千五", 2500)):
+            self.assertEqual([a for _, a in travel_money.stated_budgets(text)], [amount], text)
+        for text in ("預算 2 人", "預算12/7再說", "預算剩 NT$400"):
+            self.assertEqual(travel_money.stated_budgets(text), [], text)
+
+    def test_a_count_after_an_amount_is_not_part_of_it(self):
+        # Antigravity's review of 0783149: 「4萬 2人」 was read as 42000 and 「一萬五千」 as 10000 and 5000.
+        for text, amount in (("預算 4萬 2人", 40000), ("預算兩千 兩天一夜", 2000), ("預算 2k 2人", 2000),
+                             ("預算一萬五千", 15000), ("十萬", 100000), ("十二萬", 120000), ("4萬2", 42000), ("在預算 4 萬內", 40000)):
+            self.assertIn(amount, travel_money.spoken_amounts(text), text)
+        self.assertNotIn(42000, travel_money.spoken_amounts("預算 4萬 2人"))
+
     def test_the_ways_a_person_writes_an_amount(self):
         # 「2000以內的」 is what the owner typed on 2026-10-17 (about Tokyo rooms).
         for text, amount in (("2000以內的", 2000), ("兩千", 2000), ("預算 4萬", 40000), ("一萬五", 15000),
@@ -116,6 +131,19 @@ class BudgetWordsTests(unittest.TestCase):
     def test_hermes_notes_are_not_the_owner_talking(self):
         home = hermes_home("[CONTEXT COMPACTION — REFERENCE ONLY] …兩人預算 NT$2,000…", "我想出去玩")
         self.assertEqual(hermes_sessions.owner_words(home), ["我想出去玩"])
+
+    def test_an_older_layout_without_sessions_stands_aside(self):
+        # Antigravity's review of 0783149: without a `sessions` table phone-check got [] and flagged everything.
+        root = Path(scratch.new_dir("hermes-old-layout-"))
+        path = root / "profiles" / "project-manager" / "state.db"
+        path.parent.mkdir(parents=True)
+        db = sqlite3.connect(path)
+        db.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT, "
+                   "tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL)")
+        db.commit()
+        db.close()
+        self.assertIsNone(hermes_sessions.owner_words(root))
+        self.assertEqual(hermes_sessions.owner_words(root, "s1"), [])
 
     def test_only_this_conversation_counts(self):
         # 2026-11-25: older Telegram conversations held test requests 「12/14 想去礁溪泡湯，2人，預算 2000」;
@@ -174,15 +202,63 @@ class ButtonBudgetTests(unittest.TestCase):
         self.assertEqual(terminal(home, card, session="tg")["action"], "block")
         self.assertIsNone(terminal(hermes_home("想去福岡，兩個人 7萬"), card, session="tg"))
 
-    def test_preferences_keep_only_a_budget_the_owner_gave(self):
+    def test_only_cards_reported_to_this_conversation_back_a_budget(self):
+        # A card's notice (「看板任務 t_… 已完成」) carries the budget the card was made with; a card that a
+        # `kanban list` merely printed does not (11/25 real data: one of those had a 2000).
         home = hermes_home("我想出去玩")
-        patch = {"path": "C:/x/shared/travel-workflow/preferences.json", "old_string": '"budget": null',
-                 "new_string": '"budget": {"amount": 2000, "currency": "TWD", "scope": "entire_trip"}'}
-        result = with_home(home, lambda: plugin.pre_tool_call("patch", patch, session_id="tg"))
+        board = home / "kanban" / "boards" / "command-center" / "kanban.db"
+        board.parent.mkdir(parents=True)
+        db = sqlite3.connect(board)
+        db.execute("CREATE TABLE tasks (id TEXT, status TEXT, body TEXT)")
+        db.execute("INSERT INTO tasks VALUES ('t_aaaa1111', 'done', '整趟預算: NT$2,000')")
+        db.commit()
+        db.close()
+        state = sqlite3.connect(home / "profiles" / "project-manager" / "state.db")
+        state.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES ('tg', 'tool', "
+                      "'✓ t_aaaa1111  done  trip  烏來', 0)")
+        state.commit()
+        state.close()
+        self.assertEqual(plugin.heard(home, "tg"), ["我想出去玩"])  # a listed card is not the owner talking
+        self.assertEqual(clarify(home, QUESTION, CHOICES, session="tg")["action"], "block")
+        self.assertEqual(plugin.card_bodies(["看板任務 t_aaaa1111 已完成。"], home), ["整趟預算: NT$2,000"])
+
+    def test_format_plan_gets_no_budget_the_owner_never_gave(self):
+        command = ('"C:/Python313/python.exe" "C:/x/shared/travel-workflow/format-plan.py" --header "12/07 烏來 2人" '
+                   '--budget 2000 --item "湯屋=600"')
+        self.assertEqual(terminal(hermes_home("我想出去玩"), command, session="tg")["action"], "block")
+        self.assertIsNone(terminal(hermes_home("我想出去玩"), command.replace("--budget 2000 ", ""), session="tg"))
+
+    def write_prefs(self, home, prefs, tool, **args):
+        path = home / "shared" / "travel-workflow" / "preferences.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(prefs, ensure_ascii=False), encoding="utf-8")
+        return with_home(home, lambda: plugin.pre_tool_call(tool, {"path": str(path), **args}, session_id="tg"))
+
+    def test_preferences_keep_only_a_budget_the_owner_gave(self):
+        quoted = '"budget": {"amount": 2000, "currency": "TWD", "scope": "entire_trip", "quote": "以後預算都 2000"}'
+        bare = '"budget": {"amount": 2000, "currency": "TWD", "scope": "entire_trip"}'
+        empty = {"budget": None, "airport": None}
+        # Not said in this conversation: blocked, with or without a quote.
+        result = self.write_prefs(hermes_home("我想出去玩"), empty, "patch", old_string='"budget": null', new_string=quoted)
         self.assertEqual(result["action"], "block")
         self.assertIn("quote", result["message"])
+        # Said, but without the owner's words: blocked (owner_budget would ignore it next time).
         said = hermes_home("以後預算都 2000")
-        self.assertIsNone(with_home(said, lambda: plugin.pre_tool_call("patch", patch, session_id="tg")))
+        result = self.write_prefs(said, empty, "patch", old_string='"budget": null', new_string=bare)
+        self.assertEqual(result["action"], "block")
+        self.assertIsNone(self.write_prefs(said, empty, "patch", old_string='"budget": null', new_string=quoted))
+
+    def test_a_made_up_quote_on_the_relayed_amount_is_blocked(self):
+        # Antigravity's review of 0783149: the relayed 2000 was already on disk, so adding a quote passed.
+        result = self.write_prefs(hermes_home("我想出去玩"), RELAYED_PREFS, "patch",
+                                  old_string='"scope": "entire_trip"', new_string='"scope": "entire_trip", "quote": "兩千"')
+        self.assertEqual(result["action"], "block")
+
+    def test_rewriting_the_file_keeps_a_quoted_budget_already_kept(self):
+        kept = {"budget": {"amount": 2000, "currency": "TWD", "scope": "entire_trip", "quote": "以後預算都兩千"},
+                "airport": None}
+        rewritten = json.dumps({**kept, "airport": "TPE"}, ensure_ascii=False)
+        self.assertIsNone(self.write_prefs(hermes_home("以後從桃園出發"), kept, "write_file", content=rewritten))
 
     def test_a_reply_says_unconfirmed_instead(self):
         home = hermes_home("我想出去玩")
@@ -210,6 +286,13 @@ class WhereToGoTests(unittest.TestCase):
     def test_fewer_places_pass_when_the_question_says_why(self):
         result = self.ask("12/07 只有烏來和礁溪排得進（其他地方當天客滿）。\n想去哪？", ["烏來一日遊", "礁溪兩天一夜"])
         self.assertIsNone(result)
+
+    def test_other_ways_of_writing_a_date_are_not_places(self):
+        # Antigravity's review of 0783149: 「11/28–29」 left 「29」, 「12月7日」 stayed, 「2026/12/07」 left 「20/07」.
+        for date in ("11/28–29 出發", "12月7日出發", "2026/12/07 出發"):
+            result = self.ask("想去哪？", ["烏來一日遊", "礁溪兩天一夜", date])
+            self.assertEqual(result["action"], "block", date)
+        self.assertEqual(plugin.place_of("日月潭兩天一夜"), "日月潭")
 
     def test_other_questions_are_not_counted(self):
         self.assertIsNone(self.ask("礁溪山口溫泉飯店\n要哪天？", ["12/6", "12/13"]))

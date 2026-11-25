@@ -439,11 +439,11 @@ def home_with_card(how="review", status="done"):
     plan = board / "attachments" / "t_6e12091c" / "plan.md"
     plan.write_text("機票每人 NT$13,237，兩人 NT$26,474\n法華俱樂部 4晚 NT$8,620\n總計 NT$35,094", encoding="utf-8")
     db = sqlite3.connect(board / "kanban.db")
-    db.execute("CREATE TABLE tasks (id TEXT, status TEXT)")
+    db.execute("CREATE TABLE tasks (id TEXT, status TEXT, body TEXT)")
     db.execute("CREATE TABLE task_runs (id INTEGER, task_id TEXT, outcome TEXT, summary TEXT)")
     db.execute("CREATE TABLE task_events (task_id TEXT, run_id INTEGER, kind TEXT)")
     db.execute("CREATE TABLE task_attachments (task_id TEXT, stored_path TEXT)")
-    db.execute("INSERT INTO tasks VALUES ('t_6e12091c', ?)", (status,))
+    db.execute("INSERT INTO tasks VALUES ('t_6e12091c', ?, '城市: 福岡 人數: 2 整趟預算: NT$40,000')", (status,))
     db.execute("INSERT INTO task_runs VALUES (1, 't_6e12091c', 'completed', '')")
     for kind in (["claimed", "spawned", "completed"] if how == "review" else ["completed"]):
         db.execute("INSERT INTO task_events VALUES ('t_6e12091c', 1, ?)", (kind,))
