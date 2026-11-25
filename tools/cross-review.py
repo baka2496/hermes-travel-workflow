@@ -16,7 +16,10 @@ starts another one (CROSS_REVIEW_RUNNING), so the two cannot loop.
     py tools/cross-review.py install              # turn it on for this clone
     py tools/cross-review.py review [--base REF] [--reviewer agy|claude]   # review by hand
 
-CROSS_REVIEW=off skips it; CROSS_REVIEW_REVIEWER=agy|claude picks the reviewer.
+    py tools/cross-review.py off | on | status     # pause it (e.g. low on quota), resume, check
+
+`off` stays off for this clone until `on`; CROSS_REVIEW=off skips it for one shell, and
+CROSS_REVIEW_REVIEWER=agy|claude picks the reviewer.
 """
 import argparse
 import os
@@ -85,6 +88,14 @@ def skip_reason(env):
     if env.get("CI") or env.get("GITHUB_ACTIONS"):
         return "在 CI 裡（CI 沒有 AI 登入）"
     return None
+
+
+def switched_off():
+    """`off` (2026-11-25: the owner wanted to pause reviews when an AI's quota runs low)."""
+    try:  # runs before main()'s guard, so it must never stop a push itself
+        return git("config", "--get", "crossreview.enabled", check=False).lower() == "false"
+    except Exception:
+        return False
 
 
 def ranges_from_pre_push(lines, base_for):
@@ -241,6 +252,8 @@ def main(argv=None, env=None, stdin=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("install")
+    for name in ("on", "off", "status"):
+        sub.add_parser(name)
     hook = sub.add_parser("pre-push")
     hook.add_argument("remote", nargs="?", default="origin")
     hook.add_argument("url", nargs="?")
@@ -254,8 +267,20 @@ def main(argv=None, env=None, stdin=None):
         git("config", "core.hooksPath", ".githooks")
         print("[互審] 已開啟：這個 clone 之後每次 git push 都會先請另一個 AI 審查。")
         return 0
+    if args.command in ("on", "off"):
+        git("config", "crossreview.enabled", "true" if args.command == "on" else "false")
+        print("[互審] 已打開，之後推送會照常審查。" if args.command == "on"
+              else "[互審] 已關閉，推送不再送審（要恢復：py tools/cross-review.py on）。")
+        return 0
+    if args.command == "status":
+        hooked = git("config", "--get", "core.hooksPath", check=False) == ".githooks"
+        state = ("關閉（off）" if switched_off() else "打開") if hooked else "沒裝（先跑 install）"
+        found = "、".join(f"{spec['name']} {'有' if shutil.which(spec['command'][0]) else '找不到'}"
+                         for spec in REVIEWERS.values())
+        print(f"[互審] 狀態：{state}；審查者：{found}；這次推送會由 {REVIEWERS[pick_reviewer(env)]['name']} 審")
+        return 0
 
-    reason = skip_reason(env)
+    reason = skip_reason(env) or ("已用 off 關閉（py tools/cross-review.py on 重新打開）" if switched_off() else None)
     if reason:
         if not env.get("CROSS_REVIEW_RUNNING"):
             print(f"[互審] 跳過：{reason}")
@@ -271,7 +296,12 @@ def main(argv=None, env=None, stdin=None):
                 return 1
             review(base, tip, reviewer, env)
             return 0
-        lines = (stdin if stdin is not None else sys.stdin).read().splitlines()
+        # Git writes ref names as UTF-8 and Windows' stdin is cp950: by default a name like 截止日
+        # comes out garbled (surrogateescape), and with PYTHONIOENCODING set (strict) it fails to
+        # decode and the review is skipped (Antigravity, 2026-11-25; checked by hand).
+        source = stdin if stdin is not None else sys.stdin
+        raw = source.buffer.read().decode("utf-8", "replace") if hasattr(source, "buffer") else source.read()
+        lines = raw.splitlines()
         for base, tip in ranges_from_pre_push(lines, lambda sha: default_base(sha, args.remote)):
             try:  # one branch failing must not leave the other pushed branches unreviewed
                 review(base, tip, reviewer, env)
