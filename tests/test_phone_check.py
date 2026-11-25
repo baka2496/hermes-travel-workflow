@@ -359,10 +359,28 @@ class ResultTests(unittest.TestCase):
         self.assertEqual(kind("https://www.hotel-hana.co.jp/"), "住宿")              # not 機票 via "ana.co"
         self.assertIsNone(kind("https://example.com/dinner", "晚餐 dinner"))
         # Real attachment links (2026-11-25) that were left unsorted before:
-        self.assertEqual(kind("https://www.google.com/travel/lodging/clk?x=1", "Ikyu"), "住宿")
-        self.assertEqual(kind("https://deals.vio.com/", "Vio"), "住宿")
-        self.assertEqual(kind("https://www.priceline.com", "Priceline 預訂"), "住宿")
+        # Neutral link text, so the address itself is what is tested (Antigravity's review of e363c3c).
+        self.assertEqual(kind("https://www.google.com/travel/lodging/clk?x=1", "官網"), "住宿")
+        self.assertEqual(kind("https://deals.vio.com/", ""), "住宿")
+        self.assertEqual(kind("https://www.priceline.com", "預訂"), "住宿")
         self.assertEqual(kind("https://www.jtb.co.jp/kokunai-hotel/htl/6492106/plan/", "官網方案"), "住宿")
+
+    def test_sites_selling_both_are_sorted_by_the_address_first(self):
+        # Antigravity's review of e363c3c: the brand name won over the address.
+        kind = phone_check.link_kind
+        self.assertEqual(kind("https://flights.google.com/x", "Google"), "機票")
+        self.assertEqual(kind("https://flights.booking.com/x", "Booking.com"), "機票")
+        self.assertEqual(kind("https://www.expedia.com/flights?x=1", "Expedia"), "機票")
+        self.assertEqual(kind("https://www.expedia.com/hotels?x=1", "Expedia"), "住宿")
+        self.assertEqual(kind("https://www.expedia.com.tw/", "Expedia"), "住宿")  # real attachment links
+        self.assertEqual(kind("https://www.agoda.com/partners/partnersearch.aspx?hid=2264692", "Agoda"), "住宿")
+        self.assertEqual(kind("https://www.agoda.com/flights/x", "Agoda"), "機票")
+        self.assertEqual(kind("https://www.skyscanner.com.tw/hotels/x", "Skyscanner"), "住宿")
+        self.assertEqual(kind("https://www.skyscanner.com.tw/transport/flights/tpe/fuk/", "Skyscanner"), "機票")
+        self.assertEqual(kind("https://www.britishairways.com/x", ""), None)  # one word, not "airways"
+        self.assertEqual(kind("https://www.klook.com/activity/123", "Klook 門票"), None)
+        self.assertEqual(kind("https://www.klook.com/hotels/123", "Klook"), "住宿")
+        self.assertEqual(kind("https://example.com/x", "booking"), None)  # plain "booking" is not a hotel
 
     def test_a_blank_line_under_a_leg_heading_keeps_the_leg(self):
         # Antigravity's review of 3ed6613: 「### 回程」, a blank line, then the times was not read.
@@ -374,6 +392,23 @@ class ResultTests(unittest.TestCase):
     def test_a_sentence_naming_a_leg_does_not_take_the_next_line(self):
         # Antigravity's review of 3ed6613: 「- 回程含 20kg 行李」 then 「- 15:00 入住」 made 15:00 a return time.
         db = self.card_with("- 去程：CI116 16:40→20:00\n- 回程：CI111 11:00→12:30\n- 回程含 20kg 行李\n- 15:00 入住\n")
+        status, report = check_handoff("福岡 NT$27,508\n去 16:40→20:00\n15:00 入住", db, "--card", "t_0569fddd")
+        self.assertEqual(status, 1)
+        self.assertIn("回程", report["problems"][0]["text"])
+
+    def test_headings_with_more_than_the_leg_name_count(self):
+        # Antigravity's review of e363c3c: 「### 去程 06/05」「### ✈️ 回程航班」 were not read as headings.
+        db = self.card_with("### 去程 06/05\n- CI116 16:40 → 20:00\n\n### ✈️ 回程航班\n- CI111 11:00 → 12:30\n")
+        status, report = check_handoff("福岡 NT$27,508\n去 16:40→20:00\n15:00 入住", db, "--card", "t_0569fddd")
+        self.assertEqual(status, 1)
+        self.assertIn("回程", report["problems"][0]["text"])
+        ok = "福岡 NT$27,508\n去 16:40→20:00｜回 11:00→12:30"
+        self.assertNotIn("card_missing_details",
+                         [p["kind"] for p in check_handoff(ok, db, "--card", "t_0569fddd")[1]["problems"]])
+
+    def test_a_note_on_the_same_leg_keeps_the_section(self):
+        # Antigravity's review of e363c3c: 「- 回程含 20kg 行李」 under 「### 回程」 dropped the time below it.
+        db = self.card_with("### 去程\n- CI116 16:40 → 20:00\n\n### 回程\n- 回程含 20kg 行李\n- CI111 11:00 → 12:30\n")
         status, report = check_handoff("福岡 NT$27,508\n去 16:40→20:00\n15:00 入住", db, "--card", "t_0569fddd")
         self.assertEqual(status, 1)
         self.assertIn("回程", report["problems"][0]["text"])

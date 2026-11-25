@@ -133,44 +133,44 @@ PRICE = travel_money.PRICE
 LEGS = ("去程", "回程")
 
 
-FLIGHT_NAMES = ("機票", "航班", "訂票", "航空", "班機", "flight", "flights", "airline", "airlines")
-# Booking sites' names count too: a reply's link is often just 「Agoda」「Ikyu」 (seen in real attachments).
-STAY_NAMES = ("住宿", "飯店", "旅館", "酒店", "民宿", "訂房", "房型", "hotel", "hotels", "inn", "hostel", "resort",
-              "agoda", "booking", "ikyu", "priceline", "vio", "expedia", "klook", "jalan", "rakuten", "trivago")
-# Matched against whole parts of the host name (split at . and -), so "inn" is not finnair.com and
-# "ana" is not hotel-hana.co.jp (Antigravity's review of 3ed6613).
-FLIGHT_SITES = {"china-airlines", "evaair", "starlux", "starlux-airlines", "tigerair", "tigerairtw", "jal", "ana",
-                "flypeach", "jetstar", "vietjetair", "cathaypacific", "flyscoot", "finnair", "airasia", "koreanair",
-                "skyscanner", "kayak"}
-STAY_SITES = {"booking", "agoda", "airbnb", "trip", "jalan", "rakuten", "expedia", "hotels", "inn", "stay", "resort",
-              "ryokan", "hostel", "hotel", "toyoko", "ikyu", "priceline", "vio", "klook", "trivago", "dealbase"}
-FLIGHT_PATHS = ("/flights", "/flight")
-STAY_PATHS = ("travel/search", "travel/lodging", "hotel", "lodging")
+# How a link is sorted, most specific evidence first (Antigravity's reviews of 2f15bdc, 3ed6613, e363c3c):
+# 1. the address itself: flights.booking.com, expedia.com/flights, skyscanner.com/hotels, …/lodging
+# 2. plain words in the link text: 「華航官網訂票」, 「東橫INN 博多口」 (official sites say neither)
+# 3. the site: an airline, or a site that is mostly rooms (Agoda, Expedia: their flight pages say /flights,
+#    caught in step 1). Klook, Skyscanner and the word "booking" alone are not sorted by name.
+FLIGHT_WORDS = ("flight", "flights", "airline", "airlines", "airways")
+STAY_WORDS = ("hotel", "hotels", "lodging", "ryokan", "hostel")
+FLIGHT_TEXT = ("機票", "航班", "訂票", "航空", "班機", *FLIGHT_WORDS)
+STAY_TEXT = ("住宿", "飯店", "旅館", "酒店", "民宿", "訂房", "房型", "inn", "resort", *STAY_WORDS)
+AIRLINE_SITES = {"china-airlines", "evaair", "starlux", "tigerair", "tigerairtw", "jal", "ana", "flypeach", "jetstar",
+                 "vietjetair", "cathaypacific", "flyscoot", "finnair", "airasia", "koreanair", "gotogate"}
+HOTEL_ONLY_SITES = {"booking", "agoda", "expedia", "airbnb", "jalan", "ikyu", "vio", "priceline", "toyoko", "trivago", "dealbase",
+                    "gracery", "japanesque"}
 
 
 def _has_word(text, words):
-    """A Chinese word anywhere; an English one only as a whole word (Holiday Inn, not dinner)."""
+    """A Chinese word anywhere; an English one only as a whole word (Holiday Inn, not dinner or finnair)."""
     return any(re.search(rf"(?<![a-z]){re.escape(w)}(?![a-z])", text) if w.isascii() else w in text for w in words)
 
 
 def link_kind(url, name=""):
-    """機票 or 住宿 for a booking/search link, else None.
-
-    The link text decides first: an airline's or hotel's own site (china-airlines.com, toyoko-inn.com)
-    says neither "flight" nor "hotel" in its address (Antigravity's review of 2f15bdc). Then the site.
-    """
-    name, url = name.lower(), url.lower()
-    if _has_word(name, FLIGHT_NAMES):
-        return "機票"
-    if _has_word(name, STAY_NAMES):
-        return "住宿"
-    parsed = urllib.parse.urlparse(url)
+    """機票 or 住宿 for a booking/search link, else None."""
+    parsed = urllib.parse.urlparse(url.lower())
     host = parsed.hostname or ""
-    parts = set(re.split(r"[.\-]", host)) | {label for label in host.split(".")}
-    rest = parsed.path + "?" + parsed.query
-    if parts & FLIGHT_SITES or any(p in rest for p in FLIGHT_PATHS):
+    parts = set(re.split(r"[.\-]", host))  # whole parts: "ana" is not hotel-hana.co.jp
+    address = " ".join(re.split(r"[.\-/_?=&]", host + parsed.path))
+    if _has_word(address, FLIGHT_WORDS):
         return "機票"
-    if parts & STAY_SITES or any(p in rest for p in STAY_PATHS):
+    if _has_word(address, STAY_WORDS) or "travel/search" in parsed.path:
+        return "住宿"
+    name = name.lower()
+    if _has_word(name, FLIGHT_TEXT):
+        return "機票"
+    if _has_word(name, STAY_TEXT):
+        return "住宿"
+    if parts & AIRLINE_SITES:
+        return "機票"
+    if parts & HOTEL_ONLY_SITES or "inn" in parts:
         return "住宿"
     return None
 
@@ -181,11 +181,17 @@ def times_in(text):
 
 
 def leg_heading(line):
-    """The leg a line only names, as a heading or label (「### 去程」「**回程**：」「去程（06/05）」), else None.
+    """The leg a line heads, else None: a Markdown heading naming one leg (「### ✈️ 回程航班」「### 去程 06/05」),
+    or a bare label (「**回程**：」「去程（06/05）」).
 
     A sentence that merely mentions a leg (「- 回程含 20kg 行李」) is not one, or the next line's 15:00
     check-in would count as a flight time (Antigravity's review of 3ed6613).
     """
+    legs = [leg for leg in LEGS if leg in line]
+    if len(legs) != 1:
+        return None
+    if line.lstrip().startswith("#"):
+        return legs[0]
     core = re.sub(r"[#*\-\s:：|]", "", line)
     core = re.sub(r"[（(][^）)]*[）)]$", "", core)
     return core if core in LEGS else None
@@ -206,7 +212,10 @@ def leg_times(text):
         if legs:
             for leg in legs:
                 found[leg] |= times
-            under = None
+            if legs == [under]:  # 「- 回程含 20kg 行李」 under 「### 回程」 does not end the section
+                seen = True
+            else:
+                under = None
         elif line.lstrip().startswith("#") or (not line.strip() and seen):
             under = None
         elif under and line.strip():
