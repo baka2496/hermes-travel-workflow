@@ -7,9 +7,11 @@ The review is printed in the push output, so the agent that pushed reads it righ
 under `<git dir>/cross-review/`. It never blocks the push: a reviewer that is missing, slow or
 broken only prints a warning.
 
-The reviewer only reads: it gets the diff on stdin and has no tools (`claude --tools ""`; agy in
-plan mode, whose headless run is refused any command). Each pushed commit is reviewed once, and a
-review never starts another one (CROSS_REVIEW_RUNNING), so the two cannot loop.
+The reviewer gets the diff on stdin and no tools at all, so text planted in a diff cannot make it
+act. Tried on 2026-11-25: agy's default headless run writes files and plan mode is only a habit,
+so every agy tool kind is denied by rule; `claude --tools ""` still had MCP tools (AgentCAD runs
+Python), so no MCP server is loaded either. Each pushed range is reviewed once, and a review never
+starts another one (CROSS_REVIEW_RUNNING), so the two cannot loop.
 
     py tools/cross-review.py install              # turn it on for this clone
     py tools/cross-review.py review [--base REF] [--reviewer agy|claude]   # review by hand
@@ -26,9 +28,13 @@ from pathlib import Path
 ZERO = "0" * 40
 MAX_DIFF_CHARS = 150_000
 TIMEOUT_SECONDS = 300
+# Every permission kind agy has (read from its binary): commands, files, URLs and MCP tools.
+AGY_DENY_ALL = '{"permissions":{"deny":["command(*)","read_file(*)","write_file(*)","read_url(*)","mcp(*)"]}}'
 REVIEWERS = {
-    "agy": {"name": "Antigravity", "command": ["agy", "--mode", "plan", "--print-timeout", f"{TIMEOUT_SECONDS}s"]},
-    "claude": {"name": "Claude", "command": ["claude", "-p", "--tools", ""]},
+    "agy": {"name": "Antigravity",
+            "command": ["agy", "--print-timeout", f"{TIMEOUT_SECONDS}s", "--settings", AGY_DENY_ALL]},
+    "claude": {"name": "Claude",
+               "command": ["claude", "-p", "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']},
 }
 
 PROMPT = """你是這個專案的程式碼審查者，正在檢查另一個 AI（{author}）剛寫好、準備推上 GitHub 的修改。
@@ -118,14 +124,18 @@ def report_dir():
 def run_reviewer(reviewer, prompt, env, runner=subprocess.run):
     """The review text, or None with a warning when the reviewer could not give one."""
     spec = REVIEWERS[reviewer]
-    if not shutil.which(spec["command"][0]):
+    # The full path: Windows runs a found agy.cmd / claude.cmd only when named with its extension.
+    exe = shutil.which(spec["command"][0])
+    if not exe:
         return None, f"找不到 {spec['command'][0]}，跳過 {spec['name']} 審查"
     child_env = dict(env, CROSS_REVIEW_RUNNING="1")
     try:
-        result = runner(spec["command"], input=prompt, capture_output=True, text=True, encoding="utf-8",
-                        errors="replace", timeout=TIMEOUT_SECONDS + 30, env=child_env)
+        result = runner([exe, *spec["command"][1:]], input=prompt, capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=TIMEOUT_SECONDS + 30, env=child_env)
     except subprocess.TimeoutExpired:
         return None, f"{spec['name']} 超過 {TIMEOUT_SECONDS} 秒沒回，這次跳過"
+    except OSError as error:
+        return None, f"{spec['name']} 啟動失敗：{error}"
     text = (result.stdout or "").strip()
     if result.returncode != 0 or not text:
         detail = (result.stderr or text or "").strip().splitlines()[-1:] or ["沒有輸出"]
@@ -140,9 +150,10 @@ def review(base, tip, reviewer, env, out=print, runner=subprocess.run):
     if not diff:
         out(f"[互審] {tip[:7]} 沒有程式改動，跳過")
         return None
-    saved = report_dir() / f"{tip[:12]}-{reviewer}.md"
+    # Keyed on the whole range: the same tip pushed with an older base has more to review.
+    saved = report_dir() / f"{base[:12]}-{tip[:12]}-{reviewer}.md"
     if saved.exists():
-        out(f"[互審] {tip[:7]} 已經審過，以下是上次 {name} 的意見（{saved}）：")
+        out(f"[互審] {base[:7]}..{tip[:7]} 已經審過，以下是上次 {name} 的意見（{saved}）：")
         out(saved.read_text(encoding="utf-8"))
         return saved
     log = git("log", "--no-color", "--format=%h %s%n%b", f"{base}..{tip}")
@@ -199,7 +210,10 @@ def main(argv=None, env=None, stdin=None):
             return 0
         lines = (stdin if stdin is not None else sys.stdin).read().splitlines()
         for base, tip in ranges_from_pre_push(lines, lambda sha: default_base(sha, args.remote)):
-            review(base, tip, reviewer, env)
+            try:  # one branch failing must not leave the other pushed branches unreviewed
+                review(base, tip, reviewer, env)
+            except Exception as error:
+                print(f"[互審] 警告：{tip[:7]} 審查出錯，這次跳過（{error}）")
     except Exception as error:  # the review must never stop a push
         print(f"[互審] 警告：審查出錯，這次跳過（{error}）")
     return 0

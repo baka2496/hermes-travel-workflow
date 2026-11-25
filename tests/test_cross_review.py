@@ -6,6 +6,7 @@ fails a push, and nothing is reviewed twice or starts a loop.
 """
 import importlib.util
 import io
+import json
 import os
 import subprocess
 import tempfile
@@ -80,17 +81,36 @@ def fake_run(stdout="結論：沒問題", returncode=0, stderr=""):
 
 
 class RunReviewerTests(unittest.TestCase):
-    def test_reviewers_get_no_tools(self):
-        self.assertEqual(cross_review.REVIEWERS["claude"]["command"][-2:], ["--tools", ""])
-        self.assertIn("plan", cross_review.REVIEWERS["agy"]["command"])
+    def test_claude_reviewer_has_no_tools_and_no_mcp(self):
+        # 2026-11-25: with only --tools "" Claude still offered AgentCAD's MCP Python to write files.
+        command = cross_review.REVIEWERS["claude"]["command"]
+        self.assertEqual(command[command.index("--tools") + 1], "")
+        self.assertIn("--strict-mcp-config", command)
+        self.assertEqual(json.loads(command[command.index("--mcp-config") + 1]), {"mcpServers": {}})
 
-    def test_review_runs_with_the_no_loop_flag_and_prompt_on_stdin(self):
+    def test_agy_reviewer_is_denied_every_tool_kind(self):
+        # 2026-11-25: agy's default headless run wrote a file; plan mode is only a habit, not a lock.
+        command = cross_review.REVIEWERS["agy"]["command"]
+        self.assertNotIn("--mode", command)
+        deny = json.loads(command[command.index("--settings") + 1])["permissions"]["deny"]
+        self.assertEqual(set(deny), {"command(*)", "read_file(*)", "write_file(*)", "read_url(*)", "mcp(*)"})
+
+    def test_review_runs_found_path_with_the_no_loop_flag_and_prompt_on_stdin(self):
         runner, calls = fake_run()
-        with mock.patch.object(cross_review.shutil, "which", return_value="agy"):
+        with mock.patch.object(cross_review.shutil, "which", return_value=r"C:\bin\agy.cmd"):
             text, warning = cross_review.run_reviewer("agy", "PROMPT", {"CLAUDECODE": "1"}, runner)
         self.assertEqual((text, warning), ("結論：沒問題", None))
+        self.assertEqual(calls[0][0][0], r"C:\bin\agy.cmd", "a .cmd wrapper only starts by its full name")
         self.assertEqual(calls[0][1]["input"], "PROMPT")
         self.assertEqual(calls[0][1]["env"]["CROSS_REVIEW_RUNNING"], "1")
+
+    def test_reviewer_that_cannot_start_only_warns(self):
+        def cannot_start(command, **kwargs):
+            raise FileNotFoundError(command[0])
+        with mock.patch.object(cross_review.shutil, "which", return_value="agy"):
+            text, warning = cross_review.run_reviewer("agy", "p", {}, cannot_start)
+        self.assertIsNone(text)
+        self.assertIn("啟動失敗", warning)
 
     def test_missing_failed_or_slow_reviewer_only_warns(self):
         with mock.patch.object(cross_review.shutil, "which", return_value=None):
@@ -127,6 +147,19 @@ class ReviewInRepoTests(unittest.TestCase):
             saved = cross_review.review(self.base, self.tip, "agy", {}, out.append, runner)
         return saved, "\n".join(out)
 
+    def test_same_tip_with_an_older_base_is_reviewed_again(self):
+        runner, calls = fake_run()
+        self.run_review(runner)
+        Path("b.txt").write_text("三\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], check=True)
+        subprocess.run(["git", "commit", "-qm", "加三"], check=True)
+        middle, self.tip = self.tip, cross_review.git("rev-parse", "HEAD")
+        out = []
+        with mock.patch.object(cross_review.shutil, "which", return_value="agy"):
+            cross_review.review(middle, self.tip, "agy", {}, out.append, runner)
+            cross_review.review(self.base, self.tip, "agy", {}, out.append, runner)
+        self.assertEqual(len(calls), 3, "a wider range is not mistaken for one already reviewed")
+
     def test_review_is_printed_saved_and_not_repeated(self):
         runner, calls = fake_run("結論：有 1 個問題\n[重要] a.txt:1 — 錯")
         saved, out = self.run_review(runner)
@@ -158,6 +191,12 @@ class WiringTests(unittest.TestCase):
         # the review silently never ran. The hook must check that each Python really starts.
         self.assertIn('"$python" -c ""', hook)
         self.assertNotIn("command -v", hook)
+
+    def test_hook_is_executable_in_git(self):
+        # Git on macOS/Linux silently skips a hook without the execute bit (Antigravity, 2026-11-25).
+        mode = subprocess.run(["git", "ls-files", "-s", ".githooks/pre-push"], cwd=REPO, capture_output=True,
+                              text=True, check=True).stdout.split()[0]
+        self.assertEqual(mode, "100755")
 
     def test_both_ais_get_the_rules(self):
         # Antigravity reads AGENTS.md; Claude Code reads CLAUDE.md, which imports it.
