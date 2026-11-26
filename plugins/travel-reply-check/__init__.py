@@ -808,6 +808,29 @@ def not_cheaper(text, session_id, home):
     return NOT_CHEAPER.format(floor=money.money(floor), kind=kind)
 
 
+# 2026-11-27 (exam, overnight-budget): a patch of opportunities.json with an old_string remembered from an
+# earlier version failed, and Hermes put 「⚠️ 檔案變更驗證器…」 with the file's path under the owner's reply.
+# A blocked call is not a failed edit (Hermes feeds only calls that ran to that footer), so a patch whose
+# old_string is not in the file is stopped before it runs.
+STALE_PATCH = ("要換掉的那段（old_string）不在檔案現在的內容裡：檔案已經變了。"
+               "先用 read_file 讀現在的內容，照讀到的寫 old_string 再改；改不了就不改，不要在回覆裡提。")
+
+
+def stale_patch_problem(tool_name, args):
+    if tool_name != "patch":
+        return None
+    old, path = args.get("old_string"), str(args.get("path") or "").strip()
+    if not isinstance(old, str) or not old or not path:
+        return None
+    try:
+        text = Path(path).read_text(encoding="utf-8-sig")
+    except (OSError, ValueError):
+        return None  # a file this cannot read is left to the tool
+    # Whitespace ignored: the patch tool matches loosely, and an edit it would take must not be stopped here.
+    squash = lambda s: re.sub(r"\s+", "", s)  # noqa: E731
+    return None if squash(old) in squash(text) else STALE_PATCH
+
+
 def pre_tool_call(tool_name, args, task_id="", session_id="", turn_id="", **kwargs):
     if isinstance(args, dict):
         try:
@@ -832,7 +855,7 @@ def pre_tool_call(tool_name, args, task_id="", session_id="", turn_id="", **kwar
             VIEWED.setdefault(session_id, set()).add(photo_key(args.get("image_url")))
     if tool_name in WRITES and isinstance(args, dict):
         try:
-            why = record_edit_problem(tool_name, args)
+            why = record_edit_problem(tool_name, args) or stale_patch_problem(tool_name, args)
         except Exception:  # a broken check must never stop the bot
             return None
         return {"action": "block", "message": why} if why else None

@@ -342,6 +342,22 @@ class CheckersAreOffLimitsTests(unittest.TestCase):
         result = check.pre_tool_call(tool, args, session_id="s1")
         return bool(result) and result.get("action") == "block" and "檢查結果就是結論" in result["message"]
 
+    def test_a_patch_of_text_no_longer_in_the_file_is_stopped(self):
+        # 2026-11-27 (exam): a failed patch put Hermes's 「⚠️ 檔案變更驗證器」 and a file path under the reply.
+        folder = Path(scratch.new_dir("hermes-stale-patch-"))
+        target = folder / "opportunities.json"
+        target.write_text('{\n  "schema_version": 1,\n  "opportunities": []\n}', encoding="utf-8")
+        def run(old):
+            return check.pre_tool_call("patch", {"path": str(target), "old_string": old, "new_string": "x"},
+                                       session_id="s1")
+        result = run('   "estimated_total": {\n    "min": 3360')
+        self.assertEqual((result or {}).get("action"), "block")
+        self.assertIn("read_file", result["message"])
+        self.assertIsNone(run('"opportunities": []'))
+        self.assertIsNone(run('"schema_version":   1,\r\n  "opportunities"'))  # whitespace differs: the tool matches it
+        self.assertIsNone(check.pre_tool_call("patch", {"path": str(folder / "none.json"), "old_string": "a",
+                                                        "new_string": "b"}, session_id="s1"))  # unreadable: left alone
+
     def test_the_place_pool_and_the_recommendation_log_are_written_by_their_scripts_only(self):
         for name in ("places.json", "recommended.json"):
             result = check.pre_tool_call("write_file", {"path": f"{self.TOOLS}/{name}", "content": "[]"}, session_id="s1")
