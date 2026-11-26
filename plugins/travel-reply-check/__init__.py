@@ -694,17 +694,35 @@ def offered(session_id, home):
                     continue
                 if any(text.startswith(SCHEDULED) for _, text in said):
                     return True
-                owner = [i for i, text in said if text and not text.startswith(sessions.NOT_THE_USER)]
+                # A compaction repeats the owner's message: a run of the same text is one message, its first id.
+                owner, last_text = [], None
+                for i, text in said:
+                    if text and not text.startswith(sessions.NOT_THE_USER):
+                        if text != last_text:
+                            owner.append(i)
+                        last_text = text
                 since = owner[-2] if len(owner) > 1 else 0
-                ids = [call_id for (value,) in db.execute(
-                           "SELECT tool_calls FROM messages WHERE session_id = ? AND id > ? AND tool_calls LIKE ?",
-                           (session_id, since, "%format-plan%"))
-                       for call_id, _, arguments in sessions.calls(value) if "--package" in arguments]
-                for call_id in ids:
-                    row = db.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'tool' AND "
-                                     "tool_call_id = ?", (session_id, call_id)).fetchone()
-                    if row and SHOWN.search(sessions.result_text(row[0])):
-                        return True
+                latest = owner[-1] if owner else 0
+                # 2026-11-26 (exam, jiaoxi-budget): three packages printed in this round but never sent, then one
+                # plan went out. Printed is not shown: they count when sent in the round before (the owner picks ②),
+                # or put in a button question this round that the owner answered.
+                answered = None
+                for (value, at) in db.execute(
+                        "SELECT tool_calls, id FROM messages WHERE session_id = ? AND id > ? AND tool_calls LIKE ?",
+                        (session_id, since, "%format-plan%")):
+                    for call_id, _, arguments in sessions.calls(value):
+                        if "--package" not in arguments:
+                            continue
+                        row = db.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'tool' AND "
+                                         "tool_call_id = ?", (session_id, call_id)).fetchone()
+                        if not (row and SHOWN.search(sessions.result_text(row[0]))):
+                            continue
+                        if at < latest:
+                            return True
+                        if answered is None:
+                            answered = answered_since_owner(home, session_id)
+                        if answered:
+                            return True
                 return False
         except sqlite3.Error:
             continue

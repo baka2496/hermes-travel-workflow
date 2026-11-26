@@ -353,7 +353,8 @@ def run(args):
             problems = grade(question, said, reply, made, elapsed, error, earlier=replies[:-1],
                              hide_unconfirmed=hide_unconfirmed(folder))
             results.append({"id": question["id"], "said": said, "reply": reply, "session_id": session_id,
-                            "elapsed": elapsed, "problems": problems})
+                            "elapsed": elapsed, "problems": problems,
+                            "plans": made})  # format-plan.py's outputs, to check a grade afterwards
             print(f"{'✅' if not problems else '❌'} {question['id']}（{round(elapsed / 60, 1)} 分）"
                   + "".join(f"\n   - {p}" for p in problems), flush=True)
     finally:

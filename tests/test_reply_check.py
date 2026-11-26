@@ -726,8 +726,21 @@ class OwnerRequestTests(unittest.TestCase):
         # After three were shown (the owner picks ②), the one plan's full detail is fine.
         shown = "11/28 礁溪 2人｜3 個方案\n① 甲｜雙人湯屋\n總計 NT$300"
         home = home_with(shown, tool="format-plan.py --package")
-        self.assertTrue(check.offered("s1", home))
+        # Printed in this round is not shown (jiaoxi-budget, 2026-11-26: three printed, one plan sent).
+        self.assertFalse(check.offered("s1", home))
         self.assertFalse(check.offered("s1", home_with()))
+        # Put in a button question this round and answered: shown.
+        asked = home_with(shown, tool="format-plan.py --package")
+        db = sqlite3.connect(asked / "profiles" / "travel-commander" / "state.db")
+        db.execute("INSERT INTO messages (session_id, role, content, tool_name) VALUES ('s1', 'tool', ?, 'clarify')",
+                   (json.dumps({"responses": [{"user_response": "①"}]}),))
+        db.commit()
+        db.close()
+        self.assertTrue(check.offered("s1", asked))
+        self.say(home, "我選①")
+        self.assertTrue(check.offered("s1", home))
+        # A compaction repeating 「我選①」 is still the same round.
+        self.say(home, "[CONTEXT COMPACTION — REFERENCE ONLY] summary")
         self.say(home, "我選①")
         self.assertTrue(check.offered("s1", home))
         # A new trip later in the same chat starts over: three first (Antigravity's review).
