@@ -267,7 +267,7 @@ class ButtonBudgetTests(unittest.TestCase):
 
     def test_format_plan_gets_no_budget_the_owner_never_gave(self):
         command = ('"C:/Python313/python.exe" "C:/x/shared/travel-workflow/format-plan.py" --header "12/07 烏來 2人" '
-                   '--budget 2000 --item "湯屋=600"')
+                   '--budget 2000 --package --item "湯屋=600"')
         self.assertEqual(terminal(hermes_home("我想出去玩"), command, session="tg")["action"], "block")
         self.assertIsNone(terminal(hermes_home("我想出去玩"), command.replace("--budget 2000 ", ""), session="tg"))
 

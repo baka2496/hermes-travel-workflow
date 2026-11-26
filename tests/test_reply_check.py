@@ -607,6 +607,14 @@ class PackageReplyTests(unittest.TestCase):
         self.assertEqual(self.transform(single, made.replace("總計 NT$800", "・總計：NT$250")), check.HAND_WRITTEN)
         self.assertEqual(self.transform(single, made.replace("總計 NT$800", "總計 NT$80")), check.HAND_WRITTEN)
         self.assertNotEqual(self.transform(home, "交通：開車約 50 分鐘，你要哪天出發？"), check.HAND_WRITTEN)
+        # 「1. 源來如池：雙人湯屋 300元」: a plain numbered list with prices is a package too.
+        self.assertEqual(self.transform(home, "1. 源來如池：雙人湯屋 300元\n2. 四季溫泉：雙人湯屋 300元"),
+                         check.HAND_WRITTEN)
+        self.assertNotEqual(self.transform(home, "要哪一個？\n1. 11/27–11/28 兩天一夜\n2. 11/28–11/29 兩天一夜"),
+                            check.HAND_WRITTEN)
+        # Blank lines between format-plan.py's packages are taken out (exam: 15 phone lines of 13).
+        spaced = PACKAGES_OUT.replace("\n② ", "\n\n② ").replace("\n③ ", "\n\n③ ")
+        self.assertNotIn("\n\n", self.transform(home, spaced) or spaced)
         # A numbered list without prices is not a package (Antigravity's review), even with no format-plan run.
         steps = "要幫你訂之前想確認兩件事：\n① 出發日是 12/6 還是 12/13？\n② 兩個人還是三個人？"
         self.assertNotEqual(self.transform(home_with("", tool="calendar-check.py"), steps), check.HAND_WRITTEN)
@@ -616,7 +624,8 @@ class PackageReplyTests(unittest.TestCase):
 
 class OwnerRequestTests(unittest.TestCase):
     """2026-11-26 (exam): the role said to ask when dates disagree and to pick one when asked; now checked."""
-    PLAN = '"python" "C:/hermes/shared/travel-workflow/format-plan.py" --header x --date 2026-11-28'
+    SINGLE = '"python" "C:/hermes/shared/travel-workflow/format-plan.py" --header x --date 2026-11-28 --place a'
+    PLAN = SINGLE.replace(" --place a", " --package --place a")
 
     def run_plan(self, *said, command=PLAN, tool="terminal", answer=None, raw=None, raw_tool="clarify"):
         home = home_with()
@@ -654,7 +663,7 @@ class OwnerRequestTests(unittest.TestCase):
         self.assertIsNone(self.run_plan("11/28–11/29 兩天一夜去礁溪"))
         self.assertIsNone(self.run_plan("11/28-29 兩天一夜"))
         self.assertIsNone(self.run_plan("11/28 想去礁溪泡湯，2人"))
-        self.assertIsNone(self.run_plan("11/28 礁溪過夜和 11/29 烏來一日，你幫我挑一個"))
+        self.assertIsNone(self.run_plan("11/28 礁溪過夜和 11/29 烏來一日，你幫我挑一個", command=self.SINGLE))
         # The two choices offered are the real dates and lengths (Antigravity's review).
         self.assertIn("「11/27–11/29 三天兩夜」還是「11/27–11/28 兩天一夜」", why)
         why = self.run_plan("11/28-11/29 烏來一日遊")
@@ -681,9 +690,23 @@ class OwnerRequestTests(unittest.TestCase):
 
     def test_pick_one_gets_one_plan_not_packages(self):
         said = "11/28 礁溪過夜和 11/29 烏來一日，你幫我挑一個"
-        self.assertIn("不要加 --package", self.run_plan(said, command=self.PLAN + " --package --place a"))
-        self.assertIsNone(self.run_plan(said, command=self.PLAN + " --place a"))
-        self.assertIsNone(self.run_plan("我想出去玩", command=self.PLAN + " --package --place a"))
+        self.assertIn("不要加 --package", self.run_plan(said))
+        self.assertIsNone(self.run_plan(said, command=self.SINGLE))
+        self.assertIsNone(self.run_plan("我想出去玩"))
+
+    def test_one_plan_comes_after_three(self):
+        # 2026-11-26 (exam): 「幫我比價找最便宜的雙人湯屋，給我完整方案」 got one plan, not three to choose from.
+        said = "11/28 想去礁溪泡湯，2人，預算 2000，幫我比價找最便宜的雙人湯屋，給我完整方案"
+        self.assertIn("第一次給方案要給 3 個", self.run_plan(said, command=self.SINGLE))
+        self.assertIsNone(self.run_plan(said))
+        self.assertIsNone(self.run_plan(said, command=self.SINGLE.replace(" --place a", " --help")))
+        # The Thursday weekend job pushes one plan: a scheduled run is not the owner talking.
+        job = "[IMPORTANT: You are running as a scheduled cron job.] 挑一個完整一日遊方案"
+        self.assertIsNone(self.run_plan(job, command=self.SINGLE))
+        # After three were shown (the owner picks ②), the one plan's full detail is fine.
+        home = home_with("11/28 礁溪 2人｜3 個方案\n① 甲｜雙人湯屋\n總計 NT$300", tool="format-plan.py")
+        self.assertTrue(check.offered("s1", home))
+        self.assertFalse(check.offered("s1", home_with()))
 
 
 class NotCheaperTests(unittest.TestCase):
@@ -715,6 +738,10 @@ class NotCheaperTests(unittest.TestCase):
         self.assertIsNone(self.reply("太貴了，有沒有更便宜的", cheaper))
         self.assertIsNone(self.reply("那烏來呢", same))  # not a cheaper request
         self.assertIsNone(self.reply("太貴了", "查了幾家，沒找到更便宜的。"))  # no packages: left as written
+        # A plain numbered list at the same price (exam: 「有，礁溪有多間雙人湯屋只要 300 元」).
+        listed = ("有，礁溪有多間雙人湯屋只要 300 元（50分鐘）：\n1. 宜蘭玫瑰園民宿：雙人湯屋 300元\n📞 03-9883364\n"
+                  "2. 源來如池：雙人湯屋 300元\n📞 03-9880210\n自備毛巾即可直接現場泡，不用花到600元。")
+        self.assertIn("沒找到比上次最便宜的 NT$300", self.reply("一個小時六百也太貴，有沒有更便宜的湯屋", listed))
         # An older, cheaper trip in the same chat does not count, only the last plan (Antigravity's review).
         hotel = "11/28 礁溪 2人｜3 個方案\n① 乙飯店｜雙人房\n總計 NT$3,200"
         self.assertIsNone(self.reply("太貴了，有沒有更便宜的", hotel, "NT$300", "NT$5,000"))

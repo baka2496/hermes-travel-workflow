@@ -632,9 +632,25 @@ def request_problem(tool_name, args, session_id, home):
     why = dates_problem(latest)
     if why and not answered_since_owner(home, session_id):
         return why
-    if "format-plan" in command and PICK_ONE.search(latest) and re.search(r"(?:^|\s)--package(?:\s|$)", command):
+    packages = bool(re.search(r"(?:^|\s)--package(?:\s|$)", command))
+    if "format-plan" in command and PICK_ONE.search(latest) and packages:
         return PICK_ONE_PROBLEM
+    if "format-plan" in command and not packages and " --help" not in command and not PICK_ONE.search(latest) \
+            and not offered(session_id, home):
+        return ONE_TOO_SOON_PROBLEM
     return None
+
+
+# 2026-11-26 (exam): 「幫我比價找最便宜的雙人湯屋，給我完整方案」 got one plan; the owner's rule is three to choose
+# from. One plan's full detail comes after the three (the owner picked one), or when asked to pick.
+ONE_TOO_SOON_PROBLEM = ("第一次給方案要給 3 個（加 --package，最便宜的排第一）：使用者還沒從三個裡選。"
+                        "選了一個、或要你幫忙挑一個時，才用不加 --package 出那一個的完整明細。")
+
+
+def offered(session_id, home):
+    """True when a format-plan.py --package run already showed packages in this conversation."""
+    printed = tool_outputs(session_id, home, "format-plan.py")
+    return printed is UNKNOWN or any(PACKAGE_LINE.search(line) for o in printed for line in o.splitlines())
 
 
 # 2026-11-26 (exam): told 「太貴，有沒有更便宜的」, the bot sent the same NT$300 places again as 「平價」. The role's
@@ -677,6 +693,8 @@ TOTAL_FIRST = re.compile(rf"^總計 ({AMOUNT})", re.M)
 def not_cheaper(text, session_id, home):
     """The honest 「沒找到」 when the owner asked for cheaper and every package is not, else None."""
     totals = [int(re.sub(r"\D", "", a)) for a in TOTAL_FIRST.findall(text)]
+    if not totals and package_heads(text):  # 「1. 源來如池：雙人湯屋 300元」: the prices written in the list
+        totals = [int(re.sub(r"\D", "", a)) for a in money.PRICE.findall(text)]
     if not totals:
         return None
     said = sessions.owner_words(home, session_id)
@@ -1066,7 +1084,8 @@ def without_unsaid_budgets(text, session_id, home):
 
 # 2026-11-26 (exam): refused by format-plan.py, the bot wrote 「方案 1｜和平島…」 and 「① 雲頂溫泉行館…」 by
 # hand, with prices nobody checked. A package goes out only as format-plan.py printed it.
-PACKAGE_LINE = re.compile(r"^\s*(?:[①②③④⑤]|方案\s*[1-5一二三四五][｜|：:])")
+# 「1. 源來如池：雙人湯屋 300元」 too (exam, 2026-11-26: prices nobody checked, written as a plain numbered list).
+PACKAGE_LINE = re.compile(r"^\s*(?:[①②③④⑤]|方案\s*[1-5一二三四五][｜|：:]|[1-5][.、．]\s*\S)")
 HAND_WRITTEN = ("這次沒組成能直接訂的方案：有幾個地方的價格沒能在官網確認，所以先不給你。"
                 "回我一聲，我就換別的地方重查。")
 
@@ -1117,11 +1136,11 @@ def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
                 and repeats(response_text, pending["question"]):
             return timeout_reply(response_text, pending)
         home = os.environ.get("HERMES_HOME") or Path.home() / ".hermes"
-        if hand_written(response_text, session_id, home):
-            return HAND_WRITTEN
-        honest = not_cheaper(response_text, session_id, home)
+        honest = not_cheaper(response_text, session_id, home)  # first: for 「太貴」 the honest answer is this one
         if honest:
             return honest
+        if hand_written(response_text, session_id, home):
+            return HAND_WRITTEN
         fixed = without_unseen_photos(response_text, session_id)
         fixed = without_unsaid_budgets(fixed, session_id, home)
         hide = confirmed_only(home)
@@ -1133,6 +1152,8 @@ def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
             if hide:  # every package of the latest run is printed, not only its first
                 latest = ["\n".join(runs[-1])] if runs else []
                 fixed = without_unconfirmed(fixed, latest, reviewed_card_amounts(session_id, home))
+        if package_heads(fixed):  # 2026-11-26 (exam): blank lines between packages made 15 phone lines of 13
+            fixed = re.sub(r"\n[ \t]*(?:\n[ \t]*)+", "\n", fixed).strip("\n")
         return fixed if fixed != response_text else None
     except Exception:
         return None

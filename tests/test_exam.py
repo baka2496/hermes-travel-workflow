@@ -81,6 +81,11 @@ class GradeTests(unittest.TestCase):
         bare = PLAN.replace(" 📞 03-2", "")
         self.assertTrue(any("incomplete_package" in p for p in self.grade(bare, outputs=(bare,))))
         self.assertEqual(self.grade(bare, outputs=(bare,), hide_unconfirmed=True), [])
+        one = dict(PACKAGES, expect="one", place=None, budget=None)
+        plain = ("11/28 礁溪 2人\n總計 NT$300\n📍 [Google 地圖・查空房](https://maps.example/)\n"
+                 "🏨 [官網訂房](https://a.example/)\n📞 03-1")  # 「照片：未取得」 dropped
+        self.assertTrue(any("missing_photo" in p for p in self.grade(plain, outputs=(plain,), question=one)))
+        self.assertEqual(self.grade(plain, outputs=(plain,), question=one, hide_unconfirmed=True), [])
         no_link = PLAN.replace("🏨 [官網](https://b.example/) 📞 03-2", "")
         self.assertTrue(any("incomplete_package" in p for p in self.grade(no_link, outputs=(no_link,),
                                                                          hide_unconfirmed=True)))
