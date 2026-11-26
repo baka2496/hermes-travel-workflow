@@ -602,6 +602,51 @@ class PackageReplyTests(unittest.TestCase):
         self.assertIsNone(self.transform(home, "好的，幫你記下來了"))
 
 
+class OwnerRequestTests(unittest.TestCase):
+    """2026-11-26 (exam): the role said to ask when dates disagree and to pick one when asked; now checked."""
+    PLAN = '"python" "C:/hermes/shared/travel-workflow/format-plan.py" --header x --date 2026-11-28'
+
+    def run_plan(self, *said, command=PLAN):
+        home = home_with()
+        db = sqlite3.connect(home / "profiles" / "travel-commander" / "state.db")
+        for text in said:
+            db.execute("INSERT INTO messages (session_id, role, content) VALUES ('s1', 'user', ?)", (text,))
+        db.commit()
+        db.close()
+        old = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(home)
+        try:
+            result = check.pre_tool_call("terminal", {"command": command}, session_id="s1")
+        finally:
+            if old is None:
+                del os.environ["HERMES_HOME"]
+            else:
+                os.environ["HERMES_HOME"] = old
+        return result["message"] if result and result.get("action") == "block" else None
+
+    def test_dates_that_disagree_with_the_trip_length_are_asked_first(self):
+        why = self.run_plan("11/27–11/29 兩天一夜去礁溪，兩個人預算 NT$8,000，幫我排方案")
+        self.assertIn("11/27–11/29 是 2 晚", why)
+        self.assertIn("clarify", why)
+        self.assertIn("2 晚", self.run_plan("12/5-12/7 二天一夜"))
+        self.assertIsNone(self.run_plan("12/30~1/1 三天兩夜"))  # over the new year: two nights
+        self.assertIsNone(self.run_plan("11/28–11/29 兩天一夜去礁溪"))
+        self.assertIsNone(self.run_plan("11/28-29 兩天一夜"))
+        self.assertIsNone(self.run_plan("11/28 想去礁溪泡湯，2人"))
+        self.assertIsNone(self.run_plan("11/28 礁溪過夜和 11/29 烏來一日，你幫我挑一個"))
+        self.assertIn("是 1 晚", self.run_plan("11/28-11/29 烏來一日遊"))
+        # Answered: the owner's latest words decide, not the first message.
+        self.assertIsNone(self.run_plan("11/27–11/29 兩天一夜去礁溪", "11/28–11/29 兩天一夜"))
+        # Other tools still run (calendar-check, page-prices) while the bot asks.
+        self.assertIsNone(self.run_plan("11/27–11/29 兩天一夜", command='"python" "…/page-prices.py" https://a'))
+
+    def test_pick_one_gets_one_plan_not_packages(self):
+        said = "11/28 礁溪過夜和 11/29 烏來一日，你幫我挑一個"
+        self.assertIn("不要加 --package", self.run_plan(said, command=self.PLAN + " --package --place a"))
+        self.assertIsNone(self.run_plan(said, command=self.PLAN + " --place a"))
+        self.assertIsNone(self.run_plan("我想出去玩", command=self.PLAN + " --package --place a"))
+
+
 class KanbanCommandTests(unittest.TestCase):
     """Rules the commander's role spelled out in prose, now checked (2026-11-26)."""
 

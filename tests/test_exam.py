@@ -45,7 +45,7 @@ class DatesTests(unittest.TestCase):
         for q in exam.questions():
             self.assertNotIn(q["id"], seen)
             seen.add(q["id"])
-            self.assertIn(q["expect"], ("packages", "ask_dates"), q["id"])
+            self.assertIn(q["expect"], ("packages", "ask_dates", "one", "cheaper"), q["id"])
             self.assertIn(q["profile"], ("project-manager", "trip"), q["id"])
             self.assertTrue(q["turns"], q["id"])
             self.assertNotRegex(json.dumps(q, ensure_ascii=False), r"\d{1,2}/\d{1,2}", "use {週六} so it never goes stale")
@@ -75,6 +75,26 @@ class GradeTests(unittest.TestCase):
         # 2026-11-26: three packages were three rooms of one 龍山溫泉旅館.
         twin = PLAN.replace("② 乙湯屋", "② 甲湯屋")
         self.assertIn("「甲湯屋」重複：三個方案要三個不同的地方", self.grade(twin, outputs=(twin,)))
+
+    def test_pick_one_wants_one_full_plan(self):
+        # 2026-11-26 (exam): 「你幫我挑一個」 got two packages.
+        one = dict(PACKAGES, expect="one", place=None, budget=None)
+        single = "11/29 烏來 2人\n總計 NT$800\n照片：未取得\n🏨 [官網](https://a.example/) 📞 03-1"
+        self.assertEqual(self.grade(single, outputs=(single,), question=one), [])
+        self.assertIn("要它挑一個，卻給了 3 個方案", self.grade(PLAN, question=one))
+        self.assertIn("總價不是 format-plan.py 算的", self.grade(single, outputs=(), question=one))
+        self.assertIn("沒有總價", self.grade("烏來比較好", outputs=(), question=one))
+
+    def test_cheaper_wants_cheaper_packages_or_an_honest_not_found(self):
+        # 2026-11-26 (exam): the first reply's cheapest was NT$300 and nothing cheaper was found; saying so is right.
+        cheaper = dict(PACKAGES, expect="cheaper")
+        honest = "玫瑰園的雙人湯屋每間 NT$300，查了礁溪幾家官網，沒有找到更便宜的。"
+        self.assertEqual(self.grade(honest, outputs=(), question=cheaper, earlier=(PLAN,)), [])
+        self.assertIn("沒有更便宜的方案，也沒說沒找到",
+                      self.grade("好的，我再找找", outputs=(), question=cheaper, earlier=(PLAN,)))
+        self.assertIn("沒有比原本最便宜的 NT$1,200 更便宜", self.grade(PLAN, question=cheaper, earlier=(PLAN,)))
+        less = PLAN.replace("NT$1,200", "NT$900").replace("NT$1,500", "NT$950").replace("NT$1,800", "NT$1,000")
+        self.assertEqual(self.grade(less, outputs=(less,), question=cheaper, earlier=(PLAN,)), [])
 
     def test_no_packages_or_wrong_place_fail(self):
         self.assertIn("沒有給 ①②③ 方案", self.grade("請問想去哪裡？", outputs=()))

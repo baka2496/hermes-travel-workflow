@@ -529,11 +529,82 @@ def places_problem(args):
     return PLACES_PROBLEM.format(need=MIN_PLACES, have=len(places), places="、".join(places) or "無", dateonly=dateonly)
 
 
+# 2026-11-26 (exam): 「11/27–11/29 兩天一夜」 is two nights, not one; the bot quietly booked 11/28–29. The role
+# said to ask when dates disagree; now a plan waits until the owner says which.
+CHINESE_NUMBER = {"一": 1, "二": 2, "兩": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7}
+DATE_RANGE = re.compile(r"(\d{1,2})/(\d{1,2})\s*(?:[–—~～\-]|到|至)\s*(?:(\d{1,2})/)?(\d{1,2})(?![\d/])")
+DAYS_NIGHTS = re.compile(r"([一二兩三四五六七\d])\s*天\s*([一二兩三四五六\d])\s*夜")
+DAY_TRIP = re.compile(r"一日遊|當天來回|一日")
+DATES_PROBLEM = ("使用者寫的 {span} 是 {nights} 晚，可是又說「{said}」，兩個對不上：先用 clarify 問要哪幾天"
+                 "（例如「{span} 三天兩夜」或「{short} 兩天一夜」），不要自己挑日期，問完再組方案。")
+
+
+def number(text):
+    return int(text) if text.isdigit() else CHINESE_NUMBER.get(text, 0)
+
+
+def dates_problem(text):
+    """Why the dates and the trip length in `text` disagree, or None."""
+    import datetime as dt
+    span = DATE_RANGE.search(text)
+    if not span:
+        return None
+    month, day, end_month, end_day = (int(g) if g else None for g in span.groups())
+    end_month = end_month or month
+    try:
+        year = dt.date.today().year
+        start = dt.date(year, month, day)
+        end = dt.date(year + (end_month < month), end_month, end_day)
+    except ValueError:
+        return None
+    nights = (end - start).days
+    stated = DAYS_NIGHTS.search(text)
+    if stated:
+        want, said = number(stated.group(2)), stated.group(0)
+    elif DAY_TRIP.search(text) and nights:
+        want, said = 0, DAY_TRIP.search(text).group(0)
+    else:
+        return None
+    if not 0 <= nights <= 14 or nights == want:
+        return None
+    short = f"{start.month}/{start.day}–{(start + dt.timedelta(days=want)).day}"
+    return DATES_PROBLEM.format(span=span.group(0), nights=nights, said=said, short=short)
+
+
+# 2026-11-26 (exam): 「礁溪過夜和烏來一日，你幫我挑一個」 got two packages and a long sentence. The owner asked
+# for one choice: one full plan, the reason on its own short line.
+PICK_ONE = re.compile(r"(?:幫我|替我|你)\s*(?:挑|選)\s*一\s*[個間家處]|(?:挑|選)\s*一\s*[個間家處]\s*給我")
+PICK_ONE_PROBLEM = ("使用者要你幫忙挑一個：不要加 --package。挑最合適的一個，用 format-plan.py 不加 --package 出它的"
+                    "完整明細（同樣的 --item、--place、--official、--phone），為什麼選它寫成一句短的 --note。")
+
+
+def request_problem(tool_name, args, session_id, home):
+    """Why this format-plan.py run does not answer what the owner just asked, or None."""
+    if tool_name != "terminal" or "format-plan" not in str(args.get("command") or ""):
+        return None
+    said = sessions.owner_words(home, session_id) if session_id else None
+    if not said:
+        return None
+    latest = said[-1]
+    why = dates_problem(latest)
+    if why:
+        return why
+    if PICK_ONE.search(latest) and re.search(r"(?:^|\s)--package(?:\s|$)", str(args.get("command"))):
+        return PICK_ONE_PROBLEM
+    return None
+
+
 def pre_tool_call(tool_name, args, task_id="", session_id="", turn_id="", **kwargs):
     if isinstance(args, dict):
         try:
             why = tamper_problem(tool_name, args) or kanban_problem(tool_name, args)
         except Exception:
+            why = None
+        if why:
+            return {"action": "block", "message": why}
+        try:
+            why = request_problem(tool_name, args, session_id, os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+        except Exception:  # a broken check must never stop the bot
             why = None
         if why:
             return {"action": "block", "message": why}

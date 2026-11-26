@@ -17,6 +17,8 @@
   （方案標題和總計那行原樣出現在 format-plan.py 的輸出裡），有指定地點就要是那裡；
   有說預算時，最便宜的超出預算要講「超出」
 - ask_dates：日期和天數對不上，先講清楚再問，不能直接出方案
+- one：「你幫我挑一個」只給一個方案的完整明細，總計那行是 format-plan.py 算的
+- cheaper：嫌貴時，給比上一則最便宜的還便宜的方案；找不到就直說「沒找到」並寫出價格
 """
 import argparse
 import datetime as dt
@@ -39,6 +41,7 @@ KEPT_FILES = ("opportunities.json", "preferences.json", "recommended.json")
 FORMAT_PLAN = "format-plan.py"
 HOT_SPRING = re.compile(r"溫泉|湯屋|泡湯|湯$|湯｜|湯\s")
 OVER_BUDGET = re.compile(r"超出|超過|超支")
+NOT_FOUND = re.compile(r"沒(?:有)?找到|找不到|沒有更便宜|沒查到")
 ASKED_DATES = re.compile(r"對不上|不一致|矛盾|其實是|三天兩夜|兩晚|[23]\s*晚")
 
 
@@ -88,11 +91,11 @@ def package_totals(block):
     return []
 
 
-def grade(question, said, reply, tool_outputs, elapsed=0, error=""):
+def grade(question, said, reply, tool_outputs, elapsed=0, error="", earlier=()):
     """Why this answer fails the question (Traditional Chinese, for the owner), or [] when it passes.
 
     `said` is what the owner typed (the question's turns), `tool_outputs` the text of every
-    format-plan.py result in the conversation."""
+    format-plan.py result in the conversation, `earlier` the replies before the last one."""
     if error:
         return [f"出錯：{error[:120]}"]
     if not reply.strip():
@@ -113,6 +116,26 @@ def grade(question, said, reply, tool_outputs, elapsed=0, error=""):
         if not ASKED_DATES.search(reply):
             problems.append("沒講日期和天數對不上")
         return problems
+    made = "\n".join(tool_outputs)
+    if question["expect"] == "one":  # 「你幫我挑一個」: one full plan, not three to choose from
+        if len(blocks) > 1:
+            problems.append(f"要它挑一個，卻給了 {len(blocks)} 個方案")
+        totals = [line for line in reply.splitlines() if line.startswith("總計")]
+        if not totals:
+            problems.append("沒有總價")
+        elif not all(line in made for line in totals):
+            problems.append("總價不是 format-plan.py 算的")
+        return problems
+    if question["expect"] == "cheaper":
+        # 「太貴，有沒有更便宜的」: cheaper packages, or an honest 「沒找到」 that gives the price (the role's rule).
+        before = [min(t) for r in earlier for t in map(package_totals, phone_check.package_blocks(r)) if t]
+        if not blocks:
+            if NOT_FOUND.search(reply) and travel_money.PRICE.search(reply):
+                return problems
+            return problems + ["沒有更便宜的方案，也沒說沒找到"]
+        totals = [min(t) for t in map(package_totals, blocks) if t]
+        if before and totals and min(totals) >= min(before):
+            problems.append(f"沒有比原本最便宜的 {travel_money.money(min(before))} 更便宜")
     if not blocks:
         return problems + ["沒有給 ①②③ 方案"]
     if len(blocks) < phone_check.PACKAGES and not phone_check.FEW_FIT.search(reply):
@@ -126,7 +149,6 @@ def grade(question, said, reply, tool_outputs, elapsed=0, error=""):
     # 2026-11-26: 「為甚麼只有溫泉明明還有那麼多地方可以玩」. A question that names no kind of trip gets mixed kinds.
     if question.get("mixed") and len(blocks) >= 2 and all(HOT_SPRING.search(block[0]) for block in blocks):
         problems.append("沒說玩什麼，三個方案卻全是溫泉")
-    made = "\n".join(tool_outputs)
     for block in blocks:
         if block[0] not in made or not any(line.startswith("總計") and line in made for line in block):
             problems.append(f"{block[0][:12]} 不是 format-plan.py 組的")
@@ -289,14 +311,15 @@ def run(args):
     try:
         for question in picked:
             said = [fill_dates(turn, dt.date.today()) for turn in question["turns"]]
-            start, session_id, reply, error, made = time.time(), None, "", "", []
+            start, session_id, reply, error, made, replies = time.time(), None, "", "", [], []
             for turn in said:
                 reply, session_id, error, outputs = ask(question["profile"], turn, session_id)
                 made += outputs
+                replies.append(reply)
                 if error:
                     break
             elapsed = time.time() - start
-            problems = grade(question, said, reply, made, elapsed, error)
+            problems = grade(question, said, reply, made, elapsed, error, earlier=replies[:-1])
             results.append({"id": question["id"], "said": said, "reply": reply, "session_id": session_id,
                             "elapsed": elapsed, "problems": problems})
             print(f"{'✅' if not problems else '❌'} {question['id']}（{round(elapsed / 60, 1)} 分）"
