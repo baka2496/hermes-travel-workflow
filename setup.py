@@ -104,6 +104,7 @@ PACKAGE_SCRIPTS = (
     ("scripts/calendar-check.py", "shared/travel-workflow/calendar-check.py"),
     ("scripts/place-photo.py", "shared/travel-workflow/place-photo.py"),
     ("scripts/page-prices.py", "shared/travel-workflow/page-prices.py"),
+    ("scripts/places.py", "shared/travel-workflow/places.py"),
     ("skills/travel-planning/SKILL.md", "profiles/travel-commander/skills/travel-planning/SKILL.md"),
 )
 

@@ -199,22 +199,23 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("是同一個地方", err)
 
-    def test_places_recommended_lately_may_come_back_only_once(self):
+    def test_the_same_three_places_again_are_refused(self):
         # 2026-11-26 (exam): 「我想出去玩」「我想去泡溫泉」「這週末想去泡溫泉」 all got the same three places.
-        self.history("a", "b")
+        self.history("a", "b", "c")
         rc, _, err = self.run_packages(self.package("a"), self.package("b"), self.package("c"))
         self.assertEqual(rc, 1)
-        self.assertIn("最近 14 天推過：甲溫泉、乙山莊", err)
-        self.history("a")
+        self.assertIn("最近 14 天三個都推過：甲溫泉、乙山莊、丙旅館", err)
+        # Two repeats pass: for 「烏來」 one repeat allowed had the bot refused eight times (exam, 2026-11-26).
+        self.history("a", "b")
         rc, out, err = self.run_packages(self.package("a"), self.package("b"), self.package("c"))
         self.assertEqual(rc, 0, err)
         # A follow-up in the same conversation (minutes ago) and an old recommendation do not count.
         for hours in (0.1, 24 * 15):
-            self.history("a", "b", hours_ago=hours)
+            self.history("a", "b", "c", hours_ago=hours)
             rc, _, err = self.run_packages(self.package("a"), self.package("b"), self.package("c"))
             self.assertEqual(rc, 0, err)
         # Only these fit (a named place, the cheapest there): the reason lets them through.
-        self.history("a", "b")
+        self.history("a", "b", "c")
         rc, _, err = self.run_packages(self.package("a"), self.package("b"), self.package("c"),
                                        shared=("--few-reason", "只有這三家符合，因為礁溪雙人湯屋只有這些有標價"))
         self.assertEqual(rc, 0, err)
@@ -222,7 +223,29 @@ class PackageTests(unittest.TestCase):
         rc, _, err = self.run_packages(self.package("a"), self.package("b"), self.package("c"),
                                        shared=("--few-reason", "推薦這三家"))
         self.assertEqual(rc, 1)
-        self.assertIn("最近 14 天推過", err)
+        self.assertIn("最近 14 天三個都推過", err)
+
+    def test_a_beach_whose_page_lists_no_fee_says_so_and_never_free(self):
+        # 2026-11-26: the owner chose to have such places recommended, marked 「官方頁沒列收費」.
+        beach = "https://www.taiwan.net.tw/m1.aspx?sNo=0001016&id=10596"
+        text, headings = page_evidence.read_page("<html><body><h1>白沙灣</h1><p>開放時間 09:00-17:00</p>"
+                                                 "<p>電話：02-8635-5100</p></body></html>")
+        page_evidence.save_snapshot(self.root, beach, text, headings)
+        sea = ["--package", "--place", "白沙灣海水浴場", "--transport", "開車約 60 分鐘", "--no-fee-listed", beach,
+               "--phone", "02-8635-5100", "--phone-source", beach]
+        rc, out, err = self.run_packages(self.package("a"), sea, self.package("c"))
+        self.assertEqual(rc, 0, err)
+        self.assertIn("① 白沙灣海水浴場\n總計 NT$0（門票：官方頁沒列收費，未確認）", out)
+        self.assertNotIn("免費", out)
+        # A page that does list a price must be priced with --item.
+        priced = [arg if arg != beach else PLACES["b"][0] for arg in sea]
+        rc, _, err = self.run_packages(self.package("a"), priced, self.package("c"))
+        self.assertEqual(rc, 1)
+        self.assertIn("有列價格", err)
+        # A page not read today cannot vouch for it.
+        unread = [arg if arg != beach else "https://www.example.com/never-read" for arg in sea]
+        rc, _, err = self.run_packages(self.package("a"), unread, self.package("c"))
+        self.assertIn("先跑 page-prices.py", err)
 
     def test_two_attractions_on_one_tourism_site_are_two_places(self):
         load = importlib.util.spec_from_file_location("format_plan", REPO / "scripts/format-plan.py")

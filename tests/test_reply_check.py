@@ -340,6 +340,15 @@ class CheckersAreOffLimitsTests(unittest.TestCase):
         result = check.pre_tool_call(tool, args, session_id="s1")
         return bool(result) and result.get("action") == "block" and "檢查結果就是結論" in result["message"]
 
+    def test_the_place_pool_and_the_recommendation_log_are_written_by_their_scripts_only(self):
+        for name in ("places.json", "recommended.json"):
+            result = check.pre_tool_call("write_file", {"path": f"{self.TOOLS}/{name}", "content": "[]"}, session_id="s1")
+            self.assertIn("places.py add", result["message"])
+            result = check.pre_tool_call("patch", {"path": rf"C:\hermes\shared\travel-workflow\{name}",
+                                                   "old_string": "a", "new_string": "b"}, session_id="s1")
+            self.assertEqual(result["action"], "block")
+        self.assertIsNone(check.pre_tool_call("read_file", {"path": f"{self.TOOLS}/places.json"}, session_id="s1"))
+
     def test_editing_or_reading_the_checkers_is_blocked(self):
         self.assertTrue(self.blocked("patch", path=f"{self.TOOLS}/page_evidence.py", old_string="a", new_string="b"))
         self.assertTrue(self.blocked("write_file", path=r"C:\hermes\shared\travel-workflow\trip-cost.py", content="x"))
@@ -555,6 +564,27 @@ class PackageReplyTests(unittest.TestCase):
                 os.environ["HERMES_HOME"] = old
         self.assertIsNotNone(fixed)  # only 「電話：未取得」 goes, as for a single plan
         self.assertEqual(fixed, PACKAGES_OUT.replace("\n電話：未取得", ""))
+
+
+    def transform(self, home, text):
+        old = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(home)
+        try:
+            return check.transform_llm_output(response_text=text, session_id="s1", turn_id="t1")
+        finally:
+            if old is None:
+                del os.environ["HERMES_HOME"]
+            else:
+                os.environ["HERMES_HOME"] = old
+
+    def test_packages_written_by_hand_do_not_go_out(self):
+        # 2026-11-26 (exam): refused by format-plan.py, the bot wrote its packages by hand.
+        home = home_with(PACKAGES_OUT, tool="format-plan.py")
+        hand = PACKAGES_OUT.replace("① ", "① 別家溫泉 ", 1)
+        self.assertEqual(self.transform(home, hand), check.HAND_WRITTEN)
+        self.assertEqual(self.transform(home, "方案 1｜和平島地質公園\n• 交通：開車約 50 分鐘"), check.HAND_WRITTEN)
+        self.assertNotEqual(self.transform(home, PACKAGES_OUT), check.HAND_WRITTEN)
+        self.assertIsNone(self.transform(home, "好的，幫你記下來了"))
 
 
 class KanbanCommandTests(unittest.TestCase):

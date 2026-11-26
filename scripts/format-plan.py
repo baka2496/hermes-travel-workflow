@@ -183,11 +183,13 @@ def total_of(cost_output):
 # 2026-11-26 (exam): 「我想出去玩」「我想去泡溫泉」「這週末想去泡溫泉」 all got the same 玫瑰園／瀧乃湯／湯布苑,
 # because page-prices.py --near reopens the pages read before and the cheapest old ones always won; one
 # reply's three packages were three rooms of one 龍山溫泉旅館. The owner: 「這是一個很嚴重的問題」.
-# Three packages are three different places, and at most one of them was recommended in the last 14 days
+# Three packages are three different places, and not all three were recommended in the last 14 days
 # (packages shown in the last 30 minutes are the same conversation's follow-up, so they do not count).
+# Not stricter: for 「烏來」 only a few places show a price, and allowing one repeat had the bot refused eight
+# times until it wrote the packages by hand (exam, 2026-11-26). places.py pick puts the least recent first.
 REPEAT_DAYS = 14
 SAME_CONVERSATION_S = 30 * 60
-MAX_REPEATS = 1
+MAX_REPEATS = 2
 
 
 def place_identity(name, official=None, phone=None):
@@ -237,8 +239,8 @@ def repeat_problems(identities, history, now, few):
     seen = recent(history, now)
     repeats = [a["name"] for a in identities if any(same_place(a, e) for e in seen)]
     if len(repeats) > MAX_REPEATS:
-        problems.append(f"最近 {REPEAT_DAYS} 天推過：{'、'.join(repeats)}。三個方案最多重複 {MAX_REPEATS} 個，"
-                        "其他用 web_search 找這次新的官網再跑 page-prices.py（--near 只用來補比價）；"
+        problems.append(f"最近 {REPEAT_DAYS} 天三個都推過：{'、'.join(repeats)}。至少換一個："
+                        "跑 places.py pick 挑沒推過的，或 web_search 找新的官網再跑 page-prices.py；"
                         "真的只有這些符合才加 --few-reason 「只有…符合，因為…」")
     return problems
 
@@ -252,6 +254,24 @@ def remember(path, identities, header, now):
         Path(path).write_text(json.dumps(history, ensure_ascii=False, indent=1), encoding="utf-8")
     except OSError:
         pass
+
+
+# 2026-11-26: a beach's or a trail's official page (taiwan.net.tw, a national park) gives its hours, phone
+# and address but says nothing about a fee. The owner chose to have them recommended, saying so plainly:
+# never 「免費」, which no page said.
+NO_FEE_TOTAL = "總計 NT$0（門票：官方頁沒列收費，未確認）"
+
+
+def no_fee_problem(url, common):
+    """Why `url` cannot back 「官方頁沒列收費」: it was not read today, or it does list prices."""
+    evidence = load_module("page_evidence", "page_evidence.py")
+    root = common.hermes_root or evidence.HERMES_ROOT
+    text = evidence.latest_page_text(root, url)
+    if not text:
+        return f"沒有 {url} 最近讀過的內容：先跑 page-prices.py {url}"
+    if evidence.price_lines(text, limit=3):
+        return f"{url} 上有列價格：用 --item 照它寫的價格，不能寫沒列收費"
+    return None
 
 
 def build_packages(common, packages):
@@ -272,14 +292,27 @@ def build_packages(common, packages):
         return None, problems, notes
     for number, package in enumerate(packages, 1):
         name = package.place or f"第 {number} 個方案"
-        if not package.place or not package.transport or not package.item:
-            problems.append(f"{name}：每個方案都要 --place、--transport（交通方式與時間）和至少一個 --item")
+        if not package.place or not package.transport or not (package.item or package.no_fee_listed):
+            problems.append(f"{name}：每個方案都要 --place、--transport（交通方式與時間）和至少一個 --item"
+                            "（景點官方頁沒列門票就用 --no-fee-listed <那頁>）")
             continue
-        if not (package.official or package.booking or package.phone):
+        if not (package.official or package.booking or package.phone or package.no_fee_listed):
             problems.append(f"{name}：沒有能訂的地方（--official 官網、--booking 訂房頁或 --phone 電話），換一個能直接訂的")
             continue
         own = {key: value for key, value in vars(package).items() if value not in (None, [])}
         args = argparse.Namespace(**{**vars(common), **own})
+        if package.no_fee_listed and not package.item:
+            why = no_fee_problem(package.no_fee_listed, common)
+            if why:
+                problems.append(f"{name}：{why}")
+                continue
+            args.official = args.official or package.no_fee_listed
+            links, why = run_links(args)
+            if why:
+                problems.append(f"{name}：{why}")
+                continue
+            built.append((0, package, NO_FEE_TOTAL, one_line_links(links)))
+            continue
         cost, why = run_costs(args, notes)
         if why:
             problems.append(f"{name}：{why}")
@@ -329,6 +362,8 @@ def package_parser():
     for option in ("--official", "--booking", "--booking-label", "--phone", "--phone-source", "--photo",
                    "--photo-caption", "--date", "--checkin", "--checkout"):
         parser.add_argument(option)
+    parser.add_argument("--no-fee-listed", metavar="URL",
+                        help="an attraction's official page read today that lists no fee (never write 免費)")
     return parser
 
 

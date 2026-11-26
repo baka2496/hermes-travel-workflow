@@ -275,3 +275,17 @@ class ParallelFetchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TlsTests(unittest.TestCase):
+    def test_government_sites_open_and_certificates_are_still_checked(self):
+        # 2026-11-26: taiwan.net.tw and the national parks failed Python 3.13's strict check
+        # (「Missing Subject Key Identifier」), so no free trail or beach could ever be read.
+        import ssl
+        load = importlib.util.spec_from_file_location("page_prices", REPO / "scripts/page-prices.py")
+        prices = importlib.util.module_from_spec(load)
+        load.loader.exec_module(prices)
+        context = prices.tls_context()
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
+        self.assertFalse(context.verify_flags & getattr(ssl, "VERIFY_X509_STRICT", 0))
