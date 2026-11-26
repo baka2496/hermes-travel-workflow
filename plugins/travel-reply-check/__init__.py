@@ -776,7 +776,8 @@ def earlier_plan_floor(session_id, home):
 TOTAL_FIRST = re.compile(rf"^總計 ({AMOUNT})", re.M)
 
 
-BULLET_ENTRY = re.compile(r"^\s*[•・*\-]\s*[^：:\s]{2,}[：:]")  # 「• 四季溫泉：…」: a place and what it costs
+# 「• 四季溫泉：…」: a place and what it costs; 「• Dormy Inn 淺草：」「• 蔥澡 (小池)：」 too (review).
+BULLET_ENTRY = re.compile(r"^\s*[•・*\-]\s*\S[^：:\r\n]+[：:]")
 
 
 def not_cheaper(text, session_id, home):

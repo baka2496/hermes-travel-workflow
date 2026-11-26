@@ -653,6 +653,8 @@ class PackageReplyTests(unittest.TestCase):
         db.close()
         self.assertEqual(self.transform(home, listed), check.HAND_WRITTEN)
         self.assertNotEqual(self.transform(home, "• 四季溫泉：雙人 50 分鐘 300 元"), check.HAND_WRITTEN)  # one line
+        spaced = "• Dormy Inn 淺草：NT$3,200\n• 蔥澡 (小池)：1,000 元"  # names with spaces (review)
+        self.assertEqual(self.transform(home, spaced), check.HAND_WRITTEN)
         flights = "• 機票：NT$12,281\n• 住宿：NT$3,200"
         self.assertNotEqual(self.transform(home_with("", tool="calendar-check.py"), flights), check.HAND_WRITTEN)
 
