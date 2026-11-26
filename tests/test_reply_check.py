@@ -357,6 +357,19 @@ class CheckersAreOffLimitsTests(unittest.TestCase):
         self.assertIsNone(run('"schema_version":   1,\r\n  "opportunities"'))  # whitespace differs: the tool matches it
         self.assertIsNone(check.pre_tool_call("patch", {"path": str(folder / "none.json"), "old_string": "a",
                                                         "new_string": "b"}, session_id="s1"))  # unreadable: left alone
+        # A 「~/…」 path is read too (review).
+        saved = {k: os.environ.get(k) for k in ("HOME", "USERPROFILE")}
+        os.environ["HOME"] = os.environ["USERPROFILE"] = str(folder)
+        try:
+            result = check.pre_tool_call("patch", {"path": "~/opportunities.json", "old_string": "gone",
+                                                   "new_string": "x"}, session_id="s1")
+            self.assertEqual((result or {}).get("action"), "block")
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     def test_the_place_pool_and_the_recommendation_log_are_written_by_their_scripts_only(self):
         for name in ("places.json", "recommended.json"):
