@@ -191,12 +191,14 @@ MAX_REPEATS = 1
 
 
 def place_identity(name, official=None, phone=None):
-    """What tells one place from another: its name without spaces, its phone digits, its page's site."""
+    """What tells one place from another: its name without spaces, its phone digits, its page's address.
+    The whole address, query too: a tourism site keeps every attraction in one folder (Antigravity's review)."""
     from urllib.parse import urlsplit
-    host = urlsplit(official or "").netloc.lower().removeprefix("www.")
-    path = urlsplit(official or "").path.rsplit("/", 1)[0]
+    parts = urlsplit(official or "")
+    host = parts.netloc.lower().removeprefix("www.")
+    page = parts.path.rstrip("/") + (f"?{parts.query}" if parts.query else "")
     return {"name": re.sub(r"\s+", "", name or ""), "phone": re.sub(r"\D", "", phone or ""),
-            "site": f"{host}{path}" if host else ""}
+            "site": f"{host}{page}" if host else ""}
 
 
 def same_place(a, b):
@@ -230,7 +232,7 @@ def repeat_problems(identities, history, now, few):
             if same_place(a, b):
                 problems.append(f"「{b['name']}」和「{a['name']}」是同一個地方：三個方案要三個不同的地方"
                                 "（同一間的不同房型只算一個），再找別家官網")
-    if few:  # the reason says why only these fit (a named place, the cheapest there)
+    if FEW_FIT.search(few or ""):  # 「只有…符合，因為…」: a named place, the cheapest there
         return problems
     seen = recent(history, now)
     repeats = [a["name"] for a in identities if any(same_place(a, e) for e in seen)]

@@ -1,3 +1,4 @@
+import importlib.util
 import hashlib
 import json
 from pathlib import Path
@@ -186,7 +187,7 @@ class PackageTests(unittest.TestCase):
     def history(self, *names, hours_ago=24):
         import time
         at = time.time() - hours_ago * 3600
-        entries = [{"name": PLACES[k][1], "phone": PLACES[k][4].replace("-", ""), "site": PLACES[k][0].split("//")[1].rsplit("/", 1)[0],
+        entries = [{"name": PLACES[k][1], "phone": PLACES[k][4].replace("-", ""), "site": PLACES[k][0].split("//")[1],
                     "at": at} for k in names]
         (self.root / "recommended.json").write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
 
@@ -217,6 +218,23 @@ class PackageTests(unittest.TestCase):
         rc, _, err = self.run_packages(self.package("a"), self.package("b"), self.package("c"),
                                        shared=("--few-reason", "只有這三家符合，因為礁溪雙人湯屋只有這些有標價"))
         self.assertEqual(rc, 0, err)
+        # Any words are not a reason (Antigravity's review): it must say why only these fit.
+        rc, _, err = self.run_packages(self.package("a"), self.package("b"), self.package("c"),
+                                       shared=("--few-reason", "推薦這三家"))
+        self.assertEqual(rc, 1)
+        self.assertIn("最近 14 天推過", err)
+
+    def test_two_attractions_on_one_tourism_site_are_two_places(self):
+        load = importlib.util.spec_from_file_location("format_plan", REPO / "scripts/format-plan.py")
+        plan = importlib.util.module_from_spec(load)
+        load.loader.exec_module(plan)
+        a = plan.place_identity("十分瀑布", "https://www.newtaipei.travel/zh-tw/attractions/detail/109609")
+        b = plan.place_identity("猴硐貓村", "https://www.newtaipei.travel/zh-tw/attractions/detail/112345")
+        c = plan.place_identity("步道一", "https://recreation.forest.gov.tw/Trail/RT?tr_id=001")
+        d = plan.place_identity("步道二", "https://recreation.forest.gov.tw/Trail/RT?tr_id=002")
+        self.assertFalse(plan.same_place(a, b))
+        self.assertFalse(plan.same_place(c, d))
+        self.assertTrue(plan.same_place(a, plan.place_identity("十分瀑布公園", None)))
 
     def test_a_sent_reply_is_remembered(self):
         rc, _, err = self.run_packages(self.package("a"), self.package("b"), self.package("c"))
@@ -224,7 +242,7 @@ class PackageTests(unittest.TestCase):
         log = json.loads((self.root / "recommended.json").read_text(encoding="utf-8"))
         self.assertEqual([e["name"] for e in log], ["甲溫泉", "乙山莊", "丙旅館"])
         self.assertEqual(log[0]["phone"], "039881111")
-        self.assertEqual(log[0]["site"], "a.example")
+        self.assertEqual(log[0]["site"], "a.example/rooms")
 
     def test_three_packages_come_out_cheapest_first_and_pass_phone_check(self):
         rc, out, err = self.run_packages(self.package("a"), self.package("b"), self.package("c"))
