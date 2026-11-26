@@ -95,6 +95,10 @@ class GradeTests(unittest.TestCase):
                  "🏨 [官網訂房](https://a.example/)\n📞 03-1")  # 「照片：未取得」 dropped
         self.assertTrue(any("missing_photo" in p for p in self.grade(plain, outputs=(plain,), question=one)))
         self.assertEqual(self.grade(plain, outputs=(plain + "\n照片：未取得",), question=one, hide_unconfirmed=True), [])
+        # An empty output or a usage message after the plan is not the last plan (exam, 2026-11-27).
+        self.assertEqual(self.grade(plain, outputs=(plain + "\n照片：未取得", "", "usage: format-plan.py …"),
+                                    question=one, hide_unconfirmed=True), [])
+        self.assertEqual(self.grade(bare, outputs=(printed, ""), hide_unconfirmed=True), [])
         found = plain + "\nMEDIA:C:/photos/a.jpg"  # the tool had a photo the reply left out
         self.assertTrue(any("missing_photo" in p for p in self.grade(plain, outputs=(found,), question=one,
                                                                     hide_unconfirmed=True)))
