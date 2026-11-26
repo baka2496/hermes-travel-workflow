@@ -30,8 +30,9 @@ KINDS = ("溫泉", "住宿", "自然步道、看風景", "海邊", "老街、小
 ALSO = {"住宿": ("溫泉",)}
 
 
-def kind_problem(kind):
-    if kind and kind not in KINDS:
+def kind_problem(kind, required=False):
+    """Why --kind is wrong; pick may leave it out, add may not (Antigravity's review: --kind "" got in)."""
+    if (kind or required) and kind not in KINDS:
         return f"--kind 要是其中一種：{'、'.join(KINDS)}（要過夜就用 住宿，溫泉飯店也會列出來）"
     return None
 STALE_DAYS = 30          # prices not read again for this long are not offered
@@ -105,8 +106,8 @@ def last_recommended(place, history):
 
 
 def add(args):
-    if kind_problem(args.kind):
-        return kind_problem(args.kind)
+    if kind_problem(args.kind, required=True):
+        return kind_problem(args.kind, required=True)
     page_url = args.price_page or args.official
     found, error = read_page(page_url, args)
     if found is None:
