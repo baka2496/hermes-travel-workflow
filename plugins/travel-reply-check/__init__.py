@@ -778,8 +778,8 @@ TOTAL_FIRST = re.compile(rf"^總計 ({AMOUNT})", re.M)
 
 # 「• 四季溫泉：…」: a place and what it costs; 「• Dormy Inn 淺草：」「• 蔥澡 (小池)：」 too (review).
 # Not a time's 「15:00」 or a link's 「https:」, and a short name, not a sentence (review).
-# A half-width colon after a digit is a time; 「門票:300元」 is still an entry (review).
-BULLET_ENTRY = re.compile(r"^\s*[•・*\-]\s*[^\s：:，。！？][^：:，。！？\r\n]{1,30}(?:：|(?<!\d):(?!/))")
+# A half-width colon with digits on both sides is a time; 「門票:300元」「Day 1: NT$3,000」 are entries (review).
+BULLET_ENTRY = re.compile(r"^\s*[•・*\-]\s*[^\s：:，。！？][^：:，。！？\r\n]{1,30}(?:：|(?<!\d):(?!/)|:(?![\d/]))")
 
 
 def not_cheaper(text, session_id, home):
