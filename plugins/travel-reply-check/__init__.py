@@ -605,12 +605,14 @@ def answered_since_owner(home, session_id):
                 if last is None:
                     continue
                 for (content,) in db.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'tool' "
-                                             "AND id > ? AND content LIKE '%user_response%'", (session_id, last)):
+                                             "AND tool_name = 'clarify' AND id > ?", (session_id, last)):
                     try:
                         data = json.loads(content)
                     except (TypeError, ValueError):
                         continue
-                    if any(isinstance(r, dict) and r.get("user_response") for r in data.get("responses") or ()):
+                    responses = data.get("responses") if isinstance(data, dict) else None  # review: only clarify's
+                    if isinstance(responses, list) and any(isinstance(r, dict) and r.get("user_response")
+                                                           for r in responses):
                         return True
         except sqlite3.Error:
             continue
@@ -643,7 +645,8 @@ NOT_CHEAPER = ("查過了，沒找到比上次最便宜的 {floor} 更便宜的{
 
 
 def earlier_plan_floor(session_id, home):
-    """The cheapest package total format-plan.py printed before the owner's latest message, or None."""
+    """The cheapest package total of the last format-plan.py run (with totals) before the owner's latest
+    message, or None. Only the last: an older, cheaper trip in the same chat is not what 「太貴」 is about (review)."""
     floor = None
     for path in sessions.databases(home):
         try:
@@ -659,9 +662,10 @@ def earlier_plan_floor(session_id, home):
                 for call_id in ids:
                     row = db.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'tool' AND "
                                      "tool_call_id = ? AND id < ?", (session_id, call_id, last)).fetchone()
-                    for amount in TOTAL_FIRST.findall(sessions.result_text(row[0]) if row else ""):
-                        value = int(re.sub(r"\D", "", amount))
-                        floor = value if floor is None else min(floor, value)
+                    totals = [int(re.sub(r"\D", "", a))
+                              for a in TOTAL_FIRST.findall(sessions.result_text(row[0]) if row else "")]
+                    if totals:
+                        floor = min(totals)
         except sqlite3.Error:
             continue
     return floor

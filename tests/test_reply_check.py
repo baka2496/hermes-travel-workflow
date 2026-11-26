@@ -668,9 +668,10 @@ class OwnerRequestTests(unittest.TestCase):
 class NotCheaperTests(unittest.TestCase):
     """2026-11-26 (exam): 「太貴，有沒有更便宜的湯屋」 got the same NT$300 places again as 「平價」."""
 
-    def reply(self, follow_up, text, first_total="NT$300"):
-        home = home_with(f"11/28 礁溪 2人｜3 個方案\n① 玫瑰園｜雙人湯屋\n總計 {first_total}\n交通：開車約 50 分鐘",
-                         tool="format-plan.py")
+    def reply(self, follow_up, text, *earlier):
+        earlier = earlier or ("NT$300",)
+        home = home_with(*[f"11/28 礁溪 2人｜3 個方案\n① 甲｜雙人湯屋\n總計 {total}\n交通：開車約 50 分鐘"
+                           for total in earlier], tool="format-plan.py")
         db = sqlite3.connect(home / "profiles" / "travel-commander" / "state.db")
         db.execute("INSERT INTO messages (session_id, role, content) VALUES ('s1', 'user', ?)", (follow_up,))
         db.commit()
@@ -693,6 +694,11 @@ class NotCheaperTests(unittest.TestCase):
         self.assertIsNone(self.reply("太貴了，有沒有更便宜的", cheaper))
         self.assertIsNone(self.reply("那烏來呢", same))  # not a cheaper request
         self.assertIsNone(self.reply("太貴了", "查了幾家，沒找到更便宜的。"))  # no packages: left as written
+        # An older, cheaper trip in the same chat does not count, only the last plan (Antigravity's review).
+        hotel = "11/28 礁溪 2人｜3 個方案\n① 乙飯店｜雙人房\n總計 NT$3,200"
+        self.assertIsNone(self.reply("太貴了，有沒有更便宜的", hotel, "NT$300", "NT$5,000"))
+        self.assertIn("NT$5,000", self.reply("太貴了，有沒有更便宜的", hotel.replace("3,200", "5,000"),
+                                             "NT$300", "NT$5,000"))
 
 
 class KanbanCommandTests(unittest.TestCase):
