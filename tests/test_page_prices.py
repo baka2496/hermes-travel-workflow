@@ -273,10 +273,6 @@ class ParallelFetchTests(unittest.TestCase):
         self.assertEqual(urls[-1], "https://spa3.example/")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TlsTests(unittest.TestCase):
     def test_government_sites_open_and_certificates_are_still_checked(self):
         # 2026-11-26: taiwan.net.tw and the national parks failed Python 3.13's strict check
@@ -289,3 +285,7 @@ class TlsTests(unittest.TestCase):
         self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
         self.assertTrue(context.check_hostname)
         self.assertFalse(context.verify_flags & getattr(ssl, "VERIFY_X509_STRICT", 0))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -246,6 +246,27 @@ class PackageTests(unittest.TestCase):
         unread = [arg if arg != beach else "https://www.example.com/never-read" for arg in sea]
         rc, _, err = self.run_packages(self.package("a"), unread, self.package("c"))
         self.assertIn("先跑 page-prices.py", err)
+        # With other costs (--item) the page is still checked and the fee still marked (Antigravity's review).
+        paid = ["--item", "和室雙人房 1晚=3200@https://a.example/rooms"]
+        rc, out, err = self.run_packages(self.package("b"), sea + paid, self.package("c"))
+        self.assertEqual(rc, 0, err)
+        self.assertIn("白沙灣海水浴場\n總計 NT$3,200（門票：官方頁沒列收費，未確認）", out)
+        rc, _, err = self.run_packages(self.package("b"), priced + paid, self.package("c"))
+        self.assertEqual(rc, 1)
+        self.assertIn("有列價格", err)
+        # One plan alone (the owner picked it) says the same.
+        rc, out, err = run_format("--header", "12/14 白沙灣 2人", "--date", "2026-12-14", "--place", "白沙灣海水浴場",
+                                  "--no-fee-listed", beach, "--phone", "02-8635-5100", "--phone-source", beach,
+                                  "--hermes-root", str(self.root), "--records", str(self.records),
+                                  "--preferences", str(self.prefs))
+        self.assertEqual(rc, 0, err)
+        self.assertIn("總計 NT$0（門票：官方頁沒列收費，未確認）", out)
+        self.assertNotIn("免費", out)
+        rc, _, err = run_format("--header", "12/14 白沙灣 2人", "--date", "2026-12-14", "--place", "白沙灣海水浴場",
+                                "--no-fee-listed", PLACES["b"][0], "--hermes-root", str(self.root),
+                                "--records", str(self.records), "--preferences", str(self.prefs))
+        self.assertEqual(rc, 1)
+        self.assertIn("有列價格", err)
 
     def test_two_attractions_on_one_tourism_site_are_two_places(self):
         load = importlib.util.spec_from_file_location("format_plan", REPO / "scripts/format-plan.py")

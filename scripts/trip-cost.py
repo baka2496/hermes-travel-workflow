@@ -39,7 +39,7 @@ ITEM = re.compile(rf"^(?P<name>.+?)=\s*(?:{travel_money.CURRENCY_BEFORE}\s*)?(?P
 SOURCE = re.compile(r"\s*@\s*(?P<source>https://\S+)\s*$")
 PREFERENCES = page_evidence.HERE / "preferences.json"
 # Admission only: 「免費停車」「免費 Wi-Fi」 on a paid hotel's page say nothing (Antigravity's review).
-FREE = re.compile(r"免費入園|免費參觀|免費開放|免門票|免收費|不收費|不需門票|無需門票|免入園費"
+FREE = re.compile(r"免費入園|免費參觀|免費開放|免費入場|免門票|免收費|不收費|不需門票|無需門票|免入園費"
                   r"|(門票|入園|入場|參觀)[^。\n]{0,6}免費")
 # 2026-11-19: 「我都是騎車或開車，不要再給我大眾運輸了」.
 TRANSIT = re.compile(r"捷運|公車|客運|巴士|台鐵|臺鐵|火車|高鐵|區間車|自強號|莒光|普悠瑪|太魯閣號|台灣好行|臺灣好行"

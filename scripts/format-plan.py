@@ -117,13 +117,23 @@ def build_plan(args):
     notes = []
     sections = [args.header.strip()]
 
-    # 1. Verified costs via trip-cost.py
+    # 1. Verified costs via trip-cost.py; an attraction whose page lists no fee says so (review: plan mode too)
+    no_fee = getattr(args, "no_fee_listed", None)
+    if no_fee:
+        why = no_fee_problem(no_fee, args)
+        if why:
+            return None, [why], notes
+        args.official = args.official or no_fee
+    out = ""
     if args.item:
         out, why = run_costs(args, notes)
         if why:
             return None, [why], notes
-        if out:
-            sections.append(out)
+    if no_fee:
+        lines = (out or NO_FEE_TOTAL[:-len(NO_FEE_NOTE)]).split("\n")
+        out = "\n".join([lines[0] + NO_FEE_NOTE, *lines[1:]])
+    if out:
+        sections.append(out)
 
     # 2. Optional weather & short notes (traffic, highlights, pros/cons)
     if getattr(args, "weather_place", None) and args.date:
@@ -259,7 +269,8 @@ def remember(path, identities, header, now):
 # 2026-11-26: a beach's or a trail's official page (taiwan.net.tw, a national park) gives its hours, phone
 # and address but says nothing about a fee. The owner chose to have them recommended, saying so plainly:
 # never 「免費」, which no page said.
-NO_FEE_TOTAL = "總計 NT$0（門票：官方頁沒列收費，未確認）"
+NO_FEE_NOTE = "（門票：官方頁沒列收費，未確認）"
+NO_FEE_TOTAL = "總計 NT$0" + NO_FEE_NOTE
 
 
 def no_fee_problem(url, common):
@@ -301,12 +312,13 @@ def build_packages(common, packages):
             continue
         own = {key: value for key, value in vars(package).items() if value not in (None, [])}
         args = argparse.Namespace(**{**vars(common), **own})
-        if package.no_fee_listed and not package.item:
+        if package.no_fee_listed:  # with or without --item (parking, gas): the page must back it (review)
             why = no_fee_problem(package.no_fee_listed, common)
             if why:
                 problems.append(f"{name}：{why}")
                 continue
             args.official = args.official or package.no_fee_listed
+        if package.no_fee_listed and not package.item:
             links, why = run_links(args)
             if why:
                 problems.append(f"{name}：{why}")
@@ -318,14 +330,19 @@ def build_packages(common, packages):
             problems.append(f"{name}：{why}")
             continue
         # With show_unconfirmed off nothing is printed; otherwise the headline says 全部未確認 (Antigravity's review).
-        if not cost or "（全部未確認）" in cost.splitlines()[0]:
+        if package.no_fee_listed and not cost:  # only estimates (gas), hidden: the attraction itself is what's checked
+            cost = NO_FEE_TOTAL[:-len(NO_FEE_NOTE)]
+        elif not cost or ("（全部未確認）" in cost.splitlines()[0] and not package.no_fee_listed):
             problems.append(f"{name}：沒有確認過的價格，不能當成能直接訂的方案；換一家官網或訂房頁有標價的地方")
             continue
         links, why = run_links(args)
         if why:
             problems.append(f"{name}：{why}")
             continue
-        built.append((total_of(cost), package, cost.splitlines()[0].strip(), one_line_links(links)))
+        total = cost.splitlines()[0].strip()
+        if package.no_fee_listed:
+            total += NO_FEE_NOTE
+        built.append((total_of(cost), package, total, one_line_links(links)))
     if problems:
         return None, problems, notes
     built.sort(key=lambda entry: entry[0])  # cheapest first: the recommended one unless its note says why not
@@ -406,6 +423,8 @@ def main():
     parser.add_argument("--for-clarify", action="store_true",
                         help="omit MEDIA line for a clarify button question (photo sent after user chooses)")
     parser.add_argument("--few-reason", help="with fewer than three --package: 「只有…符合…，因為…」")
+    parser.add_argument("--no-fee-listed", metavar="URL",
+                        help="an attraction's official page read today that lists no fee (never write 免費)")
     parser.add_argument("--records", help=argparse.SUPPRESS)
     parser.add_argument("--hermes-root", help=argparse.SUPPRESS)
     parser.add_argument("--preferences", help=argparse.SUPPRESS)

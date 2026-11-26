@@ -348,6 +348,16 @@ class CheckersAreOffLimitsTests(unittest.TestCase):
                                                    "old_string": "a", "new_string": "b"}, session_id="s1")
             self.assertEqual(result["action"], "block")
         self.assertIsNone(check.pre_tool_call("read_file", {"path": f"{self.TOOLS}/places.json"}, session_id="s1"))
+        # Nor through the terminal (Antigravity's review), while running the scripts stays fine.
+        for command in (f"echo [] > {self.TOOLS}/places.json",
+                        f"python -c \"open(r'{self.TOOLS}\\recommended.json','w').write('[]')\"",
+                        f"copy places.backup.json {self.TOOLS}/places.json"):
+            result = check.pre_tool_call("terminal", {"command": command}, session_id="s1")
+            self.assertEqual((result or {}).get("action"), "block", command)
+            self.assertIn("places.py add", result["message"])
+        for command in (f"python {self.TOOLS}/places.py pick --kind 海邊",
+                        f"python {self.TOOLS}/format-plan.py --header x --package --place y"):
+            self.assertIsNone(check.pre_tool_call("terminal", {"command": command}, session_id="s1"), command)
 
     def test_editing_or_reading_the_checkers_is_blocked(self):
         self.assertTrue(self.blocked("patch", path=f"{self.TOOLS}/page_evidence.py", old_string="a", new_string="b"))
@@ -582,8 +592,13 @@ class PackageReplyTests(unittest.TestCase):
         home = home_with(PACKAGES_OUT, tool="format-plan.py")
         hand = PACKAGES_OUT.replace("① ", "① 別家溫泉 ", 1)
         self.assertEqual(self.transform(home, hand), check.HAND_WRITTEN)
-        self.assertEqual(self.transform(home, "方案 1｜和平島地質公園\n• 交通：開車約 50 分鐘"), check.HAND_WRITTEN)
+        self.assertEqual(self.transform(home, "方案 1｜和平島地質公園\n• 交通：開車約 50 分鐘\n• 門票 NT$120"),
+                         check.HAND_WRITTEN)
         self.assertNotEqual(self.transform(home, PACKAGES_OUT), check.HAND_WRITTEN)
+        # A numbered list without prices is not a package (Antigravity's review), even with no format-plan run.
+        steps = "要幫你訂之前想確認兩件事：\n① 出發日是 12/6 還是 12/13？\n② 兩個人還是三個人？"
+        self.assertNotEqual(self.transform(home_with("", tool="calendar-check.py"), steps), check.HAND_WRITTEN)
+        self.assertNotEqual(self.transform(home, steps), check.HAND_WRITTEN)
         self.assertIsNone(self.transform(home, "好的，幫你記下來了"))
 
 

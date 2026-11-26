@@ -338,8 +338,12 @@ TAMPER_PROBLEM = ("不能查或改檢查程式（shared/travel-workflow 的 .py�
 # 2026-11-26: the place pool and the recommendation log are written by their scripts only, so they stay
 # valid and every price keeps its page and date (opportunities.json lost its sources to hand edits).
 TOOL_WRITTEN = re.compile(r"shared[\\/]+travel-workflow[\\/]+(?:places|recommended)\.json$", re.I)
+# In a terminal command any mention counts (Antigravity's review: `echo … > places.json`, a Python one-liner):
+# the scripts take no path, so a command naming these files is one going around them.
+TOOL_WRITTEN_IN_COMMAND = re.compile(r"\b(?:places|recommended)(?:\.backup)?\.json", re.I)
 TOOL_WRITTEN_PROBLEM = ("地點庫（places.json）和推薦紀錄（recommended.json）不能直接改："
-                        "收新地方用 `places.py add`，挑候選用 `places.py pick`，推薦紀錄由 format-plan.py 自己記。")
+                        "收新地方用 `places.py add`，挑候選用 `places.py pick`，看全部用 `places.py list`，"
+                        "推薦紀錄由 format-plan.py 自己記。")
 
 
 def tamper_problem(tool_name, args):
@@ -350,6 +354,8 @@ def tamper_problem(tool_name, args):
         return TAMPER_PROBLEM if GUARDED.search(path) else None
     if tool_name == "terminal":
         command = str(args.get("command") or "")
+        if TOOL_WRITTEN_IN_COMMAND.search(command):
+            return TOOL_WRITTEN_PROBLEM
         # Running the tools (python …/trip-cost.py …) is fine; reading their insides is not.
         inside = RUN_TOOL.sub(r"\1 ", command)
         return TAMPER_PROBLEM if GUARDED.search(inside) else None
@@ -899,9 +905,20 @@ HAND_WRITTEN = ("這次沒組成能直接訂的方案：有幾個地方的價格
                 "回我一聲，我就換別的地方重查。")
 
 
+# Only a numbered entry with a price is a package (Antigravity's review): 「① 先決定日期 ② 再挑地方」 is not.
+def package_heads(text):
+    """Head lines of the numbered entries that carry a price within their own block."""
+    lines, heads = text.splitlines(), []
+    starts = [i for i, line in enumerate(lines) if PACKAGE_LINE.match(line)]
+    for at, end in zip(starts, starts[1:] + [len(lines)]):
+        if money.PRICE.search("\n".join(lines[at:end])):
+            heads.append(lines[at].strip())
+    return heads
+
+
 def hand_written(text, session_id, home):
     """True when the reply has packages that no format-plan.py run in this conversation printed."""
-    heads = [line.strip() for line in text.splitlines() if PACKAGE_LINE.match(line)]
+    heads = package_heads(text)
     if not heads:
         return False
     printed = tool_outputs(session_id, home, "format-plan.py")

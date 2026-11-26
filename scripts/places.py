@@ -48,11 +48,13 @@ def read_places(path):
 def write_places(path, places):
     """Write through a temporary file, keeping the previous version as places.backup.json (one only)."""
     path = Path(path)
-    if path.exists():
-        path.replace(path.with_name("places.backup.json"))
+    # The new version first: a failed write leaves places.json as it was, never missing (Antigravity's review).
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(json.dumps({"schema_version": 1, "places": places}, ensure_ascii=False, indent=1) + "\n",
                          encoding="utf-8")
+    if path.exists():
+        backup = path.with_name("places.backup.json")
+        backup.write_bytes(path.read_bytes())
     temporary.replace(path)
 
 
