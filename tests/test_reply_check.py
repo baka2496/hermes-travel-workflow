@@ -662,6 +662,9 @@ class PackageReplyTests(unittest.TestCase):
 
     def test_the_plugins_own_replies_pass_the_phone_check(self):
         # 2026-11-27 (exam): the honest not-found was one long line, four phone lines, flagged long_line.
+        import sys
+        if str(REPO / "scripts") not in sys.path:  # phone-check.py imports its neighbours
+            sys.path.insert(0, str(REPO / "scripts"))
         spec = importlib.util.spec_from_file_location("phone_check_own", REPO / "scripts/phone-check.py")
         phone = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(phone)

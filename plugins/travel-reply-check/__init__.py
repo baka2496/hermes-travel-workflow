@@ -823,7 +823,7 @@ def stale_patch_problem(tool_name, args):
     if not isinstance(old, str) or not old or not path:
         return None
     try:
-        text = Path(path).read_text(encoding="utf-8-sig")
+        text = Path(path).expanduser().read_text(encoding="utf-8-sig")  # 「~/…」 too (review)
     except (OSError, ValueError):
         return None  # a file this cannot read is left to the tool
     # Whitespace ignored: the patch tool matches loosely, and an edit it would take must not be stopped here.
