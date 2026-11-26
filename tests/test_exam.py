@@ -103,6 +103,8 @@ class GradeTests(unittest.TestCase):
         cheaper = dict(PACKAGES, expect="cheaper")
         honest = "玫瑰園的雙人湯屋每間 NT$300，查了礁溪幾家官網，沒有找到更便宜的。"
         self.assertEqual(self.grade(honest, outputs=(), question=cheaper, earlier=(PLAN,)), [])
+        plain = "玫瑰園原泉湯屋為整間 NT$300（50分鐘）\n目前官網核實價格中，\n沒有比玫瑰園更便宜的雙人湯屋。"
+        self.assertEqual(self.grade(plain, outputs=(), question=cheaper, earlier=(PLAN,)), [])
         self.assertIn("沒有更便宜的方案，也沒說沒找到",
                       self.grade("好的，我再找找", outputs=(), question=cheaper, earlier=(PLAN,)))
         self.assertIn("沒有比原本最便宜的 NT$1,200 更便宜", self.grade(PLAN, question=cheaper, earlier=(PLAN,)))

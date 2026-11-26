@@ -41,7 +41,8 @@ KEPT_FILES = ("opportunities.json", "preferences.json", "recommended.json")
 FORMAT_PLAN = "format-plan.py"
 HOT_SPRING = re.compile(r"溫泉|湯屋|泡湯|湯$|湯｜|湯\s")
 OVER_BUDGET = re.compile(r"超出|超過|超支")
-NOT_FOUND = re.compile(r"沒(?:有)?找到|找不到|沒有更便宜|沒查到")
+# 2026-11-26: 「沒有比玫瑰園更便宜的雙人湯屋」 is a not-found too.
+NOT_FOUND = re.compile(r"沒(?:有)?找到|找不到|沒有更便宜|沒有比.{0,20}更便宜|沒查到")
 ASKED_DATES = re.compile(r"對不上|不一致|矛盾|其實是|三天兩夜|兩晚|[23]\s*晚")
 
 
