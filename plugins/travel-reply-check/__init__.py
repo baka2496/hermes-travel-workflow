@@ -1091,7 +1091,9 @@ PLAN_LABEL = re.compile(r"^[\s・•*\-]*(?:房型|交通|住宿)\s*[：:]", re.
 def hand_written(text, session_id, home):
     """True when the reply has packages, or one plan, that no format-plan.py run in this conversation printed."""
     heads = package_heads(text)
-    totals = [line.strip() for line in text.splitlines() if line.startswith("總計")]
+    # 「・總計：NT$250」 counts too (Antigravity's review): bullets and a colon are how hand-written plans look.
+    totals = [line.strip().lstrip("・•*- \t") for line in text.splitlines()
+              if line.strip().lstrip("・•*- \t").startswith("總計")]
     single = not heads and PLAN_LABEL.search(text) and (COST_LABEL.search(text) or totals)
     if not heads and not single:
         return False
@@ -1101,7 +1103,8 @@ def hand_written(text, session_id, home):
     made = "\n".join(printed)
     if single:  # one plan goes out only with a total a cost tool printed (its wording is corrected later)
         amounts = [found.group(0) for found in map(re.compile(AMOUNT).search, totals) if found]
-        return not amounts or any(f"總計 {amount}" not in made for amount in amounts)
+        # The whole amount: NT$80 is not in 「總計 NT$800」 (Antigravity's review).
+        return not amounts or any(not re.search(rf"總計 {re.escape(amount)}(?![\d,])", made) for amount in amounts)
     return any(head not in made for head in heads)
 
 

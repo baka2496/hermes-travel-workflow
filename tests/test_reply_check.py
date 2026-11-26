@@ -603,6 +603,9 @@ class PackageReplyTests(unittest.TestCase):
         single = home_with("11/29 烏來 2人\n總計 NT$800\n• 溪景湯屋 60分鐘 NT$800", tool="format-plan.py")
         made = "推薦烏來。\n11/29 烏來 2人\n總計 NT$800\n• 溪景湯屋 60分鐘 NT$800\n交通：開車約 50 分鐘"
         self.assertNotEqual(self.transform(single, made), check.HAND_WRITTEN)
+        # A bulleted 「・總計：」 and a shortened amount are caught too (Antigravity's review).
+        self.assertEqual(self.transform(single, made.replace("總計 NT$800", "・總計：NT$250")), check.HAND_WRITTEN)
+        self.assertEqual(self.transform(single, made.replace("總計 NT$800", "總計 NT$80")), check.HAND_WRITTEN)
         self.assertNotEqual(self.transform(home, "交通：開車約 50 分鐘，你要哪天出發？"), check.HAND_WRITTEN)
         # A numbered list without prices is not a package (Antigravity's review), even with no format-plan run.
         steps = "要幫你訂之前想確認兩件事：\n① 出發日是 12/6 還是 12/13？\n② 兩個人還是三個人？"
