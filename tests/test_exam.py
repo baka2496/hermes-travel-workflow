@@ -107,6 +107,20 @@ class GradeTests(unittest.TestCase):
         self.assertIn("太慢：20 分鐘", self.grade(PLAN, elapsed=1200))
 
 
+class FolderTests(unittest.TestCase):
+    def test_the_bot_never_answers_from_inside_this_checkout(self):
+        # 2026-11-26: started here, the bot read tests/test_format_plan.py to get past the checks.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(exam.answer_folder(root), root)
+            (root / "profiles").mkdir()
+            self.assertEqual(exam.answer_folder(root), root / "profiles")
+        with mock.patch("subprocess.run") as run:
+            run.return_value = mock.Mock(stdout="", stderr="")
+            exam.ask("trip", "你好")
+            self.assertNotIn(str(REPO), str(run.call_args.kwargs["cwd"]))
+
+
 class StreamTests(unittest.TestCase):
     def test_reads_the_result_event(self):
         out = "\n".join(json.dumps(e, ensure_ascii=False) for e in (

@@ -141,6 +141,13 @@ def grade(question, said, reply, tool_outputs, elapsed=0, error=""):
 
 # ---- 問 bot ------------------------------------------------------------------------------------
 
+def answer_folder(root):
+    """Where the bot answers from: its Hermes home, as on Telegram. 2026-11-26: started inside this
+    checkout, the bot read tests/test_format_plan.py to see how to get past the checks."""
+    folder = root / "profiles"
+    return folder if folder.is_dir() else root
+
+
 def ask(profile, text, session_id=None, timeout=TIME_LIMIT_S + 300):
     """One turn through the Hermes CLI: (reply, session id, error, format-plan.py outputs)."""
     command = ["hermes", "-p", profile, "chat", "-q", text, "--source", "tool", "--format", "stream-json"]
@@ -148,7 +155,7 @@ def ask(profile, text, session_id=None, timeout=TIME_LIMIT_S + 300):
         command += ["--resume", session_id]
     try:
         run = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                             timeout=timeout)
+                             timeout=timeout, cwd=answer_folder(hermes_root()))
     except subprocess.TimeoutExpired:
         return "", session_id, f"超過 {timeout // 60} 分鐘沒答完", []
     return parse_stream(run.stdout, run.stderr, session_id)
