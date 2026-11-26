@@ -84,6 +84,12 @@ class GradeTests(unittest.TestCase):
         self.assertEqual(self.grade(bare, outputs=(printed,), hide_unconfirmed=True), [])
         # The tool found a phone and the reply left it out: still a fault (Antigravity's review).
         self.assertTrue(any("incomplete_package" in p for p in self.grade(bare, outputs=(PLAN,), hide_unconfirmed=True)))
+        # ② had none, but ③'s phone was found and left out: one 未取得 does not forgive the other (review).
+        both = bare.replace(" 📞 03-3", "")
+        self.assertTrue(any("incomplete_package" in p for p in self.grade(both, outputs=(printed,), hide_unconfirmed=True)))
+        # An earlier run's 未取得 does not count once the last run found the photo or phone.
+        self.assertTrue(any("incomplete_package" in p for p in self.grade(bare, outputs=(printed, PLAN),
+                                                                         hide_unconfirmed=True)))
         one = dict(PACKAGES, expect="one", place=None, budget=None)
         plain = ("11/28 礁溪 2人\n總計 NT$300\n📍 [Google 地圖・查空房](https://maps.example/)\n"
                  "🏨 [官網訂房](https://a.example/)\n📞 03-1")  # 「照片：未取得」 dropped
