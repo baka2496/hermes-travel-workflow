@@ -121,7 +121,10 @@ def grade(question, said, reply, tool_outputs, elapsed=0, error="", earlier=(), 
     # The same for 「照片：未取得」 (missing_photo). Only when the tool really printed that line: a photo or a phone
     # the tool found and the reply left out still fails (Antigravity's review).
     # The last run only, and each package by its own block (review: one 未取得 must not forgive the others).
-    last = tool_outputs[-1] if tool_outputs else ""
+    # The last run that printed a plan (2026-11-27: an empty output and a usage message came after it, so the
+    # tool's own 「電話：未取得」「照片：未取得」 were missed and jiaoxi-budget and pick-one failed).
+    plans = [output for output in tool_outputs if re.search(r"^總計", output, re.M)]
+    last = plans[-1] if plans else ""
     dropped_photo = hide_unconfirmed and "照片：未取得" in last and "MEDIA:" not in last  # no photo found at all
 
     def dropped_phone(problem):

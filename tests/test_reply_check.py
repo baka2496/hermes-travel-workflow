@@ -76,6 +76,8 @@ class ReplyCheckTests(unittest.TestCase):
         result = ask(home_with(), GOOD)
         self.assertEqual(result["action"], "block")
         self.assertIn("先單獨執行 format-plan.py", result["message"])
+        # Sent in one batch with format-plan.py, ten times over (exam, 2026-11-27): the message says so.
+        self.assertIn("不能跟 format-plan.py 放在同一批", result["message"])
 
     def test_the_latest_run_counts(self):
         older = "總計 NT$2,432，預算剩 NT$3,568（NT$800 未確認）\n• 兩天餐飲 NT$800，未確認"

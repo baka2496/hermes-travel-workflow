@@ -179,8 +179,11 @@ def problem(text, output):
     if not totals:
         return None
     if output is None:
+        # 2026-11-27 (exam, overnight-budget): ten rounds of format-plan.py and clarify sent in one batch, each
+        # clarify refused before its format-plan.py result came back; 13.7 minutes. Say the batch is the problem.
         return ("這則有「總計」，但這次對話還沒有 format-plan.py 的結果。先單獨執行 format-plan.py，等結果回來，"
-                "再用 clarify 問，總計照它印的寫。")
+                "再用 clarify 問，總計照它印的寫。clarify 不能跟 format-plan.py 放在同一批一起呼叫："
+                "同一批的 clarify 會在結果回來前就被擋；這次先只跑 format-plan.py，下一步再單獨呼叫 clarify。")
     headlines = [line.strip() for line in output.splitlines() if line.strip().startswith("總計")]
     for total in totals:
         if total.strip() not in headlines:
