@@ -285,6 +285,17 @@ def no_fee_problem(url, common):
     return None
 
 
+def partly_built(built):
+    """What to do when some packages are fine and others are not.
+
+    2026-11-27 (exam overnight-budget): 龍山 and 山泉 had prices read today, 中冠 had none. The whole run was
+    refused, the bot hand-wrote the three instead, and the owner got no plan at all."""
+    names = "、".join(package.place.strip() for _, package, _, _ in built)
+    return (f"{names} 已經沒問題，不要手寫回覆：{names} 的 --package 照抄，只把上面有問題的換成另一家"
+            "（places.py pick 挑，或官網上有標價的地方，先跑 page-prices.py）再跑一次 format-plan.py；"
+            f"真的找不到別家，就只留 {names} 再跑一次，加 --few-reason 「只有…符合，因為…」")
+
+
 def build_packages(common, packages):
     """Up to three ready-to-book packages in one phone-width reply. Returns (text, problems, stderr_notes)."""
     notes, problems, built = [], [], []
@@ -343,6 +354,8 @@ def build_packages(common, packages):
         if package.no_fee_listed:
             total += NO_FEE_NOTE
         built.append((total_of(cost), package, total, one_line_links(links)))
+    if problems and built:
+        problems.append(partly_built(built))
     if problems:
         return None, problems, notes
     built.sort(key=lambda entry: entry[0])  # cheapest first: the recommended one unless its note says why not

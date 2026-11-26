@@ -344,6 +344,20 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("甲溫泉：沒有確認過的價格", err)
 
+    def test_when_one_package_fails_it_says_the_others_are_ready(self):
+        # 2026-11-27 (exam overnight-budget): two hotels had prices read today, the third had none. The whole
+        # run was refused, the bot hand-wrote all three, and the owner got no plan.
+        rc, out, err = self.run_packages(self.package("a", price=1234), self.package("b"), self.package("c"))
+        self.assertEqual(rc, 1)
+        self.assertEqual(out.strip(), "")  # nothing to paste until every package is right
+        self.assertIn("乙山莊、丙旅館 已經沒問題，不要手寫回覆", err)
+        self.assertIn("--few-reason", err)
+        self.assertNotIn("甲溫泉 已經沒問題", err)
+        # Nothing ready at all: no such line.
+        rc, _, err = self.run_packages(self.package("a", price=1234), self.package("b", price=1234),
+                                       self.package("c", price=1234))
+        self.assertNotIn("已經沒問題", err)
+
     def test_an_all_estimate_package_is_refused_when_estimates_are_shown_too(self):
         # Antigravity's review of 646df05: with show_unconfirmed on, an estimate-only total still printed.
         self.prefs.write_text(json.dumps({"public_transit": False}), encoding="utf-8")
