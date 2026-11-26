@@ -117,13 +117,23 @@ def build_plan(args):
     notes = []
     sections = [args.header.strip()]
 
-    # 1. Verified costs via trip-cost.py
+    # 1. Verified costs via trip-cost.py; an attraction whose page lists no fee says so (review: plan mode too)
+    no_fee = getattr(args, "no_fee_listed", None)
+    if no_fee:
+        why = no_fee_problem(no_fee, args)
+        if why:
+            return None, [why], notes
+        args.official = args.official or no_fee
+    out = ""
     if args.item:
         out, why = run_costs(args, notes)
         if why:
             return None, [why], notes
-        if out:
-            sections.append(out)
+    if no_fee:
+        lines = (out or NO_FEE_TOTAL[:-len(NO_FEE_NOTE)]).split("\n")
+        out = "\n".join([lines[0] + NO_FEE_NOTE, *lines[1:]])
+    if out:
+        sections.append(out)
 
     # 2. Optional weather & short notes (traffic, highlights, pros/cons)
     if getattr(args, "weather_place", None) and args.date:
@@ -180,6 +190,101 @@ def total_of(cost_output):
     return int(found[0][3:].replace(",", "")) if found else 0
 
 
+# 2026-11-26 (exam): 「我想出去玩」「我想去泡溫泉」「這週末想去泡溫泉」 all got the same 玫瑰園／瀧乃湯／湯布苑,
+# because page-prices.py --near reopens the pages read before and the cheapest old ones always won; one
+# reply's three packages were three rooms of one 龍山溫泉旅館. The owner: 「這是一個很嚴重的問題」.
+# Three packages are three different places, and not all three were recommended in the last 14 days
+# (packages shown in the last 30 minutes are the same conversation's follow-up, so they do not count).
+# Not stricter: for 「烏來」 only a few places show a price, and allowing one repeat had the bot refused eight
+# times until it wrote the packages by hand (exam, 2026-11-26). places.py pick puts the least recent first.
+REPEAT_DAYS = 14
+SAME_CONVERSATION_S = 30 * 60
+MAX_REPEATS = 2
+
+
+def place_identity(name, official=None, phone=None):
+    """What tells one place from another: its name without spaces, its phone digits, its page's address.
+    The whole address, query too: a tourism site keeps every attraction in one folder (Antigravity's review)."""
+    from urllib.parse import urlsplit
+    parts = urlsplit(official or "")
+    host = parts.netloc.lower().removeprefix("www.")
+    page = parts.path.rstrip("/") + (f"?{parts.query}" if parts.query else "")
+    return {"name": re.sub(r"\s+", "", name or ""), "phone": re.sub(r"\D", "", phone or ""),
+            "site": f"{host}{page}" if host else ""}
+
+
+def same_place(a, b):
+    """Same name (one inside the other: 瀧乃湯 and 北投瀧乃湯浴室), same phone, or same site and folder."""
+    names = sorted((a.get("name", ""), b.get("name", "")), key=len)
+    return bool((len(names[0]) >= 3 and names[0] in names[1])
+                or (a.get("phone") and len(a["phone"]) >= 7 and a["phone"] == b.get("phone"))
+                or (a.get("site") and a["site"] == b.get("site")))
+
+
+def read_history(path):
+    import json
+    try:
+        entries = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return []
+    return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+
+
+def recent(history, now):
+    """Places recommended in the last REPEAT_DAYS days, not counting this conversation's last half hour."""
+    return [e for e in history
+            if SAME_CONVERSATION_S < now - float(e.get("at", 0)) < REPEAT_DAYS * 86400]
+
+
+def repeat_problems(identities, history, now, few):
+    """Why these packages are not fresh enough: the same place twice, or too many recent repeats."""
+    problems = []
+    for i, a in enumerate(identities):
+        for b in identities[:i]:
+            if same_place(a, b):
+                problems.append(f"「{b['name']}」和「{a['name']}」是同一個地方：三個方案要三個不同的地方"
+                                "（同一間的不同房型只算一個），再找別家官網")
+    if FEW_FIT.search(few or ""):  # 「只有…符合，因為…」: a named place, the cheapest there
+        return problems
+    seen = recent(history, now)
+    repeats = [a["name"] for a in identities if any(same_place(a, e) for e in seen)]
+    if len(repeats) > MAX_REPEATS:
+        problems.append(f"最近 {REPEAT_DAYS} 天三個都推過：{'、'.join(repeats)}。至少換一個："
+                        "跑 places.py pick 挑沒推過的，或 web_search 找新的官網再跑 page-prices.py；"
+                        "真的只有這些符合才加 --few-reason 「只有…符合，因為…」")
+    return problems
+
+
+def remember(path, identities, header, now):
+    """Add this reply's places to the recommendation log (kept to the last REPEAT_DAYS days)."""
+    import json
+    history = [e for e in read_history(path) if now - float(e.get("at", 0)) < REPEAT_DAYS * 86400]
+    history += [{**identity, "header": header, "at": round(now)} for identity in identities]
+    try:
+        Path(path).write_text(json.dumps(history, ensure_ascii=False, indent=1), encoding="utf-8")
+    except OSError:
+        pass
+
+
+# 2026-11-26: a beach's or a trail's official page (taiwan.net.tw, a national park) gives its hours, phone
+# and address but says nothing about a fee. The owner chose to have them recommended, saying so plainly:
+# never 「免費」, which no page said.
+NO_FEE_NOTE = "（門票：官方頁沒列收費，未確認）"
+NO_FEE_TOTAL = "總計 NT$0" + NO_FEE_NOTE
+
+
+def no_fee_problem(url, common):
+    """Why `url` cannot back 「官方頁沒列收費」: it was not read today, or it does list prices."""
+    evidence = load_module("page_evidence", "page_evidence.py")
+    root = common.hermes_root or evidence.HERMES_ROOT
+    text = evidence.latest_page_text(root, url)
+    if not text:
+        return f"沒有 {url} 最近讀過的內容：先跑 page-prices.py {url}"
+    if evidence.price_lines(text, limit=3):
+        return f"{url} 上有列價格：用 --item 照它寫的價格，不能寫沒列收費"
+    return None
+
+
 def build_packages(common, packages):
     """Up to three ready-to-book packages in one phone-width reply. Returns (text, problems, stderr_notes)."""
     notes, problems, built = [], [], []
@@ -189,29 +294,55 @@ def build_packages(common, packages):
     if len(packages) < len(MARKS) and not FEW_FIT.search(few):
         return None, [f"要給 {len(MARKS)} 個能直接訂的方案，現在只有 {len(packages)} 個：再找符合日期與交通方式、"
                       "這次查過價格的地方；真的只有一兩個符合，加 --few-reason 「只有…符合…，因為…」"], notes
+    import time
+    now = time.time()
+    identities = [place_identity(p.place, p.official, p.phone) for p in packages]
+    history_path = common.history or Path(common.hermes_root or HERE) / "recommended.json"
+    problems += repeat_problems(identities, read_history(history_path), now, few)
+    if problems:
+        return None, problems, notes
     for number, package in enumerate(packages, 1):
         name = package.place or f"第 {number} 個方案"
-        if not package.place or not package.transport or not package.item:
-            problems.append(f"{name}：每個方案都要 --place、--transport（交通方式與時間）和至少一個 --item")
+        if not package.place or not package.transport or not (package.item or package.no_fee_listed):
+            problems.append(f"{name}：每個方案都要 --place、--transport（交通方式與時間）和至少一個 --item"
+                            "（景點官方頁沒列門票就用 --no-fee-listed <那頁>）")
             continue
-        if not (package.official or package.booking or package.phone):
+        if not (package.official or package.booking or package.phone or package.no_fee_listed):
             problems.append(f"{name}：沒有能訂的地方（--official 官網、--booking 訂房頁或 --phone 電話），換一個能直接訂的")
             continue
         own = {key: value for key, value in vars(package).items() if value not in (None, [])}
         args = argparse.Namespace(**{**vars(common), **own})
+        if package.no_fee_listed:  # with or without --item (parking, gas): the page must back it (review)
+            why = no_fee_problem(package.no_fee_listed, common)
+            if why:
+                problems.append(f"{name}：{why}")
+                continue
+            args.official = args.official or package.no_fee_listed
+        if package.no_fee_listed and not package.item:
+            links, why = run_links(args)
+            if why:
+                problems.append(f"{name}：{why}")
+                continue
+            built.append((0, package, NO_FEE_TOTAL, one_line_links(links)))
+            continue
         cost, why = run_costs(args, notes)
         if why:
             problems.append(f"{name}：{why}")
             continue
         # With show_unconfirmed off nothing is printed; otherwise the headline says 全部未確認 (Antigravity's review).
-        if not cost or "（全部未確認）" in cost.splitlines()[0]:
+        if package.no_fee_listed and not cost:  # only estimates (gas), hidden: the attraction itself is what's checked
+            cost = NO_FEE_TOTAL[:-len(NO_FEE_NOTE)]
+        elif not cost or ("（全部未確認）" in cost.splitlines()[0] and not package.no_fee_listed):
             problems.append(f"{name}：沒有確認過的價格，不能當成能直接訂的方案；換一家官網或訂房頁有標價的地方")
             continue
         links, why = run_links(args)
         if why:
             problems.append(f"{name}：{why}")
             continue
-        built.append((total_of(cost), package, cost.splitlines()[0].strip(), one_line_links(links)))
+        total = cost.splitlines()[0].strip()
+        if package.no_fee_listed:
+            total += NO_FEE_NOTE
+        built.append((total_of(cost), package, total, one_line_links(links)))
     if problems:
         return None, problems, notes
     built.sort(key=lambda entry: entry[0])  # cheapest first: the recommended one unless its note says why not
@@ -231,7 +362,10 @@ def build_packages(common, packages):
         if not package.phone:  # its own line: with show_unconfirmed off the plugin drops it, not the links
             lines.append(NO_PHONE)
     message = "\n".join(lines)
-    return message, checked(message, common.for_clarify), notes
+    problems = checked(message, common.for_clarify)
+    if not problems:
+        remember(history_path, identities, header, now)
+    return message, problems, notes
 
 
 def package_parser():
@@ -245,6 +379,8 @@ def package_parser():
     for option in ("--official", "--booking", "--booking-label", "--phone", "--phone-source", "--photo",
                    "--photo-caption", "--date", "--checkin", "--checkout"):
         parser.add_argument(option)
+    parser.add_argument("--no-fee-listed", metavar="URL",
+                        help="an attraction's official page read today that lists no fee (never write 免費)")
     return parser
 
 
@@ -287,9 +423,12 @@ def main():
     parser.add_argument("--for-clarify", action="store_true",
                         help="omit MEDIA line for a clarify button question (photo sent after user chooses)")
     parser.add_argument("--few-reason", help="with fewer than three --package: 「只有…符合…，因為…」")
+    parser.add_argument("--no-fee-listed", metavar="URL",
+                        help="an attraction's official page read today that lists no fee (never write 免費)")
     parser.add_argument("--records", help=argparse.SUPPRESS)
     parser.add_argument("--hermes-root", help=argparse.SUPPRESS)
     parser.add_argument("--preferences", help=argparse.SUPPRESS)
+    parser.add_argument("--history", help=argparse.SUPPRESS)  # tests only: the recommendation log
     shared, packages = split_packages(sys.argv[1:])
     args = parser.parse_args(shared)
     if packages:

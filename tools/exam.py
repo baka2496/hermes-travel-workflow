@@ -13,7 +13,7 @@
 - 有回覆、沒出錯、在時限內答完
 - 手機排版檢查（phone-check.py）沒有問題
 - 沒寫主人沒說過的預算
-- packages：一則回覆三個方案（不夠三個要寫「只有…符合」），每個方案都是 format-plan.py 組出來的
+- packages：一則回覆三個不同地方的方案（不夠三個要寫「只有…符合」），每個方案都是 format-plan.py 組出來的
   （方案標題和總計那行原樣出現在 format-plan.py 的輸出裡），有指定地點就要是那裡；
   有說預算時，最便宜的超出預算要講「超出」
 - ask_dates：日期和天數對不上，先講清楚再問，不能直接出方案
@@ -34,8 +34,10 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 QUESTIONS = REPO / "exam" / "questions.json"
 TIME_LIMIT_S = 900
-KEPT_FILES = ("opportunities.json", "preferences.json")
+# recommended.json: format-plan.py remembers what it recommended, so an exam would make later replies avoid those places.
+KEPT_FILES = ("opportunities.json", "preferences.json", "recommended.json")
 FORMAT_PLAN = "format-plan.py"
+HOT_SPRING = re.compile(r"溫泉|湯屋|泡湯|湯$|湯｜|湯\s")
 OVER_BUDGET = re.compile(r"超出|超過|超支")
 ASKED_DATES = re.compile(r"對不上|不一致|矛盾|其實是|三天兩夜|兩晚|[23]\s*晚")
 
@@ -115,6 +117,15 @@ def grade(question, said, reply, tool_outputs, elapsed=0, error=""):
         return problems + ["沒有給 ①②③ 方案"]
     if len(blocks) < phone_check.PACKAGES and not phone_check.FEW_FIT.search(reply):
         problems.append(f"只有 {len(blocks)} 個方案，也沒說為什麼")
+    # 2026-11-26: three packages were three rooms of one 龍山溫泉旅館.
+    names = [re.sub(r"\s+", "", phone_check.PACKAGE.sub("", block[0]).split("｜")[0]) for block in blocks]
+    for i, name in enumerate(names):
+        twin = next((other for other in names[:i] if other and name and (other in name or name in other)), None)
+        if twin:
+            problems.append(f"「{twin}」重複：三個方案要三個不同的地方")
+    # 2026-11-26: 「為甚麼只有溫泉明明還有那麼多地方可以玩」. A question that names no kind of trip gets mixed kinds.
+    if question.get("mixed") and len(blocks) >= 2 and all(HOT_SPRING.search(block[0]) for block in blocks):
+        problems.append("沒說玩什麼，三個方案卻全是溫泉")
     made = "\n".join(tool_outputs)
     for block in blocks:
         if block[0] not in made or not any(line.startswith("總計") and line in made for line in block):
@@ -130,6 +141,13 @@ def grade(question, said, reply, tool_outputs, elapsed=0, error=""):
 
 # ---- 問 bot ------------------------------------------------------------------------------------
 
+def answer_folder(root):
+    """Where the bot answers from: its Hermes home, as on Telegram. 2026-11-26: started inside this
+    checkout, the bot read tests/test_format_plan.py to see how to get past the checks."""
+    folder = root / "profiles"
+    return folder if folder.is_dir() else root
+
+
 def ask(profile, text, session_id=None, timeout=TIME_LIMIT_S + 300):
     """One turn through the Hermes CLI: (reply, session id, error, format-plan.py outputs)."""
     command = ["hermes", "-p", profile, "chat", "-q", text, "--source", "tool", "--format", "stream-json"]
@@ -137,7 +155,7 @@ def ask(profile, text, session_id=None, timeout=TIME_LIMIT_S + 300):
         command += ["--resume", session_id]
     try:
         run = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                             timeout=timeout)
+                             timeout=timeout, cwd=answer_folder(hermes_root()))
     except subprocess.TimeoutExpired:
         return "", session_id, f"超過 {timeout // 60} 分鐘沒答完", []
     return parse_stream(run.stdout, run.stderr, session_id)
@@ -213,7 +231,8 @@ def newer_than(paths, started):
 # ---- 考前考後的紀錄 ------------------------------------------------------------------------------
 
 def snapshot(folder):
-    return {name: (folder / name).read_bytes() for name in KEPT_FILES if (folder / name).exists()}
+    """Each kept file's bytes, or None for one that is not there yet."""
+    return {name: (folder / name).read_bytes() if (folder / name).exists() else None for name in KEPT_FILES}
 
 
 def restore(folder, before, stamp):
@@ -222,8 +241,12 @@ def restore(folder, before, stamp):
     for name, content in before.items():
         path = folder / name
         if path.exists() and path.read_bytes() != content:
-            shutil.copy2(path, path.with_name(f"{path.stem}.exam-{stamp}{path.suffix}"))
-            path.write_bytes(content)
+            kept = path.with_name(f"{path.stem}.exam-{stamp}{path.suffix}")
+            if content is None:  # the exam made it: move it aside, nothing is deleted
+                path.replace(kept)
+            else:
+                shutil.copy2(path, kept)
+                path.write_bytes(content)
             restored.append(name)
     return restored
 

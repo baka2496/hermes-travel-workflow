@@ -47,9 +47,19 @@ def decode(data, header_charset):
     return data.decode("utf-8", "replace")
 
 
+def tls_context():
+    """Certificates are still checked (issuer, name, expiry), but not Python 3.13's strict RFC 5280
+    extensions. 2026-11-26: every Taiwan government tourism site (taiwan.net.tw, the national parks)
+    failed with 「Missing Subject Key Identifier」, so free trails and beaches could never be read."""
+    import ssl
+    context = ssl.create_default_context()
+    context.verify_flags &= ~getattr(ssl, "VERIFY_X509_STRICT", 0)
+    return context
+
+
 def fetch(url, timeout=DEFAULT_TIMEOUT):
     request = urllib.request.Request(url, headers=UA)
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with urllib.request.urlopen(request, timeout=timeout, context=tls_context()) as response:
         data = response.read(5_000_000)
         message = Message()
         message["content-type"] = response.headers.get("Content-Type", "")

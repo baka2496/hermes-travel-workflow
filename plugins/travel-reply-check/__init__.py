@@ -335,12 +335,27 @@ TAMPER_PROBLEM = ("不能查或改檢查程式（shared/travel-workflow 的 .py�
                   "工具用法照說明書寫的跑。")
 
 
+# 2026-11-26: the place pool and the recommendation log are written by their scripts only, so they stay
+# valid and every price keeps its page and date (opportunities.json lost its sources to hand edits).
+TOOL_WRITTEN = re.compile(r"shared[\\/]+travel-workflow[\\/]+(?:places|recommended)\.json$", re.I)
+# In a terminal command any mention counts (Antigravity's review: `echo … > places.json`, a Python one-liner):
+# the scripts take no path, so a command naming these files is one going around them.
+TOOL_WRITTEN_IN_COMMAND = re.compile(r"\b(?:places|recommended)(?:\.backup)?\.json", re.I)
+TOOL_WRITTEN_PROBLEM = ("地點庫（places.json）和推薦紀錄（recommended.json）不能直接改："
+                        "收新地方用 `places.py add`，挑候選用 `places.py pick`，看全部用 `places.py list`，"
+                        "推薦紀錄由 format-plan.py 自己記。")
+
+
 def tamper_problem(tool_name, args):
     if tool_name in WRITES:
         path = str(args.get("path") or args.get("file_path") or "")
+        if TOOL_WRITTEN.search(path.strip()):
+            return TOOL_WRITTEN_PROBLEM
         return TAMPER_PROBLEM if GUARDED.search(path) else None
     if tool_name == "terminal":
         command = str(args.get("command") or "")
+        if TOOL_WRITTEN_IN_COMMAND.search(command):
+            return TOOL_WRITTEN_PROBLEM
         # Running the tools (python …/trip-cost.py …) is fine; reading their insides is not.
         inside = RUN_TOOL.sub(r"\1 ", command)
         return TAMPER_PROBLEM if GUARDED.search(inside) else None
@@ -883,6 +898,36 @@ def without_unsaid_budgets(text, session_id, home):
     return text
 
 
+# 2026-11-26 (exam): refused by format-plan.py, the bot wrote 「方案 1｜和平島…」 and 「① 雲頂溫泉行館…」 by
+# hand, with prices nobody checked. A package goes out only as format-plan.py printed it.
+PACKAGE_LINE = re.compile(r"^\s*(?:[①②③④⑤]|方案\s*[1-5一二三四五][｜|：:])")
+HAND_WRITTEN = ("這次沒組成能直接訂的方案：有幾個地方的價格沒能在官網確認，所以先不給你。"
+                "回我一聲，我就換別的地方重查。")
+
+
+# Only a numbered entry with a price is a package (Antigravity's review): 「① 先決定日期 ② 再挑地方」 is not.
+def package_heads(text):
+    """Head lines of the numbered entries that carry a price within their own block."""
+    lines, heads = text.splitlines(), []
+    starts = [i for i, line in enumerate(lines) if PACKAGE_LINE.match(line)]
+    for at, end in zip(starts, starts[1:] + [len(lines)]):
+        if money.PRICE.search("\n".join(lines[at:end])):
+            heads.append(lines[at].strip())
+    return heads
+
+
+def hand_written(text, session_id, home):
+    """True when the reply has packages that no format-plan.py run in this conversation printed."""
+    heads = package_heads(text)
+    if not heads:
+        return False
+    printed = tool_outputs(session_id, home, "format-plan.py")
+    if printed is UNKNOWN:
+        return False
+    made = "\n".join(printed)
+    return any(head not in made for head in heads)
+
+
 def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
     if not session_id or not isinstance(response_text, str):
         return None
@@ -891,8 +936,10 @@ def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
         if pending and not (pending["turn"] and turn_id and pending["turn"] != turn_id) \
                 and repeats(response_text, pending["question"]):
             return timeout_reply(response_text, pending)
-        fixed = without_unseen_photos(response_text, session_id)
         home = os.environ.get("HERMES_HOME") or Path.home() / ".hermes"
+        if hand_written(response_text, session_id, home):
+            return HAND_WRITTEN
+        fixed = without_unseen_photos(response_text, session_id)
         fixed = without_unsaid_budgets(fixed, session_id, home)
         hide = confirmed_only(home)
         if hide or TOTAL_AMOUNT.search(fixed):

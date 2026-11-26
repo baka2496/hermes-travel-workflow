@@ -112,6 +112,17 @@ class TripCostTests(unittest.TestCase):
         self.assertEqual(out.splitlines()[0], "總計 NT$2,012，預算剩 NT$3,988（NT$1,600 未確認）")
         self.assertIn("• 週六雙人房 NT$1,600，未確認（來源網頁上沒看到這個價格）", out)
 
+    def test_free_is_confirmed_only_by_a_page_that_says_free(self):
+        # 2026-11-26: 「為甚麼只有溫泉」 — a free trail could never be a package, nothing on it was confirmed.
+        trail, other = "https://www.example.com/trail", "https://www.example.com/news"
+        evidence = fake_hermes([(trail, "步道 開放時間 08:00–17:00 免費入園"),
+                                (other, "2026 年 10 月 0 件公告 免費停車 免費 Wi-Fi 免費取消")])
+        status, out, err = self.cost("--budget", "500", f"步道門票=0x2@{trail}", evidence=evidence)
+        self.assertEqual(status, 0, err)
+        self.assertEqual(out.splitlines()[0], "總計 NT$0，預算剩 NT$500")
+        status, out, err = self.cost("--budget", "500", f"步道門票=0x2@{other}", evidence=evidence)
+        self.assertIn("未確認（來源網頁上沒寫免費）", out)
+
     def test_the_price_must_be_on_that_page_not_another(self):
         status, out, err = self.cost("--budget", "6000", "房=3600" + self.S, "房2=3600@https://www.example.com/other")
         self.assertEqual(out.splitlines()[0], "總計 NT$7,200，超出預算 NT$1,200（全部未確認）")

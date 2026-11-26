@@ -38,6 +38,9 @@ ITEM = re.compile(rf"^(?P<name>.+?)=\s*(?:{travel_money.CURRENCY_BEFORE}\s*)?(?P
 # "湯屋 NT$800" as confirmed though no page had been opened that turn).
 SOURCE = re.compile(r"\s*@\s*(?P<source>https://\S+)\s*$")
 PREFERENCES = page_evidence.HERE / "preferences.json"
+# Admission only: 「免費停車」「免費 Wi-Fi」 on a paid hotel's page say nothing (Antigravity's review).
+FREE = re.compile(r"免費入園|免費參觀|免費開放|免費入場|免門票|免收費|不收費|不需門票|無需門票|免入園費"
+                  r"|(門票|入園|入場|參觀)[^。\n]{0,6}免費")
 # 2026-11-19: 「我都是騎車或開車，不要再給我大眾運輸了」.
 TRANSIT = re.compile(r"捷運|公車|客運|巴士|台鐵|臺鐵|火車|高鐵|區間車|自強號|莒光|普悠瑪|太魯閣號|台灣好行|臺灣好行"
                      r"|接駁車|悠遊卡|TPASS|MRT|\bbus\b|\btrain\b", re.I)
@@ -100,8 +103,15 @@ def check_sources(items, records, hermes_root, date=None):
     for item in items:
         if not item["confirmed"]:
             continue
-        pattern = page_evidence.price_pattern(item["unit"])
+        # 2026-11-26: 「為甚麼只有溫泉」 — a trail, an old street or a beach is often free; NT$0 is confirmed
+        # only by a page that says so (a bare 0 is on every page).
+        free = item["unit"] == 0
+        pattern = FREE if free else page_evidence.price_pattern(item["unit"])
         if not page_evidence.shown(item["source"], pattern, records, hermes_root, use_records=False):
+            if free:
+                item["confirmed"] = False
+                item["why"] = "來源網頁上沒寫免費"
+                continue
             item["confirmed"] = False
             item["why"] = "來源網頁上沒看到這個價格"
             item["hint"] = page_says(item["source"], hermes_root)  # for the agent, on stderr

@@ -1,7 +1,8 @@
 {
   "about": "考題集：主人真的傳過的訊息（日期改成會自動往後算的 {週六} 這類寫法，才能一直重考）。py -3 tools/exam.py run 一鍵跑完並打分數。expect 說每題要看到什麼：packages＝一則回覆三個能直接訂的方案；ask_dates＝日期矛盾，先講清楚再問，不出方案。",
   "questions": [
-    {"id": "vague", "profile": "project-manager", "turns": ["我想出去玩"], "expect": "packages"},
+    {"id": "vague", "profile": "project-manager", "turns": ["我想出去玩"], "expect": "packages", "mixed": true},
+    {"id": "vague-weekend", "profile": "project-manager", "turns": ["這週末想出去走走，有什麼推薦"], "expect": "packages", "mixed": true},
     {"id": "hot-spring", "profile": "project-manager", "turns": ["我想去泡溫泉"], "expect": "packages"},
     {"id": "this-weekend", "profile": "project-manager", "turns": ["這週末想去泡溫泉"], "expect": "packages"},
     {"id": "jiaoxi-budget", "profile": "project-manager",
