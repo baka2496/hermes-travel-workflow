@@ -180,6 +180,78 @@ def total_of(cost_output):
     return int(found[0][3:].replace(",", "")) if found else 0
 
 
+# 2026-11-26 (exam): 「我想出去玩」「我想去泡溫泉」「這週末想去泡溫泉」 all got the same 玫瑰園／瀧乃湯／湯布苑,
+# because page-prices.py --near reopens the pages read before and the cheapest old ones always won; one
+# reply's three packages were three rooms of one 龍山溫泉旅館. The owner: 「這是一個很嚴重的問題」.
+# Three packages are three different places, and at most one of them was recommended in the last 14 days
+# (packages shown in the last 30 minutes are the same conversation's follow-up, so they do not count).
+REPEAT_DAYS = 14
+SAME_CONVERSATION_S = 30 * 60
+MAX_REPEATS = 1
+
+
+def place_identity(name, official=None, phone=None):
+    """What tells one place from another: its name without spaces, its phone digits, its page's site."""
+    from urllib.parse import urlsplit
+    host = urlsplit(official or "").netloc.lower().removeprefix("www.")
+    path = urlsplit(official or "").path.rsplit("/", 1)[0]
+    return {"name": re.sub(r"\s+", "", name or ""), "phone": re.sub(r"\D", "", phone or ""),
+            "site": f"{host}{path}" if host else ""}
+
+
+def same_place(a, b):
+    """Same name (one inside the other: 瀧乃湯 and 北投瀧乃湯浴室), same phone, or same site and folder."""
+    names = sorted((a.get("name", ""), b.get("name", "")), key=len)
+    return bool((len(names[0]) >= 3 and names[0] in names[1])
+                or (a.get("phone") and len(a["phone"]) >= 7 and a["phone"] == b.get("phone"))
+                or (a.get("site") and a["site"] == b.get("site")))
+
+
+def read_history(path):
+    import json
+    try:
+        entries = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return []
+    return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+
+
+def recent(history, now):
+    """Places recommended in the last REPEAT_DAYS days, not counting this conversation's last half hour."""
+    return [e for e in history
+            if SAME_CONVERSATION_S < now - float(e.get("at", 0)) < REPEAT_DAYS * 86400]
+
+
+def repeat_problems(identities, history, now, few):
+    """Why these packages are not fresh enough: the same place twice, or too many recent repeats."""
+    problems = []
+    for i, a in enumerate(identities):
+        for b in identities[:i]:
+            if same_place(a, b):
+                problems.append(f"「{b['name']}」和「{a['name']}」是同一個地方：三個方案要三個不同的地方"
+                                "（同一間的不同房型只算一個），再找別家官網")
+    if few:  # the reason says why only these fit (a named place, the cheapest there)
+        return problems
+    seen = recent(history, now)
+    repeats = [a["name"] for a in identities if any(same_place(a, e) for e in seen)]
+    if len(repeats) > MAX_REPEATS:
+        problems.append(f"最近 {REPEAT_DAYS} 天推過：{'、'.join(repeats)}。三個方案最多重複 {MAX_REPEATS} 個，"
+                        "其他用 web_search 找這次新的官網再跑 page-prices.py（--near 只用來補比價）；"
+                        "真的只有這些符合才加 --few-reason 「只有…符合，因為…」")
+    return problems
+
+
+def remember(path, identities, header, now):
+    """Add this reply's places to the recommendation log (kept to the last REPEAT_DAYS days)."""
+    import json
+    history = [e for e in read_history(path) if now - float(e.get("at", 0)) < REPEAT_DAYS * 86400]
+    history += [{**identity, "header": header, "at": round(now)} for identity in identities]
+    try:
+        Path(path).write_text(json.dumps(history, ensure_ascii=False, indent=1), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def build_packages(common, packages):
     """Up to three ready-to-book packages in one phone-width reply. Returns (text, problems, stderr_notes)."""
     notes, problems, built = [], [], []
@@ -189,6 +261,13 @@ def build_packages(common, packages):
     if len(packages) < len(MARKS) and not FEW_FIT.search(few):
         return None, [f"要給 {len(MARKS)} 個能直接訂的方案，現在只有 {len(packages)} 個：再找符合日期與交通方式、"
                       "這次查過價格的地方；真的只有一兩個符合，加 --few-reason 「只有…符合…，因為…」"], notes
+    import time
+    now = time.time()
+    identities = [place_identity(p.place, p.official, p.phone) for p in packages]
+    history_path = common.history or Path(common.hermes_root or HERE) / "recommended.json"
+    problems += repeat_problems(identities, read_history(history_path), now, few)
+    if problems:
+        return None, problems, notes
     for number, package in enumerate(packages, 1):
         name = package.place or f"第 {number} 個方案"
         if not package.place or not package.transport or not package.item:
@@ -231,7 +310,10 @@ def build_packages(common, packages):
         if not package.phone:  # its own line: with show_unconfirmed off the plugin drops it, not the links
             lines.append(NO_PHONE)
     message = "\n".join(lines)
-    return message, checked(message, common.for_clarify), notes
+    problems = checked(message, common.for_clarify)
+    if not problems:
+        remember(history_path, identities, header, now)
+    return message, problems, notes
 
 
 def package_parser():
@@ -290,6 +372,7 @@ def main():
     parser.add_argument("--records", help=argparse.SUPPRESS)
     parser.add_argument("--hermes-root", help=argparse.SUPPRESS)
     parser.add_argument("--preferences", help=argparse.SUPPRESS)
+    parser.add_argument("--history", help=argparse.SUPPRESS)  # tests only: the recommendation log
     shared, packages = split_packages(sys.argv[1:])
     args = parser.parse_args(shared)
     if packages:

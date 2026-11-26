@@ -183,6 +183,49 @@ class PackageTests(unittest.TestCase):
                           "--guests", "2", *shared, "--hermes-root", str(self.root), "--records", str(self.records),
                           "--preferences", str(self.prefs), *[arg for p in packages for arg in p])
 
+    def history(self, *names, hours_ago=24):
+        import time
+        at = time.time() - hours_ago * 3600
+        entries = [{"name": PLACES[k][1], "phone": PLACES[k][4].replace("-", ""), "site": PLACES[k][0].split("//")[1].rsplit("/", 1)[0],
+                    "at": at} for k in names]
+        (self.root / "recommended.json").write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
+
+    def test_one_place_twice_is_not_two_packages(self):
+        # 2026-11-26 (exam): three packages were three rooms of one 龍山溫泉旅館.
+        twin = ["--package", "--place", "甲溫泉 本館", "--room", "雙人房", "--transport", "開車約 50 分鐘",
+                "--item", "和室雙人房 1晚=3200@https://a.example/rooms", "--official", "https://a.example/rooms"]
+        rc, _, err = self.run_packages(self.package("a"), twin, self.package("c"))
+        self.assertEqual(rc, 1)
+        self.assertIn("是同一個地方", err)
+
+    def test_places_recommended_lately_may_come_back_only_once(self):
+        # 2026-11-26 (exam): 「我想出去玩」「我想去泡溫泉」「這週末想去泡溫泉」 all got the same three places.
+        self.history("a", "b")
+        rc, _, err = self.run_packages(self.package("a"), self.package("b"), self.package("c"))
+        self.assertEqual(rc, 1)
+        self.assertIn("最近 14 天推過：甲溫泉、乙山莊", err)
+        self.history("a")
+        rc, out, err = self.run_packages(self.package("a"), self.package("b"), self.package("c"))
+        self.assertEqual(rc, 0, err)
+        # A follow-up in the same conversation (minutes ago) and an old recommendation do not count.
+        for hours in (0.1, 24 * 15):
+            self.history("a", "b", hours_ago=hours)
+            rc, _, err = self.run_packages(self.package("a"), self.package("b"), self.package("c"))
+            self.assertEqual(rc, 0, err)
+        # Only these fit (a named place, the cheapest there): the reason lets them through.
+        self.history("a", "b")
+        rc, _, err = self.run_packages(self.package("a"), self.package("b"), self.package("c"),
+                                       shared=("--few-reason", "只有這三家符合，因為礁溪雙人湯屋只有這些有標價"))
+        self.assertEqual(rc, 0, err)
+
+    def test_a_sent_reply_is_remembered(self):
+        rc, _, err = self.run_packages(self.package("a"), self.package("b"), self.package("c"))
+        self.assertEqual(rc, 0, err)
+        log = json.loads((self.root / "recommended.json").read_text(encoding="utf-8"))
+        self.assertEqual([e["name"] for e in log], ["甲溫泉", "乙山莊", "丙旅館"])
+        self.assertEqual(log[0]["phone"], "039881111")
+        self.assertEqual(log[0]["site"], "a.example")
+
     def test_three_packages_come_out_cheapest_first_and_pass_phone_check(self):
         rc, out, err = self.run_packages(self.package("a"), self.package("b"), self.package("c"))
         self.assertEqual(rc, 0, err)

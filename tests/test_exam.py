@@ -63,6 +63,19 @@ class GradeTests(unittest.TestCase):
         hand = PLAN.replace("總計 NT$1,200", "總計 NT$1,000")
         self.assertTrue(any("甲湯屋" in p for p in self.grade(hand)))
 
+    def test_only_hot_springs_fail_when_no_kind_was_named(self):
+        # 2026-11-26: 「為甚麼只有溫泉明明還有那麼多地方可以玩」.
+        mixed = dict(PACKAGES, mixed=True, place=None, budget=None)
+        self.assertIn("沒說玩什麼，三個方案卻全是溫泉", self.grade(PLAN, question=mixed))
+        trail = PLAN.replace("② 乙湯屋｜雙人湯屋", "② 乙步道｜步道")
+        self.assertEqual(self.grade(trail, outputs=(trail,), question=mixed), [])
+        self.assertEqual(self.grade(PLAN), [])  # 「想去泡溫泉」: all hot springs is right
+
+    def test_one_place_twice_fails(self):
+        # 2026-11-26: three packages were three rooms of one 龍山溫泉旅館.
+        twin = PLAN.replace("② 乙湯屋", "② 甲湯屋")
+        self.assertIn("「甲湯屋」重複：三個方案要三個不同的地方", self.grade(twin, outputs=(twin,)))
+
     def test_no_packages_or_wrong_place_fail(self):
         self.assertIn("沒有給 ①②③ 方案", self.grade("請問想去哪裡？", outputs=()))
         self.assertIn("方案不在烏來", self.grade(PLAN, question=dict(PACKAGES, place="烏來")))
@@ -133,6 +146,15 @@ class RestoreTests(unittest.TestCase):
             self.assertEqual((folder / "opportunities.json").read_text(encoding="utf-8"), "before")
             self.assertEqual((folder / "opportunities.exam-s.json").read_text(encoding="utf-8"), "during")
             self.assertFalse((folder / "preferences.exam-s.json").exists())
+
+    def test_a_file_the_exam_made_is_moved_aside(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            before = exam.snapshot(folder)
+            (folder / "recommended.json").write_text("[]", encoding="utf-8")
+            self.assertEqual(exam.restore(folder, before, "s"), ["recommended.json"])
+            self.assertFalse((folder / "recommended.json").exists())
+            self.assertTrue((folder / "recommended.exam-s.json").exists())
 
 
 if __name__ == "__main__":
