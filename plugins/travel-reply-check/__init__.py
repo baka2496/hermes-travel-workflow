@@ -349,8 +349,9 @@ TOOL_WRITTEN_PROBLEM = ("地點庫（places.json）和推薦紀錄（recommended
 # 2026-11-26 (exam): asked 「你幫我挑一個」, the bot searched the whole travel-workflow folder for 「pick-one」,
 # read an earlier exam's answer and sent its photo without looking at it. The exam's answers are not
 # evidence, and a content search over the whole folder (or above it) reads them and the checkers' code.
+# Any folder counts, not only travel-workflow and its parents (Antigravity's review: no path, 「.」, 「..」 or
+# C:/Users/…/Local reach it too); the bot's data are single files, so a content search names one.
 EXAM_RESULTS = re.compile(r"exam-results", re.I)
-WIDE_SEARCH = re.compile(r"(?:[\\/]hermes|[\\/]shared|[\\/]travel-workflow)[\\/]*$", re.I)
 EXAM_PROBLEM = ("考試成績（exam-results）不是查證來源，不能看。"
                 "要找地方用 places.py pick / places.py list，價格用 page-prices.py <官網網址> 今天重讀；"
                 "搜尋內容要指定一個檔案（例如 opportunities.json），不要搜整個資料夾。")
@@ -361,7 +362,8 @@ def exam_problem(tool_name, args):
     if EXAM_RESULTS.search(text):
         return EXAM_PROBLEM
     if tool_name == "search_files" and str(args.get("target") or "content") != "files":
-        if WIDE_SEARCH.search(str(args.get("path") or "").strip()):
+        path = str(args.get("path") or "").strip().strip("\"'").rstrip("\\/")
+        if "." not in re.split(r"[\\/]", path)[-1].strip("."):  # a folder (or no path), not one file
             return EXAM_PROBLEM
     return None
 

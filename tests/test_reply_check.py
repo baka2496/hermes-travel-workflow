@@ -366,6 +366,10 @@ class CheckersAreOffLimitsTests(unittest.TestCase):
             return bool(result) and result.get("action") == "block" and "exam-results" in result["message"]
         self.assertTrue(blocked("search_files", {"path": self.TOOLS, "pattern": "pick-one"}))
         self.assertTrue(blocked("search_files", {"path": "C:/Users/shiro/AppData/Local/hermes/", "pattern": "兩天一夜"}))
+        # No path, 「.」, 「..」, a relative folder or one further up reach it too (Antigravity's review).
+        for path in (None, "", ".", "..", "./", "travel-workflow", "C:/Users/shiro/AppData/Local", "C:\\Users"):
+            args = {"pattern": "pick-one"} if path is None else {"path": path, "pattern": "pick-one"}
+            self.assertTrue(blocked("search_files", args), path)
         self.assertTrue(blocked("read_file", {"path": f"{self.TOOLS}/exam-results/20261126-212147.json"}))
         self.assertTrue(blocked("terminal", {"command": f"type {self.TOOLS}\\exam-results\\x.html"}))
         # Listing the folder, or searching one file, stays fine.
