@@ -647,10 +647,38 @@ ONE_TOO_SOON_PROBLEM = ("第一次給方案要給 3 個（加 --package，最便
                         "選了一個、或要你幫忙挑一個時，才用不加 --package 出那一個的完整明細。")
 
 
+SCHEDULED = "[IMPORTANT: You are running as a scheduled cron job"
+SHOWN = re.compile(r"^[①②③④⑤] ", re.M)  # format-plan.py --package's own package heads
+
+
 def offered(session_id, home):
-    """True when a format-plan.py --package run already showed packages in this conversation."""
-    printed = tool_outputs(session_id, home, "format-plan.py")
-    return printed is UNKNOWN or any(PACKAGE_LINE.search(line) for o in printed for line in o.splitlines())
+    """True when three packages were shown in this round: since the owner's message before the latest (they
+    may pick ② in a new message, or with a button in this one), not in an older trip in the same chat (review).
+    Also True for a scheduled run (the Thursday weekend job pushes one plan) or an unreadable conversation."""
+    for path in sessions.databases(home):
+        try:
+            with sessions.read_only(path) as db:
+                said = [(i, str(c or "")) for i, c in db.execute(
+                    "SELECT id, content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id", (session_id,))]
+                if not said:
+                    continue
+                if any(text.startswith(SCHEDULED) for _, text in said):
+                    return True
+                owner = [i for i, text in said if text and not text.startswith(sessions.NOT_THE_USER)]
+                since = owner[-2] if len(owner) > 1 else 0
+                ids = [call_id for (value,) in db.execute(
+                           "SELECT tool_calls FROM messages WHERE session_id = ? AND id > ? AND tool_calls LIKE ?",
+                           (session_id, since, "%format-plan%"))
+                       for call_id, _, arguments in sessions.calls(value) if "--package" in arguments]
+                for call_id in ids:
+                    row = db.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'tool' AND "
+                                     "tool_call_id = ?", (session_id, call_id)).fetchone()
+                    if row and SHOWN.search(sessions.result_text(row[0])):
+                        return True
+                return False
+        except sqlite3.Error:
+            continue
+    return True
 
 
 # 2026-11-26 (exam): told 「太貴，有沒有更便宜的」, the bot sent the same NT$300 places again as 「平價」. The role's
@@ -693,8 +721,9 @@ TOTAL_FIRST = re.compile(rf"^總計 ({AMOUNT})", re.M)
 def not_cheaper(text, session_id, home):
     """The honest 「沒找到」 when the owner asked for cheaper and every package is not, else None."""
     totals = [int(re.sub(r"\D", "", a)) for a in TOTAL_FIRST.findall(text)]
-    if not totals and package_heads(text):  # 「1. 源來如池：雙人湯屋 300元」: the prices written in the list
-        totals = [int(re.sub(r"\D", "", a)) for a in money.PRICE.findall(text)]
+    if not totals:  # 「1. 源來如池：雙人湯屋 300元」: the price on each entry's own line, not 「租毛巾 50 元」 (review)
+        totals = [int(re.sub(r"\D", "", found.group(0)))
+                  for found in map(money.PRICE.search, package_heads(text)) if found]
     if not totals:
         return None
     said = sessions.owner_words(home, session_id)
@@ -1152,7 +1181,9 @@ def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
             if hide:  # every package of the latest run is printed, not only its first
                 latest = ["\n".join(runs[-1])] if runs else []
                 fixed = without_unconfirmed(fixed, latest, reviewed_card_amounts(session_id, home))
-        if package_heads(fixed):  # 2026-11-26 (exam): blank lines between packages made 15 phone lines of 13
+        # 2026-11-26 (exam): blank lines between packages made 15 phone lines of 13. Only format-plan.py's
+        # ①②③ packages: an ordinary numbered list keeps its spacing (review).
+        if len(SHOWN.findall(fixed)) >= 2:
             fixed = re.sub(r"\n[ \t]*(?:\n[ \t]*)+", "\n", fixed).strip("\n")
         return fixed if fixed != response_text else None
     except Exception:

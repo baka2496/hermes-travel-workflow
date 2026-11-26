@@ -118,10 +118,15 @@ def grade(question, said, reply, tool_outputs, elapsed=0, error="", earlier=(), 
         problems.append(f"太慢：{round(elapsed / 60)} 分鐘")
     report = phone_check.check(reply)
     # 「未確認就不要傳給我」: the plugin drops 「電話：未取得」, so a package with no phone line is what the owner chose.
-    # The same for 「照片：未取得」 (missing_photo).
+    # The same for 「照片：未取得」 (missing_photo). Only when the tool really printed that line: a photo or a phone
+    # the tool found and the reply left out still fails (Antigravity's review).
+    printed = "\n".join(tool_outputs)
+    dropped_photo = hide_unconfirmed and "照片：未取得" in printed
+    dropped_phone = hide_unconfirmed and "電話：未取得" in printed
     kinds = sorted({p["kind"] for p in report["problems"] if p["kind"] != "unsaid_budget"
-                    and not (hide_unconfirmed and (p["kind"] == "missing_photo" or p["kind"] == "incomplete_package"
-                                                   and p.get("text", "").endswith(PHONE_ONLY)))})
+                    and not (dropped_photo and p["kind"] == "missing_photo")
+                    and not (dropped_phone and p["kind"] == "incomplete_package"
+                             and p.get("text", "").endswith(PHONE_ONLY))})
     if kinds:
         problems.append("手機排版檢查沒過：" + "、".join(kinds))
     for written, _ in travel_money.unsaid_budgets(reply, said):

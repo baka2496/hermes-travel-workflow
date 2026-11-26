@@ -614,7 +614,9 @@ class PackageReplyTests(unittest.TestCase):
                             check.HAND_WRITTEN)
         # Blank lines between format-plan.py's packages are taken out (exam: 15 phone lines of 13).
         spaced = PACKAGES_OUT.replace("\n② ", "\n\n② ").replace("\n③ ", "\n\n③ ")
-        self.assertNotIn("\n\n", self.transform(home, spaced) or spaced)
+        self.assertEqual(self.transform(home, spaced), PACKAGES_OUT)
+        steps = "要訂之前：\n\n1. 先確認日期\n\n2. 再確認人數"  # an ordinary list keeps its spacing (review)
+        self.assertIsNone(self.transform(home_with("", tool="calendar-check.py"), steps))
         # A numbered list without prices is not a package (Antigravity's review), even with no format-plan run.
         steps = "要幫你訂之前想確認兩件事：\n① 出發日是 12/6 還是 12/13？\n② 兩個人還是三個人？"
         self.assertNotEqual(self.transform(home_with("", tool="calendar-check.py"), steps), check.HAND_WRITTEN)
@@ -700,13 +702,30 @@ class OwnerRequestTests(unittest.TestCase):
         self.assertIn("第一次給方案要給 3 個", self.run_plan(said, command=self.SINGLE))
         self.assertIsNone(self.run_plan(said))
         self.assertIsNone(self.run_plan(said, command=self.SINGLE.replace(" --place a", " --help")))
-        # The Thursday weekend job pushes one plan: a scheduled run is not the owner talking.
-        job = "[IMPORTANT: You are running as a scheduled cron job.] 挑一個完整一日遊方案"
-        self.assertIsNone(self.run_plan(job, command=self.SINGLE))
         # After three were shown (the owner picks ②), the one plan's full detail is fine.
-        home = home_with("11/28 礁溪 2人｜3 個方案\n① 甲｜雙人湯屋\n總計 NT$300", tool="format-plan.py")
+        shown = "11/28 礁溪 2人｜3 個方案\n① 甲｜雙人湯屋\n總計 NT$300"
+        home = home_with(shown, tool="format-plan.py --package")
         self.assertTrue(check.offered("s1", home))
         self.assertFalse(check.offered("s1", home_with()))
+        self.say(home, "我選①")
+        self.assertTrue(check.offered("s1", home))
+        # A new trip later in the same chat starts over: three first (Antigravity's review).
+        self.say(home, "下週想去九份，幫我排")
+        self.assertFalse(check.offered("s1", home))
+        # The Thursday weekend job pushes one plan: a scheduled run, named as such (review).
+        job = home_with()
+        db = sqlite3.connect(job / "profiles" / "travel-commander" / "state.db")
+        db.execute("UPDATE messages SET content = ? WHERE role = 'user'",
+                   ("[IMPORTANT: You are running as a scheduled cron job. DELIVERY: …] 執行 weekend-scout.py",))
+        db.commit()
+        db.close()
+        self.assertTrue(check.offered("s1", job))
+
+    def say(self, home, text):
+        db = sqlite3.connect(home / "profiles" / "travel-commander" / "state.db")
+        db.execute("INSERT INTO messages (session_id, role, content) VALUES ('s1', 'user', ?)", (text,))
+        db.commit()
+        db.close()
 
 
 class NotCheaperTests(unittest.TestCase):
@@ -742,6 +761,9 @@ class NotCheaperTests(unittest.TestCase):
         listed = ("有，礁溪有多間雙人湯屋只要 300 元（50分鐘）：\n1. 宜蘭玫瑰園民宿：雙人湯屋 300元\n📞 03-9883364\n"
                   "2. 源來如池：雙人湯屋 300元\n📞 03-9880210\n自備毛巾即可直接現場泡，不用花到600元。")
         self.assertIn("沒找到比上次最便宜的 NT$300", self.reply("一個小時六百也太貴，有沒有更便宜的湯屋", listed))
+        # A small extra in the text is not a cheaper package (review): 「租毛巾 50 元」.
+        self.assertIn("沒找到比上次最便宜的 NT$300",
+                      self.reply("太貴了，有沒有更便宜的", listed + "\n租毛巾 50 元"))
         # An older, cheaper trip in the same chat does not count, only the last plan (Antigravity's review).
         hotel = "11/28 礁溪 2人｜3 個方案\n① 乙飯店｜雙人房\n總計 NT$3,200"
         self.assertIsNone(self.reply("太貴了，有沒有更便宜的", hotel, "NT$300", "NT$5,000"))

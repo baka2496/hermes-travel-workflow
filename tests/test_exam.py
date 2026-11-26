@@ -80,12 +80,18 @@ class GradeTests(unittest.TestCase):
         # 「未確認就不要傳給我」: the plugin drops 「電話：未取得」, so the package has no phone line.
         bare = PLAN.replace(" 📞 03-2", "")
         self.assertTrue(any("incomplete_package" in p for p in self.grade(bare, outputs=(bare,))))
-        self.assertEqual(self.grade(bare, outputs=(bare,), hide_unconfirmed=True), [])
+        printed = PLAN.replace(" 📞 03-2", "\n電話：未取得")  # what format-plan.py printed
+        self.assertEqual(self.grade(bare, outputs=(printed,), hide_unconfirmed=True), [])
+        # The tool found a phone and the reply left it out: still a fault (Antigravity's review).
+        self.assertTrue(any("incomplete_package" in p for p in self.grade(bare, outputs=(PLAN,), hide_unconfirmed=True)))
         one = dict(PACKAGES, expect="one", place=None, budget=None)
         plain = ("11/28 礁溪 2人\n總計 NT$300\n📍 [Google 地圖・查空房](https://maps.example/)\n"
                  "🏨 [官網訂房](https://a.example/)\n📞 03-1")  # 「照片：未取得」 dropped
         self.assertTrue(any("missing_photo" in p for p in self.grade(plain, outputs=(plain,), question=one)))
-        self.assertEqual(self.grade(plain, outputs=(plain,), question=one, hide_unconfirmed=True), [])
+        self.assertEqual(self.grade(plain, outputs=(plain + "\n照片：未取得",), question=one, hide_unconfirmed=True), [])
+        found = plain + "\nMEDIA:C:/photos/a.jpg"  # the tool had a photo the reply left out
+        self.assertTrue(any("missing_photo" in p for p in self.grade(plain, outputs=(found,), question=one,
+                                                                    hide_unconfirmed=True)))
         no_link = PLAN.replace("🏨 [官網](https://b.example/) 📞 03-2", "")
         self.assertTrue(any("incomplete_package" in p for p in self.grade(no_link, outputs=(no_link,),
                                                                          hide_unconfirmed=True)))
