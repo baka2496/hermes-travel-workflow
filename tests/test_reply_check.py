@@ -655,6 +655,10 @@ class PackageReplyTests(unittest.TestCase):
         self.assertNotEqual(self.transform(home, "• 四季溫泉：雙人 50 分鐘 300 元"), check.HAND_WRITTEN)  # one line
         spaced = "• Dormy Inn 淺草：NT$3,200\n• 蔥澡 (小池)：1,000 元"  # names with spaces (review)
         self.assertEqual(self.transform(home, spaced), check.HAND_WRITTEN)
+        # Times, links and long sentences are not entries (review).
+        for line in ("• 下午 15:00 入住，房價 NT$3,200", "• 官網參考 https://example.com 每人 300 元",
+                     "• 離車站很近走路就到不用搭車也不用開車真的很方便喔，提醒：每人 300 元"):
+            self.assertIsNone(check.BULLET_ENTRY.match(line), line)
         flights = "• 機票：NT$12,281\n• 住宿：NT$3,200"
         self.assertNotEqual(self.transform(home_with("", tool="calendar-check.py"), flights), check.HAND_WRITTEN)
 
