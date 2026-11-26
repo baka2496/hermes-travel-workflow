@@ -121,7 +121,7 @@ def grade(question, said, reply, tool_outputs, elapsed=0, error="", earlier=()):
         if len(blocks) > 1:
             problems.append(f"要它挑一個，卻給了 {len(blocks)} 個方案")
         totals = [line for line in reply.splitlines() if line.startswith("總計")]
-        if not blocks and len(totals) > 1:  # two single plans pasted together (Antigravity's review)
+        if len(blocks) <= 1 and len(totals) > 1:  # two plans pasted together (Antigravity's review)
             problems.append(f"要它挑一個，卻給了 {len(totals)} 個方案")
         if not totals:
             problems.append("沒有總價")
