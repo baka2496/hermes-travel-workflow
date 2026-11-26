@@ -595,6 +595,15 @@ class PackageReplyTests(unittest.TestCase):
         self.assertEqual(self.transform(home, "方案 1｜和平島地質公園\n• 交通：開車約 50 分鐘\n• 門票 NT$120"),
                          check.HAND_WRITTEN)
         self.assertNotEqual(self.transform(home, PACKAGES_OUT), check.HAND_WRITTEN)
+        # One plan by hand (exam: refused for 「只有 2 個」, then 「首選：…・費用明細：」 with its prices dropped).
+        first = ("首選：宜蘭玫瑰園民宿原泉湯屋\n・房型：雙人湯屋 50分鐘\n・交通：開車約 50 分鐘\n・費用明細：\n"
+                 "・電話：039883364")
+        self.assertEqual(self.transform(home, first), check.HAND_WRITTEN)
+        self.assertEqual(self.transform(home, first.replace("・費用明細：", "總計 NT$250")), check.HAND_WRITTEN)
+        single = home_with("11/29 烏來 2人\n總計 NT$800\n• 溪景湯屋 60分鐘 NT$800", tool="format-plan.py")
+        made = "推薦烏來。\n11/29 烏來 2人\n總計 NT$800\n• 溪景湯屋 60分鐘 NT$800\n交通：開車約 50 分鐘"
+        self.assertNotEqual(self.transform(single, made), check.HAND_WRITTEN)
+        self.assertNotEqual(self.transform(home, "交通：開車約 50 分鐘，你要哪天出發？"), check.HAND_WRITTEN)
         # A numbered list without prices is not a package (Antigravity's review), even with no format-plan run.
         steps = "要幫你訂之前想確認兩件事：\n① 出發日是 12/6 還是 12/13？\n② 兩個人還是三個人？"
         self.assertNotEqual(self.transform(home_with("", tool="calendar-check.py"), steps), check.HAND_WRITTEN)

@@ -1082,15 +1082,26 @@ def package_heads(text):
     return heads
 
 
+# 2026-11-26 (exam): refused (「只有 2 個」), the bot wrote one plan by hand: 「首選：…・房型：…・費用明細：」,
+# and the unchecked prices under 費用明細 were dropped, leaving an empty line.
+COST_LABEL = re.compile(r"^[\s・•*\-]*(?:費用明細|費用|總價|價格)\s*[：:]", re.M)
+PLAN_LABEL = re.compile(r"^[\s・•*\-]*(?:房型|交通|住宿)\s*[：:]", re.M)
+
+
 def hand_written(text, session_id, home):
-    """True when the reply has packages that no format-plan.py run in this conversation printed."""
+    """True when the reply has packages, or one plan, that no format-plan.py run in this conversation printed."""
     heads = package_heads(text)
-    if not heads:
+    totals = [line.strip() for line in text.splitlines() if line.startswith("總計")]
+    single = not heads and PLAN_LABEL.search(text) and (COST_LABEL.search(text) or totals)
+    if not heads and not single:
         return False
-    printed = tool_outputs(session_id, home, "format-plan.py")
+    printed = tool_outputs(session_id, home, COST_TOOLS if single else "format-plan.py")
     if printed is UNKNOWN:
         return False
     made = "\n".join(printed)
+    if single:  # one plan goes out only with a total a cost tool printed (its wording is corrected later)
+        amounts = [found.group(0) for found in map(re.compile(AMOUNT).search, totals) if found]
+        return not amounts or any(f"總計 {amount}" not in made for amount in amounts)
     return any(head not in made for head in heads)
 
 
