@@ -359,6 +359,21 @@ class CheckersAreOffLimitsTests(unittest.TestCase):
                         f"python {self.TOOLS}/format-plan.py --header x --package --place y"):
             self.assertIsNone(check.pre_tool_call("terminal", {"command": command}, session_id="s1"), command)
 
+    def test_earlier_exam_answers_are_not_evidence(self):
+        # 2026-11-26 (exam): the bot searched the whole folder for 「pick-one」 and sent an earlier exam's answer.
+        def blocked(tool, args):
+            result = check.pre_tool_call(tool, args, session_id="s1")
+            return bool(result) and result.get("action") == "block" and "exam-results" in result["message"]
+        self.assertTrue(blocked("search_files", {"path": self.TOOLS, "pattern": "pick-one"}))
+        self.assertTrue(blocked("search_files", {"path": "C:/Users/shiro/AppData/Local/hermes/", "pattern": "兩天一夜"}))
+        self.assertTrue(blocked("read_file", {"path": f"{self.TOOLS}/exam-results/20261126-212147.json"}))
+        self.assertTrue(blocked("terminal", {"command": f"type {self.TOOLS}\\exam-results\\x.html"}))
+        # Listing the folder, or searching one file, stays fine.
+        self.assertIsNone(check.pre_tool_call("search_files", {"path": self.TOOLS, "pattern": "*", "target": "files"},
+                                              session_id="s1"))
+        self.assertIsNone(check.pre_tool_call("search_files", {"path": f"{self.TOOLS}/opportunities.json",
+                                                               "pattern": "礁溪"}, session_id="s1"))
+
     def test_editing_or_reading_the_checkers_is_blocked(self):
         self.assertTrue(self.blocked("patch", path=f"{self.TOOLS}/page_evidence.py", old_string="a", new_string="b"))
         self.assertTrue(self.blocked("write_file", path=r"C:\hermes\shared\travel-workflow\trip-cost.py", content="x"))
@@ -700,6 +715,8 @@ class OwnerRequestTests(unittest.TestCase):
         # 2026-11-26 (exam): 「幫我比價找最便宜的雙人湯屋，給我完整方案」 got one plan, not three to choose from.
         said = "11/28 想去礁溪泡湯，2人，預算 2000，幫我比價找最便宜的雙人湯屋，給我完整方案"
         self.assertIn("第一次給方案要給 3 個", self.run_plan(said, command=self.SINGLE))
+        # Only one place had a price: the block says how to send a short list (jiaoxi-budget re-ran it six times).
+        self.assertIn("--few-reason", self.run_plan(said, command=self.SINGLE))
         self.assertIsNone(self.run_plan(said))
         self.assertIsNone(self.run_plan(said, command=self.SINGLE.replace(" --place a", " --help")))
         # After three were shown (the owner picks ②), the one plan's full detail is fine.

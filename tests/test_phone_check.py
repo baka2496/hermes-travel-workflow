@@ -65,6 +65,18 @@ class PhoneCheckTests(unittest.TestCase):
         status, report = check("\n".join(f"• 第{i}項" for i in range(14)))
         self.assertEqual(report["problems"], [])
 
+    def test_three_packages_get_six_lines_each(self):
+        # 2026-11-26 (exam): format-plan.py's own three packages (15 lines) were refused as too long.
+        def package(mark, extra=0):
+            return [f"{mark} 甲溫泉｜雙人湯屋", "總計 NT$800", "交通：開車約 50 分鐘", "📷 雙人湯屋（a.example）",
+                    "📍 [地圖](https://a.example/map) 🏨 [官網](https://a.example) 📞 03-9881111",
+                    *[f"• 補充{i}" for i in range(extra)]]
+        header = ["11/28 礁溪 2人｜3 個方案，點連結就能訂"]
+        status, report = check("\n".join(header + package("①") + package("②") + package("③")))
+        self.assertNotIn("too_long", {p["kind"] for p in report["problems"]}, report)
+        status, report = check("\n".join(header + package("①", 3) + package("②", 3) + package("③", 3)))
+        self.assertIn("too_long", {p["kind"] for p in report["problems"]})
+
     def test_text_argument_needs_no_file(self):
         result = subprocess.run([sys.executable, str(SCRIPT), "--json", "--text", "結論\\n\\n• 交通：NT$240"],
                                 capture_output=True, text=True, encoding="utf-8")

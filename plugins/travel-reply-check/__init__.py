@@ -346,7 +346,31 @@ TOOL_WRITTEN_PROBLEM = ("地點庫（places.json）和推薦紀錄（recommended
                         "推薦紀錄由 format-plan.py 自己記。")
 
 
+# 2026-11-26 (exam): asked 「你幫我挑一個」, the bot searched the whole travel-workflow folder for 「pick-one」,
+# read an earlier exam's answer and sent its photo without looking at it. The exam's answers are not
+# evidence, and a content search over the whole folder (or above it) reads them and the checkers' code.
+EXAM_RESULTS = re.compile(r"exam-results", re.I)
+WIDE_SEARCH = re.compile(r"(?:[\\/]hermes|[\\/]shared|[\\/]travel-workflow)[\\/]*$", re.I)
+EXAM_PROBLEM = ("考試成績（exam-results）不是查證來源，不能看。"
+                "要找地方用 places.py pick / places.py list，價格用 page-prices.py <官網網址> 今天重讀；"
+                "搜尋內容要指定一個檔案（例如 opportunities.json），不要搜整個資料夾。")
+
+
+def exam_problem(tool_name, args):
+    text = json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args)
+    if EXAM_RESULTS.search(text):
+        return EXAM_PROBLEM
+    if tool_name == "search_files" and str(args.get("target") or "content") != "files":
+        if WIDE_SEARCH.search(str(args.get("path") or "").strip()):
+            return EXAM_PROBLEM
+    return None
+
+
 def tamper_problem(tool_name, args):
+    if tool_name in ("read_file", "search_files", "terminal"):
+        problem = exam_problem(tool_name, args)
+        if problem:
+            return problem
     if tool_name in WRITES:
         path = str(args.get("path") or args.get("file_path") or "")
         if TOOL_WRITTEN.search(path.strip()):
@@ -643,8 +667,12 @@ def request_problem(tool_name, args, session_id, home):
 
 # 2026-11-26 (exam): 「幫我比價找最便宜的雙人湯屋，給我完整方案」 got one plan; the owner's rule is three to choose
 # from. One plan's full detail comes after the three (the owner picked one), or when asked to pick.
+# The bot then re-ran the same single plan with --few-reason six times (exam, 2026-11-26, jiaoxi-budget):
+# only one place had a price it could check. Say how a short list is sent.
 ONE_TOO_SOON_PROBLEM = ("第一次給方案要給 3 個（加 --package，最便宜的排第一）：使用者還沒從三個裡選。"
-                        "選了一個、或要你幫忙挑一個時，才用不加 --package 出那一個的完整明細。")
+                        "選了一個、或要你幫忙挑一個時，才用不加 --package 出那一個的完整明細。"
+                        "只有一兩家確認得到價格時，照樣在每家前面加 --package（只放那一兩家），"
+                        "再加 --few-reason 「只有…符合…」；不要再跑一次同樣的指令。")
 
 
 SCHEDULED = "[IMPORTANT: You are running as a scheduled cron job"
