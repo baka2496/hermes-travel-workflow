@@ -91,11 +91,23 @@ def package_totals(block):
     return []
 
 
-def grade(question, said, reply, tool_outputs, elapsed=0, error="", earlier=()):
+PHONE_ONLY = "缺 電話（或 電話：未取得）"
+
+
+def hide_unconfirmed(folder):
+    try:
+        return json.loads((Path(folder) / "preferences.json").read_text(encoding="utf-8-sig")).get(
+            "show_unconfirmed") is False
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def grade(question, said, reply, tool_outputs, elapsed=0, error="", earlier=(), hide_unconfirmed=False):
     """Why this answer fails the question (Traditional Chinese, for the owner), or [] when it passes.
 
     `said` is what the owner typed (the question's turns), `tool_outputs` the text of every
-    format-plan.py result in the conversation, `earlier` the replies before the last one."""
+    format-plan.py result in the conversation, `earlier` the replies before the last one,
+    `hide_unconfirmed` preferences.json's show_unconfirmed being false."""
     if error:
         return [f"出錯：{error[:120]}"]
     if not reply.strip():
@@ -104,7 +116,10 @@ def grade(question, said, reply, tool_outputs, elapsed=0, error="", earlier=()):
     if elapsed > question.get("time_limit", TIME_LIMIT_S):
         problems.append(f"太慢：{round(elapsed / 60)} 分鐘")
     report = phone_check.check(reply)
-    kinds = sorted({p["kind"] for p in report["problems"] if p["kind"] != "unsaid_budget"})
+    # 「未確認就不要傳給我」: the plugin drops 「電話：未取得」, so a package with no phone line is what the owner chose.
+    kinds = sorted({p["kind"] for p in report["problems"] if p["kind"] != "unsaid_budget"
+                    and not (hide_unconfirmed and p["kind"] == "incomplete_package"
+                             and p.get("text", "").endswith(PHONE_ONLY))})
     if kinds:
         problems.append("手機排版檢查沒過：" + "、".join(kinds))
     for written, _ in travel_money.unsaid_budgets(reply, said):
@@ -321,7 +336,8 @@ def run(args):
                 if error:
                     break
             elapsed = time.time() - start
-            problems = grade(question, said, reply, made, elapsed, error, earlier=replies[:-1])
+            problems = grade(question, said, reply, made, elapsed, error, earlier=replies[:-1],
+                             hide_unconfirmed=hide_unconfirmed(folder))
             results.append({"id": question["id"], "said": said, "reply": reply, "session_id": session_id,
                             "elapsed": elapsed, "problems": problems})
             print(f"{'✅' if not problems else '❌'} {question['id']}（{round(elapsed / 60, 1)} 分）"

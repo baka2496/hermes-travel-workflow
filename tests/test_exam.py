@@ -76,6 +76,15 @@ class GradeTests(unittest.TestCase):
         twin = PLAN.replace("② 乙湯屋", "② 甲湯屋")
         self.assertIn("「甲湯屋」重複：三個方案要三個不同的地方", self.grade(twin, outputs=(twin,)))
 
+    def test_no_phone_line_is_fine_when_the_owner_hides_unconfirmed(self):
+        # 「未確認就不要傳給我」: the plugin drops 「電話：未取得」, so the package has no phone line.
+        bare = PLAN.replace(" 📞 03-2", "")
+        self.assertTrue(any("incomplete_package" in p for p in self.grade(bare, outputs=(bare,))))
+        self.assertEqual(self.grade(bare, outputs=(bare,), hide_unconfirmed=True), [])
+        no_link = PLAN.replace("🏨 [官網](https://b.example/) 📞 03-2", "")
+        self.assertTrue(any("incomplete_package" in p for p in self.grade(no_link, outputs=(no_link,),
+                                                                         hide_unconfirmed=True)))
+
     def test_pick_one_wants_one_full_plan(self):
         # 2026-11-26 (exam): 「你幫我挑一個」 got two packages.
         one = dict(PACKAGES, expect="one", place=None, budget=None)

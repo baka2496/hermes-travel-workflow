@@ -537,7 +537,11 @@ DAYS_NIGHTS = re.compile(r"([一二兩三四五六七\d])\s*天\s*([一二兩三
 # Only words that mean a same-day trip (Antigravity's review: 「第一日」「一日券」 are not).
 DAY_TRIP = re.compile(r"一日遊|當天來回|當日來回|一日行程")
 DATES_PROBLEM = ("使用者寫的 {span} 是 {nights} 晚，可是又說「{said}」，兩個對不上：先用 clarify 問要哪一個"
-                 "（「{first}」還是「{second}」），不要自己挑日期，問完再組方案。")
+                 "（「{first}」還是「{second}」），不要自己挑日期，也先不要查價格，等使用者選了再查、再組方案。"
+                 "clarify 沒人回答或逾時，就把這個問題當最後回覆送出，結束這一輪。")
+# While the dates are open, research waits too (2026-11-26 exam: 19 minutes of searching around a refused plan).
+RESEARCH = re.compile(r"format-plan|trip-cost|page-prices|places\.py|booking-links|place-photo")
+RESEARCH_TOOLS = ("web_search", "web_extract", "browser_exec")
 
 
 def number(text):
@@ -590,20 +594,95 @@ PICK_ONE_PROBLEM = ("使用者要你幫忙挑一個：不要加 --package。挑�
                     "完整明細（同樣的 --item、--place、--official、--phone），為什麼選它寫成一句短的 --note。")
 
 
+def answered_since_owner(home, session_id):
+    """True when a clarify after the owner's latest message came back with their choice. On Telegram a
+    button answer is the clarify tool's result, not a new message: without this the plan stayed refused."""
+    for path in sessions.databases(home):
+        try:
+            with sessions.read_only(path) as db:
+                last = db.execute("SELECT MAX(id) FROM messages WHERE session_id = ? AND role = 'user'",
+                                  (session_id,)).fetchone()[0]
+                if last is None:
+                    continue
+                for (content,) in db.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'tool' "
+                                             "AND id > ? AND content LIKE '%user_response%'", (session_id, last)):
+                    try:
+                        data = json.loads(content)
+                    except (TypeError, ValueError):
+                        continue
+                    if any(isinstance(r, dict) and r.get("user_response") for r in data.get("responses") or ()):
+                        return True
+        except sqlite3.Error:
+            continue
+    return False
+
+
 def request_problem(tool_name, args, session_id, home):
-    """Why this format-plan.py run does not answer what the owner just asked, or None."""
-    if tool_name != "terminal" or "format-plan" not in str(args.get("command") or ""):
+    """Why this call does not answer what the owner just asked, or None."""
+    command = str(args.get("command") or "") if tool_name == "terminal" else ""
+    research = tool_name in RESEARCH_TOOLS or bool(RESEARCH.search(command))
+    if not research or not session_id:
         return None
-    said = sessions.owner_words(home, session_id) if session_id else None
+    said = sessions.owner_words(home, session_id)
     if not said:
         return None
     latest = said[-1]
     why = dates_problem(latest)
-    if why:
+    if why and not answered_since_owner(home, session_id):
         return why
-    if PICK_ONE.search(latest) and re.search(r"(?:^|\s)--package(?:\s|$)", str(args.get("command"))):
+    if "format-plan" in command and PICK_ONE.search(latest) and re.search(r"(?:^|\s)--package(?:\s|$)", command):
         return PICK_ONE_PROBLEM
     return None
+
+
+# 2026-11-26 (exam): told 「太貴，有沒有更便宜的」, the bot sent the same NT$300 places again as 「平價」. The role's
+# rule: only places confirmed cheaper; none found is said plainly.
+CHEAPER = re.compile(r"太貴|便宜一點|更便宜|省一點")  # not 「最便宜的」: that is a first request
+NOT_CHEAPER = ("查過了，沒找到比上次最便宜的 {floor} 更便宜的{kind}，上次的方案照樣可以訂。"
+               "想換地區或換玩法（例如不泡湯改走步道、看海）跟我說，我再找。")
+
+
+def earlier_plan_floor(session_id, home):
+    """The cheapest package total format-plan.py printed before the owner's latest message, or None."""
+    floor = None
+    for path in sessions.databases(home):
+        try:
+            with sessions.read_only(path) as db:
+                last = db.execute("SELECT MAX(id) FROM messages WHERE session_id = ? AND role = 'user'",
+                                  (session_id,)).fetchone()[0]
+                if last is None:
+                    continue
+                ids = [call_id for (value,) in db.execute(
+                           "SELECT tool_calls FROM messages WHERE session_id = ? AND id < ? AND tool_calls LIKE ?",
+                           (session_id, last, "%format-plan%"))
+                       for call_id, _, arguments in sessions.calls(value) if "format-plan" in arguments]
+                for call_id in ids:
+                    row = db.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'tool' AND "
+                                     "tool_call_id = ? AND id < ?", (session_id, call_id, last)).fetchone()
+                    for amount in TOTAL_FIRST.findall(sessions.result_text(row[0]) if row else ""):
+                        value = int(re.sub(r"\D", "", amount))
+                        floor = value if floor is None else min(floor, value)
+        except sqlite3.Error:
+            continue
+    return floor
+
+
+TOTAL_FIRST = re.compile(rf"^總計 ({AMOUNT})", re.M)
+
+
+def not_cheaper(text, session_id, home):
+    """The honest 「沒找到」 when the owner asked for cheaper and every package is not, else None."""
+    totals = [int(re.sub(r"\D", "", a)) for a in TOTAL_FIRST.findall(text)]
+    if not totals:
+        return None
+    said = sessions.owner_words(home, session_id)
+    if not said or not CHEAPER.search(said[-1]):
+        return None
+    floor = earlier_plan_floor(session_id, home)
+    if floor is None or min(totals) < floor:
+        return None
+    kind = "湯屋" if re.search(r"湯屋|泡湯|溫泉", said[-1]) else "地方"
+    return NOT_CHEAPER.format(floor=money.money(floor), kind=kind)
 
 
 def pre_tool_call(tool_name, args, task_id="", session_id="", turn_id="", **kwargs):
@@ -1022,6 +1101,9 @@ def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
         home = os.environ.get("HERMES_HOME") or Path.home() / ".hermes"
         if hand_written(response_text, session_id, home):
             return HAND_WRITTEN
+        honest = not_cheaper(response_text, session_id, home)
+        if honest:
+            return honest
         fixed = without_unseen_photos(response_text, session_id)
         fixed = without_unsaid_budgets(fixed, session_id, home)
         hide = confirmed_only(home)

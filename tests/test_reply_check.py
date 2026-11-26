@@ -606,17 +606,23 @@ class OwnerRequestTests(unittest.TestCase):
     """2026-11-26 (exam): the role said to ask when dates disagree and to pick one when asked; now checked."""
     PLAN = '"python" "C:/hermes/shared/travel-workflow/format-plan.py" --header x --date 2026-11-28'
 
-    def run_plan(self, *said, command=PLAN):
+    def run_plan(self, *said, command=PLAN, tool="terminal", answer=None):
         home = home_with()
         db = sqlite3.connect(home / "profiles" / "travel-commander" / "state.db")
         for text in said:
             db.execute("INSERT INTO messages (session_id, role, content) VALUES ('s1', 'user', ?)", (text,))
+        if answer is not None:  # the owner's button answer comes back as clarify's result
+            result = {"responses": [{"question": "要哪幾天？", "status": "answered" if answer else "unanswered",
+                                     "user_response": answer}], "outcome": "answered" if answer else "timed_out"}
+            db.execute("INSERT INTO messages (session_id, role, content, tool_name) VALUES ('s1', 'tool', ?, 'clarify')",
+                       (json.dumps(result, ensure_ascii=False),))
         db.commit()
         db.close()
         old = os.environ.get("HERMES_HOME")
         os.environ["HERMES_HOME"] = str(home)
         try:
-            result = check.pre_tool_call("terminal", {"command": command}, session_id="s1")
+            args = {"command": command} if tool == "terminal" else {"query": "礁溪 湯屋"}
+            result = check.pre_tool_call(tool, args, session_id="s1")
         finally:
             if old is None:
                 del os.environ["HERMES_HOME"]
@@ -644,14 +650,49 @@ class OwnerRequestTests(unittest.TestCase):
         self.assertIsNone(self.run_plan("11/28-11/30 去礁溪，第一日先買一日券"))
         # Answered: the owner's latest words decide, not the first message.
         self.assertIsNone(self.run_plan("11/27–11/29 兩天一夜去礁溪", "11/28–11/29 兩天一夜"))
-        # Other tools still run (calendar-check, page-prices) while the bot asks.
-        self.assertIsNone(self.run_plan("11/27–11/29 兩天一夜", command='"python" "…/page-prices.py" https://a'))
+        # Research waits too (exam: 19 minutes of searching around the refused plan); the calendar does not.
+        self.assertIn("先不要查價格", self.run_plan("11/27–11/29 兩天一夜", command='"python" "…/page-prices.py" https://a'))
+        self.assertIn("先不要查價格", self.run_plan("11/27–11/29 兩天一夜", tool="web_search"))
+        self.assertIsNone(self.run_plan("11/27–11/29 兩天一夜", command='"python" "…/calendar-check.py" --from x'))
+        # The owner's button answer (clarify's result) settles it; no answer (timed out) does not.
+        self.assertIsNone(self.run_plan("11/27–11/29 兩天一夜", answer="11/28–11/29 兩天一夜"))
+        self.assertIn("沒人回答或逾時", self.run_plan("11/27–11/29 兩天一夜", answer=""))
 
     def test_pick_one_gets_one_plan_not_packages(self):
         said = "11/28 礁溪過夜和 11/29 烏來一日，你幫我挑一個"
         self.assertIn("不要加 --package", self.run_plan(said, command=self.PLAN + " --package --place a"))
         self.assertIsNone(self.run_plan(said, command=self.PLAN + " --place a"))
         self.assertIsNone(self.run_plan("我想出去玩", command=self.PLAN + " --package --place a"))
+
+
+class NotCheaperTests(unittest.TestCase):
+    """2026-11-26 (exam): 「太貴，有沒有更便宜的湯屋」 got the same NT$300 places again as 「平價」."""
+
+    def reply(self, follow_up, text, first_total="NT$300"):
+        home = home_with(f"11/28 礁溪 2人｜3 個方案\n① 玫瑰園｜雙人湯屋\n總計 {first_total}\n交通：開車約 50 分鐘",
+                         tool="format-plan.py")
+        db = sqlite3.connect(home / "profiles" / "travel-commander" / "state.db")
+        db.execute("INSERT INTO messages (session_id, role, content) VALUES ('s1', 'user', ?)", (follow_up,))
+        db.commit()
+        db.close()
+        old = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(home)
+        try:
+            return check.not_cheaper(text, "s1", home)
+        finally:
+            if old is None:
+                del os.environ["HERMES_HOME"]
+            else:
+                os.environ["HERMES_HOME"] = old
+
+    def test_the_same_price_again_becomes_an_honest_not_found(self):
+        same = "11/28 礁溪 2人｜平價湯屋\n① 玫瑰園｜雙人湯屋\n總計 NT$300\n② 龍山｜原石湯屋\n總計 NT$300"
+        said = self.reply("一個小時六百也太貴，有沒有更便宜的湯屋", same)
+        self.assertIn("沒找到比上次最便宜的 NT$300 更便宜的湯屋", said)
+        cheaper = same.replace("總計 NT$300\n② 龍山", "總計 NT$250\n② 龍山")
+        self.assertIsNone(self.reply("太貴了，有沒有更便宜的", cheaper))
+        self.assertIsNone(self.reply("那烏來呢", same))  # not a cheaper request
+        self.assertIsNone(self.reply("太貴了", "查了幾家，沒找到更便宜的。"))  # no packages: left as written
 
 
 class KanbanCommandTests(unittest.TestCase):
