@@ -634,7 +634,14 @@ class OwnerRequestTests(unittest.TestCase):
         self.assertIsNone(self.run_plan("11/28-29 兩天一夜"))
         self.assertIsNone(self.run_plan("11/28 想去礁溪泡湯，2人"))
         self.assertIsNone(self.run_plan("11/28 礁溪過夜和 11/29 烏來一日，你幫我挑一個"))
-        self.assertIn("是 1 晚", self.run_plan("11/28-11/29 烏來一日遊"))
+        # The two choices offered are the real dates and lengths (Antigravity's review).
+        self.assertIn("「11/27–11/29 三天兩夜」還是「11/27–11/28 兩天一夜」", why)
+        why = self.run_plan("11/28-11/29 烏來一日遊")
+        self.assertIn("是 1 晚", why)
+        self.assertIn("「11/28–11/29 兩天一夜」還是「11/28 一日遊」", why)
+        self.assertIn("「12/31–1/2 三天兩夜」還是「12/31–1/1 兩天一夜」", self.run_plan("12/31-1/2 兩天一夜"))
+        # 「第一日」「一日券」 are not a same-day trip.
+        self.assertIsNone(self.run_plan("11/28-11/30 去礁溪，第一日先買一日券"))
         # Answered: the owner's latest words decide, not the first message.
         self.assertIsNone(self.run_plan("11/27–11/29 兩天一夜去礁溪", "11/28–11/29 兩天一夜"))
         # Other tools still run (calendar-check, page-prices) while the bot asks.

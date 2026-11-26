@@ -84,6 +84,8 @@ class GradeTests(unittest.TestCase):
         self.assertIn("要它挑一個，卻給了 3 個方案", self.grade(PLAN, question=one))
         self.assertIn("總價不是 format-plan.py 算的", self.grade(single, outputs=(), question=one))
         self.assertIn("沒有總價", self.grade("烏來比較好", outputs=(), question=one))
+        two = single + "\n\n11/28 礁溪 2人\n總計 NT$4,200\n🏨 [官網](https://b.example/) 📞 03-2"
+        self.assertIn("要它挑一個，卻給了 2 個方案", self.grade(two, outputs=(two,), question=one))
 
     def test_cheaper_wants_cheaper_packages_or_an_honest_not_found(self):
         # 2026-11-26 (exam): the first reply's cheapest was NT$300 and nothing cheaper was found; saying so is right.

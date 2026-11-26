@@ -534,13 +534,25 @@ def places_problem(args):
 CHINESE_NUMBER = {"一": 1, "二": 2, "兩": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7}
 DATE_RANGE = re.compile(r"(\d{1,2})/(\d{1,2})\s*(?:[–—~～\-]|到|至)\s*(?:(\d{1,2})/)?(\d{1,2})(?![\d/])")
 DAYS_NIGHTS = re.compile(r"([一二兩三四五六七\d])\s*天\s*([一二兩三四五六\d])\s*夜")
-DAY_TRIP = re.compile(r"一日遊|當天來回|一日")
-DATES_PROBLEM = ("使用者寫的 {span} 是 {nights} 晚，可是又說「{said}」，兩個對不上：先用 clarify 問要哪幾天"
-                 "（例如「{span} 三天兩夜」或「{short} 兩天一夜」），不要自己挑日期，問完再組方案。")
+# Only words that mean a same-day trip (Antigravity's review: 「第一日」「一日券」 are not).
+DAY_TRIP = re.compile(r"一日遊|當天來回|當日來回|一日行程")
+DATES_PROBLEM = ("使用者寫的 {span} 是 {nights} 晚，可是又說「{said}」，兩個對不上：先用 clarify 問要哪一個"
+                 "（「{first}」還是「{second}」），不要自己挑日期，問完再組方案。")
 
 
 def number(text):
     return int(text) if text.isdigit() else CHINESE_NUMBER.get(text, 0)
+
+
+def trip_words(start, nights):
+    """「11/28 一日遊」 or 「12/31–1/2 三天兩夜」, built from the real dates (Antigravity's review)."""
+    import datetime as dt
+    if nights == 0:
+        return f"{start.month}/{start.day} 一日遊"
+    end = start + dt.timedelta(days=nights)
+    say = {1: "一", 2: "兩", 3: "三", 4: "四", 5: "五", 6: "六", 7: "七", 8: "八"}
+    length = f"{say.get(nights + 1, nights + 1)}天{say.get(nights, nights)}夜"
+    return f"{start.month}/{start.day}–{end.month}/{end.day} {length}"
 
 
 def dates_problem(text):
@@ -567,8 +579,8 @@ def dates_problem(text):
         return None
     if not 0 <= nights <= 14 or nights == want:
         return None
-    short = f"{start.month}/{start.day}–{(start + dt.timedelta(days=want)).day}"
-    return DATES_PROBLEM.format(span=span.group(0), nights=nights, said=said, short=short)
+    return DATES_PROBLEM.format(span=span.group(0), nights=nights, said=said,
+                                first=trip_words(start, nights), second=trip_words(start, want))
 
 
 # 2026-11-26 (exam): 「礁溪過夜和烏來一日，你幫我挑一個」 got two packages and a long sentence. The owner asked
