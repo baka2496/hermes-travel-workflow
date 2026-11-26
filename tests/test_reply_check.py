@@ -642,6 +642,14 @@ class PackageReplyTests(unittest.TestCase):
         self.assertNotEqual(self.transform(home, steps), check.HAND_WRITTEN)
         self.assertIsNone(self.transform(home, "好的，幫你記下來了"))
 
+    def test_the_plugins_own_replies_pass_the_phone_check(self):
+        # 2026-11-27 (exam): the honest not-found was one long line, four phone lines, flagged long_line.
+        spec = importlib.util.spec_from_file_location("phone_check_own", REPO / "scripts/phone-check.py")
+        phone = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(phone)
+        for text in (check.NOT_CHEAPER.format(floor="NT$12,300", kind="湯屋"), check.HAND_WRITTEN):
+            self.assertEqual(phone.check(text)["problems"], [], text)
+
     def test_a_price_list_for_cheaper_is_hand_written(self):
         # 2026-11-26 (exam): the first plan failed, then 「太貴」 got 「• 四季溫泉：雙人 50 分鐘 300 元」 with no tool behind it.
         listed = "礁溪平價湯屋：\n• 四季溫泉：雙人 50 分鐘 300 元\n• 春水笈：雙人 50 分鐘 380 元"

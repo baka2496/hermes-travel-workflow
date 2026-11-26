@@ -742,8 +742,9 @@ def offered(session_id, home):
 # 2026-11-26 (exam): told 「太貴，有沒有更便宜的」, the bot sent the same NT$300 places again as 「平價」. The role's
 # rule: only places confirmed cheaper; none found is said plainly.
 CHEAPER = re.compile(r"太貴|便宜一點|更便宜|省一點")  # not 「最便宜的」: that is a first request
-NOT_CHEAPER = ("查過了，沒找到比上次最便宜的 {floor} 更便宜的{kind}，上次的方案照樣可以訂。"
-               "想換地區或換玩法（例如不泡湯改走步道、看海）跟我說，我再找。")
+# One short sentence per line: the exam's phone check flagged one long line (2026-11-27).
+NOT_CHEAPER = ("查過了，沒找到比上次最便宜的 {floor} 更便宜的{kind}。\n上次的方案照樣可以訂。\n"
+               "想換地區或換玩法（例如走步道、看海），\n跟我說，我再找。")
 
 
 def earlier_plan_floor(session_id, home):
@@ -1183,7 +1184,7 @@ def without_unsaid_budgets(text, session_id, home):
 # hand, with prices nobody checked. A package goes out only as format-plan.py printed it.
 # 「1. 源來如池：雙人湯屋 300元」 too (exam, 2026-11-26: prices nobody checked, written as a plain numbered list).
 PACKAGE_LINE = re.compile(r"^\s*(?:[①②③④⑤]|方案\s*[1-5一二三四五][｜|：:]|[1-5][.、．]\s*\S)")
-HAND_WRITTEN = ("這次沒組成能直接訂的方案：有幾個地方的價格沒能在官網確認，所以先不給你。"
+HAND_WRITTEN = ("這次沒組成能直接訂的方案：\n有幾個地方的價格沒能在官網確認，\n所以先不給你。\n"
                 "回我一聲，我就換別的地方重查。")
 
 
