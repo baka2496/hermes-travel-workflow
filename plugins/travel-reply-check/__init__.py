@@ -695,18 +695,20 @@ def offered(session_id, home):
                 if any(text.startswith(SCHEDULED) for _, text in said):
                     return True
                 # A compaction repeats the owner's message: a run of the same text is one message, its first id.
-                owner, last_text = [], None
+                # Only across a compaction: the same 「好」 said again in a new round is a new message (review).
+                owner, last_text, compacted = [], None, False
                 for i, text in said:
-                    if text and not text.startswith(sessions.NOT_THE_USER):
-                        if text != last_text:
+                    if text.startswith(sessions.NOT_THE_USER):
+                        compacted = True
+                    elif text:
+                        if not (compacted and text == last_text):
                             owner.append(i)
-                        last_text = text
+                        last_text, compacted = text, False
                 since = owner[-2] if len(owner) > 1 else 0
                 latest = owner[-1] if owner else 0
                 # 2026-11-26 (exam, jiaoxi-budget): three packages printed in this round but never sent, then one
                 # plan went out. Printed is not shown: they count when sent in the round before (the owner picks ②),
                 # or put in a button question this round that the owner answered.
-                answered = None
                 for (value, at) in db.execute(
                         "SELECT tool_calls, id FROM messages WHERE session_id = ? AND id > ? AND tool_calls LIKE ?",
                         (session_id, since, "%format-plan%")):
@@ -719,10 +721,18 @@ def offered(session_id, home):
                             continue
                         if at < latest:
                             return True
-                        if answered is None:
-                            answered = answered_since_owner(home, session_id)
-                        if answered:
-                            return True
+                        # Only a button answered after these packages (review: not one about the head count before).
+                        for (content,) in db.execute(
+                                "SELECT content FROM messages WHERE session_id = ? AND role = 'tool' AND "
+                                "tool_name = 'clarify' AND id > ?", (session_id, at)):
+                            try:
+                                data = json.loads(content)
+                            except (TypeError, ValueError):
+                                continue
+                            responses = data.get("responses") if isinstance(data, dict) else None
+                            if isinstance(responses, list) and any(isinstance(r, dict) and r.get("user_response")
+                                                                   for r in responses):
+                                return True
                 return False
         except sqlite3.Error:
             continue

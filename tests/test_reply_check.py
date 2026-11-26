@@ -737,6 +737,21 @@ class OwnerRequestTests(unittest.TestCase):
         db.commit()
         db.close()
         self.assertTrue(check.offered("s1", asked))
+        # A button answered before the packages (the head count) does not show them (Antigravity's review).
+        early = home_with()
+        db = sqlite3.connect(early / "profiles" / "travel-commander" / "state.db")
+        db.execute("INSERT INTO messages (session_id, role, content, tool_name) VALUES ('s1', 'tool', ?, 'clarify')",
+                   (json.dumps({"responses": [{"user_response": "2 人"}]}),))
+        db.commit()
+        db.close()
+        home_with(shown, tool="format-plan.py --package", home=early)
+        self.assertFalse(check.offered("s1", early))
+        # 「好」 said again in a new round, with no compaction between, is a new round (review).
+        again = home_with()
+        self.say(again, "好")
+        home_with(shown, tool="format-plan.py --package", home=again)
+        self.say(again, "好")
+        self.assertTrue(check.offered("s1", again))
         self.say(home, "我選①")
         self.assertTrue(check.offered("s1", home))
         # A compaction repeating 「我選①」 is still the same round.
