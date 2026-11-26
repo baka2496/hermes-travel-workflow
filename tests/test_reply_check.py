@@ -606,7 +606,7 @@ class OwnerRequestTests(unittest.TestCase):
     """2026-11-26 (exam): the role said to ask when dates disagree and to pick one when asked; now checked."""
     PLAN = '"python" "C:/hermes/shared/travel-workflow/format-plan.py" --header x --date 2026-11-28'
 
-    def run_plan(self, *said, command=PLAN, tool="terminal", answer=None):
+    def run_plan(self, *said, command=PLAN, tool="terminal", answer=None, raw=None, raw_tool="clarify"):
         home = home_with()
         db = sqlite3.connect(home / "profiles" / "travel-commander" / "state.db")
         for text in said:
@@ -616,6 +616,9 @@ class OwnerRequestTests(unittest.TestCase):
                                      "user_response": answer}], "outcome": "answered" if answer else "timed_out"}
             db.execute("INSERT INTO messages (session_id, role, content, tool_name) VALUES ('s1', 'tool', ?, 'clarify')",
                        (json.dumps(result, ensure_ascii=False),))
+        if raw is not None:
+            db.execute("INSERT INTO messages (session_id, role, content, tool_name) VALUES ('s1', 'tool', ?, ?)",
+                       (raw, raw_tool))
         db.commit()
         db.close()
         old = os.environ.get("HERMES_HOME")
@@ -657,6 +660,11 @@ class OwnerRequestTests(unittest.TestCase):
         # The owner's button answer (clarify's result) settles it; no answer (timed out) does not.
         self.assertIsNone(self.run_plan("11/27–11/29 兩天一夜", answer="11/28–11/29 兩天一夜"))
         self.assertIn("沒人回答或逾時", self.run_plan("11/27–11/29 兩天一夜", answer=""))
+        # Only clarify's own result counts, and an odd one does not break the check (Antigravity's review).
+        answered = json.dumps({"responses": [{"user_response": "11/28–11/29"}]})
+        self.assertIn("沒人回答或逾時", self.run_plan("11/27–11/29 兩天一夜", raw=answered, raw_tool="read_file"))
+        for odd in ('["user_response"]', '"user_response"', '{"responses": "user_response"}', "not json"):
+            self.assertIn("沒人回答或逾時", self.run_plan("11/27–11/29 兩天一夜", raw=odd), odd)
 
     def test_pick_one_gets_one_plan_not_packages(self):
         said = "11/28 礁溪過夜和 11/29 烏來一日，你幫我挑一個"
