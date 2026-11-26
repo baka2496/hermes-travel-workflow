@@ -346,7 +346,33 @@ TOOL_WRITTEN_PROBLEM = ("地點庫（places.json）和推薦紀錄（recommended
                         "推薦紀錄由 format-plan.py 自己記。")
 
 
+# 2026-11-26 (exam): asked 「你幫我挑一個」, the bot searched the whole travel-workflow folder for 「pick-one」,
+# read an earlier exam's answer and sent its photo without looking at it. The exam's answers are not
+# evidence, and a content search over the whole folder (or above it) reads them and the checkers' code.
+# Any folder counts, not only travel-workflow and its parents (Antigravity's review: no path, 「.」, 「..」 or
+# C:/Users/…/Local reach it too); the bot's data are single files, so a content search names one.
+EXAM_RESULTS = re.compile(r"exam-results", re.I)
+EXAM_PROBLEM = ("考試成績（exam-results）不是查證來源，不能看。"
+                "要找地方用 places.py pick / places.py list，價格用 page-prices.py <官網網址> 今天重讀；"
+                "搜尋內容要指定一個檔案（例如 opportunities.json），不要搜整個資料夾。")
+
+
+def exam_problem(tool_name, args):
+    text = json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args)
+    if EXAM_RESULTS.search(text):
+        return EXAM_PROBLEM
+    if tool_name == "search_files" and str(args.get("target") or "content") != "files":
+        path = str(args.get("path") or "").strip().strip("\"'").rstrip("\\/")
+        if "." not in re.split(r"[\\/]", path)[-1].strip("."):  # a folder (or no path), not one file
+            return EXAM_PROBLEM
+    return None
+
+
 def tamper_problem(tool_name, args):
+    if tool_name in ("read_file", "search_files", "terminal"):
+        problem = exam_problem(tool_name, args)
+        if problem:
+            return problem
     if tool_name in WRITES:
         path = str(args.get("path") or args.get("file_path") or "")
         if TOOL_WRITTEN.search(path.strip()):
@@ -529,11 +555,267 @@ def places_problem(args):
     return PLACES_PROBLEM.format(need=MIN_PLACES, have=len(places), places="、".join(places) or "無", dateonly=dateonly)
 
 
+# 2026-11-26 (exam): 「11/27–11/29 兩天一夜」 is two nights, not one; the bot quietly booked 11/28–29. The role
+# said to ask when dates disagree; now a plan waits until the owner says which.
+CHINESE_NUMBER = {"一": 1, "二": 2, "兩": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7}
+DATE_RANGE = re.compile(r"(\d{1,2})/(\d{1,2})\s*(?:[–—~～\-]|到|至)\s*(?:(\d{1,2})/)?(\d{1,2})(?![\d/])")
+DAYS_NIGHTS = re.compile(r"([一二兩三四五六七\d])\s*天\s*([一二兩三四五六\d])\s*夜")
+# Only words that mean a same-day trip (Antigravity's review: 「第一日」「一日券」 are not).
+DAY_TRIP = re.compile(r"一日遊|當天來回|當日來回|一日行程")
+DATES_PROBLEM = ("使用者寫的 {span} 是 {nights} 晚，可是又說「{said}」，兩個對不上：先用 clarify 問要哪一個"
+                 "（「{first}」還是「{second}」），不要自己挑日期，也先不要查價格，等使用者選了再查、再組方案。"
+                 "clarify 沒人回答或逾時，就把這個問題當最後回覆送出，結束這一輪。")
+# While the dates are open, research waits too (2026-11-26 exam: 19 minutes of searching around a refused plan).
+RESEARCH = re.compile(r"format-plan|trip-cost|page-prices|places\.py|booking-links|place-photo")
+RESEARCH_TOOLS = ("web_search", "web_extract", "browser_exec")
+
+
+def number(text):
+    return int(text) if text.isdigit() else CHINESE_NUMBER.get(text, 0)
+
+
+def trip_words(start, nights):
+    """「11/28 一日遊」 or 「12/31–1/2 三天兩夜」, built from the real dates (Antigravity's review)."""
+    import datetime as dt
+    if nights == 0:
+        return f"{start.month}/{start.day} 一日遊"
+    end = start + dt.timedelta(days=nights)
+    say = {1: "一", 2: "兩", 3: "三", 4: "四", 5: "五", 6: "六", 7: "七", 8: "八"}
+    length = f"{say.get(nights + 1, nights + 1)}天{say.get(nights, nights)}夜"
+    return f"{start.month}/{start.day}–{end.month}/{end.day} {length}"
+
+
+def dates_problem(text):
+    """Why the dates and the trip length in `text` disagree, or None."""
+    import datetime as dt
+    span = DATE_RANGE.search(text)
+    if not span:
+        return None
+    month, day, end_month, end_day = (int(g) if g else None for g in span.groups())
+    end_month = end_month or month
+    try:
+        year = dt.date.today().year
+        start = dt.date(year, month, day)
+        end = dt.date(year + (end_month < month), end_month, end_day)
+    except ValueError:
+        return None
+    nights = (end - start).days
+    stated = DAYS_NIGHTS.search(text)
+    if stated:
+        want, said = number(stated.group(2)), stated.group(0)
+    elif DAY_TRIP.search(text) and nights:
+        want, said = 0, DAY_TRIP.search(text).group(0)
+    else:
+        return None
+    if not 0 <= nights <= 14 or nights == want:
+        return None
+    return DATES_PROBLEM.format(span=span.group(0), nights=nights, said=said,
+                                first=trip_words(start, nights), second=trip_words(start, want))
+
+
+# 2026-11-26 (exam): 「礁溪過夜和烏來一日，你幫我挑一個」 got two packages and a long sentence. The owner asked
+# for one choice: one full plan, the reason on its own short line.
+PICK_ONE = re.compile(r"(?:幫我|替我|你)\s*(?:挑|選)\s*一\s*[個間家處]|(?:挑|選)\s*一\s*[個間家處]\s*給我")
+PICK_ONE_PROBLEM = ("使用者要你幫忙挑一個：不要加 --package。挑最合適的一個，用 format-plan.py 不加 --package 出它的"
+                    "完整明細（同樣的 --item、--place、--official、--phone），為什麼選它寫成一句短的 --note。")
+
+
+def answered_since_owner(home, session_id):
+    """True when a clarify after the owner's latest message came back with their choice. On Telegram a
+    button answer is the clarify tool's result, not a new message: without this the plan stayed refused."""
+    for path in sessions.databases(home):
+        try:
+            with sessions.read_only(path) as db:
+                last = db.execute("SELECT MAX(id) FROM messages WHERE session_id = ? AND role = 'user'",
+                                  (session_id,)).fetchone()[0]
+                if last is None:
+                    continue
+                for (content,) in db.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'tool' "
+                                             "AND tool_name = 'clarify' AND id > ?", (session_id, last)):
+                    try:
+                        data = json.loads(content)
+                    except (TypeError, ValueError):
+                        continue
+                    responses = data.get("responses") if isinstance(data, dict) else None  # review: only clarify's
+                    if isinstance(responses, list) and any(isinstance(r, dict) and r.get("user_response")
+                                                           for r in responses):
+                        return True
+        except sqlite3.Error:
+            continue
+    return False
+
+
+def request_problem(tool_name, args, session_id, home):
+    """Why this call does not answer what the owner just asked, or None."""
+    command = str(args.get("command") or "") if tool_name == "terminal" else ""
+    research = tool_name in RESEARCH_TOOLS or bool(RESEARCH.search(command))
+    if not research or not session_id:
+        return None
+    said = sessions.owner_words(home, session_id)
+    if not said:
+        return None
+    latest = said[-1]
+    why = dates_problem(latest)
+    if why and not answered_since_owner(home, session_id):
+        return why
+    packages = bool(re.search(r"(?:^|\s)--package(?:\s|$)", command))
+    if "format-plan" in command and PICK_ONE.search(latest) and packages:
+        return PICK_ONE_PROBLEM
+    if "format-plan" in command and not packages and " --help" not in command and not PICK_ONE.search(latest) \
+            and not offered(session_id, home):
+        return ONE_TOO_SOON_PROBLEM
+    return None
+
+
+# 2026-11-26 (exam): 「幫我比價找最便宜的雙人湯屋，給我完整方案」 got one plan; the owner's rule is three to choose
+# from. One plan's full detail comes after the three (the owner picked one), or when asked to pick.
+# The bot then re-ran the same single plan with --few-reason six times (exam, 2026-11-26, jiaoxi-budget):
+# only one place had a price it could check. Say how a short list is sent.
+ONE_TOO_SOON_PROBLEM = ("第一次給方案要給 3 個（加 --package，最便宜的排第一）：使用者還沒從三個裡選。"
+                        "選了一個、或要你幫忙挑一個時，才用不加 --package 出那一個的完整明細。"
+                        "只有一兩家確認得到價格時，照樣在每家前面加 --package（只放那一兩家），"
+                        "再加 --few-reason 「只有…符合…」；不要再跑一次同樣的指令。")
+
+
+SCHEDULED = "[IMPORTANT: You are running as a scheduled cron job"
+SHOWN = re.compile(r"^[①②③④⑤] ", re.M)  # format-plan.py --package's own package heads
+
+
+def offered(session_id, home):
+    """True when three packages were shown in this round: since the owner's message before the latest (they
+    may pick ② in a new message, or with a button in this one), not in an older trip in the same chat (review).
+    Also True for a scheduled run (the Thursday weekend job pushes one plan) or an unreadable conversation."""
+    for path in sessions.databases(home):
+        try:
+            with sessions.read_only(path) as db:
+                said = [(i, str(c or "")) for i, c in db.execute(
+                    "SELECT id, content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id", (session_id,))]
+                if not said:
+                    continue
+                if any(text.startswith(SCHEDULED) for _, text in said):
+                    return True
+                # A compaction repeats the owner's message: a run of the same text is one message, its first id.
+                # Only across a compaction: the same 「好」 said again in a new round is a new message (review).
+                owner, last_text, compacted = [], None, False
+                for i, text in said:
+                    if text.startswith(sessions.NOT_THE_USER):
+                        compacted = True
+                    elif text:
+                        if not (compacted and text == last_text):
+                            owner.append(i)
+                        last_text, compacted = text, False
+                since = owner[-2] if len(owner) > 1 else 0
+                latest = owner[-1] if owner else 0
+                # 2026-11-26 (exam, jiaoxi-budget): three packages printed in this round but never sent, then one
+                # plan went out. Printed is not shown: they count when sent in the round before (the owner picks ②),
+                # or put in a button question this round that the owner answered.
+                for (value, at) in db.execute(
+                        "SELECT tool_calls, id FROM messages WHERE session_id = ? AND id > ? AND tool_calls LIKE ?",
+                        (session_id, since, "%format-plan%")):
+                    for call_id, _, arguments in sessions.calls(value):
+                        if "--package" not in arguments:
+                            continue
+                        row = db.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'tool' AND "
+                                         "tool_call_id = ?", (session_id, call_id)).fetchone()
+                        if not (row and SHOWN.search(sessions.result_text(row[0]))):
+                            continue
+                        if at < latest:
+                            return True
+                        # Only a button answered after these packages (review: not one about the head count before).
+                        for (content,) in db.execute(
+                                "SELECT content FROM messages WHERE session_id = ? AND role = 'tool' AND "
+                                "tool_name = 'clarify' AND id > ?", (session_id, at)):
+                            try:
+                                data = json.loads(content)
+                            except (TypeError, ValueError):
+                                continue
+                            responses = data.get("responses") if isinstance(data, dict) else None
+                            if isinstance(responses, list) and any(isinstance(r, dict) and r.get("user_response")
+                                                                   for r in responses):
+                                return True
+                return False
+        except sqlite3.Error:
+            continue
+    return True
+
+
+# 2026-11-26 (exam): told 「太貴，有沒有更便宜的」, the bot sent the same NT$300 places again as 「平價」. The role's
+# rule: only places confirmed cheaper; none found is said plainly.
+CHEAPER = re.compile(r"太貴|便宜一點|更便宜|省一點")  # not 「最便宜的」: that is a first request
+# One short sentence per line: the exam's phone check flagged one long line (2026-11-27).
+NOT_CHEAPER = ("查過了，沒找到比上次最便宜的 {floor} 更便宜的{kind}。\n上次的方案照樣可以訂。\n"
+               "想換地區或換玩法（例如走步道、看海），\n跟我說，我再找。")
+
+
+def earlier_plan_floor(session_id, home):
+    """The cheapest package total of the last format-plan.py run (with totals) before the owner's latest
+    message, or None. Only the last: an older, cheaper trip in the same chat is not what 「太貴」 is about (review)."""
+    floor = None
+    for path in sessions.databases(home):
+        try:
+            with sessions.read_only(path) as db:
+                last = db.execute("SELECT MAX(id) FROM messages WHERE session_id = ? AND role = 'user'",
+                                  (session_id,)).fetchone()[0]
+                if last is None:
+                    continue
+                ids = [call_id for (value,) in db.execute(
+                           "SELECT tool_calls FROM messages WHERE session_id = ? AND id < ? AND tool_calls LIKE ?",
+                           (session_id, last, "%format-plan%"))
+                       for call_id, _, arguments in sessions.calls(value) if "format-plan" in arguments]
+                for call_id in ids:
+                    row = db.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'tool' AND "
+                                     "tool_call_id = ? AND id < ?", (session_id, call_id, last)).fetchone()
+                    totals = [int(re.sub(r"\D", "", a))
+                              for a in TOTAL_FIRST.findall(sessions.result_text(row[0]) if row else "")]
+                    if totals:
+                        floor = min(totals)
+        except sqlite3.Error:
+            continue
+    return floor
+
+
+TOTAL_FIRST = re.compile(rf"^總計 ({AMOUNT})", re.M)
+
+
+# 「• 四季溫泉：…」: a place and what it costs; 「• Dormy Inn 淺草：」「• 蔥澡 (小池)：」 too (review).
+# Not a time's 「15:00」 or a link's 「https:」, and a short name, not a sentence (review).
+# A half-width colon with digits on both sides is a time; 「門票:300元」「Day 1: NT$3,000」 are entries (review).
+BULLET_ENTRY = re.compile(r"^\s*[•・*\-]\s*[^\s：:，。！？][^：:，。！？\r\n]{1,30}(?:：|(?<!\d):(?!/)|:(?![\d/]))")
+
+
+def not_cheaper(text, session_id, home):
+    """The honest 「沒找到」 when the owner asked for cheaper and every package is not, else None."""
+    totals = [int(re.sub(r"\D", "", a)) for a in TOTAL_FIRST.findall(text)]
+    if not totals:  # 「1. 源來如池：雙人湯屋 300元」: the price on each entry's own line, not 「租毛巾 50 元」 (review)
+        # 「• 四季溫泉：雙人 50 分鐘 300 元」 too (exam, 2026-11-26: a bullet list of prices no tool checked).
+        entries = package_heads(text) or [line for line in text.splitlines() if BULLET_ENTRY.match(line)]
+        totals = [int(re.sub(r"\D", "", found.group(0)))
+                  for found in map(money.PRICE.search, entries) if found]
+    if not totals:  # 「官網確認最便宜的是玫瑰園…只要 NT$300」 (exam, 2026-11-26): the same place in prose
+        totals = [int(re.sub(r"\D", "", found)) for found in money.PRICE.findall(text)]
+    if not totals:
+        return None
+    said = sessions.owner_words(home, session_id)
+    if not said or not CHEAPER.search(said[-1]):
+        return None
+    floor = earlier_plan_floor(session_id, home)
+    if floor is None or min(totals) < floor:
+        return None
+    kind = "湯屋" if re.search(r"湯屋|泡湯|溫泉", said[-1]) else "地方"
+    return NOT_CHEAPER.format(floor=money.money(floor), kind=kind)
+
+
 def pre_tool_call(tool_name, args, task_id="", session_id="", turn_id="", **kwargs):
     if isinstance(args, dict):
         try:
             why = tamper_problem(tool_name, args) or kanban_problem(tool_name, args)
         except Exception:
+            why = None
+        if why:
+            return {"action": "block", "message": why}
+        try:
+            why = request_problem(tool_name, args, session_id, os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+        except Exception:  # a broken check must never stop the bot
             why = None
         if why:
             return {"action": "block", "message": why}
@@ -900,8 +1182,9 @@ def without_unsaid_budgets(text, session_id, home):
 
 # 2026-11-26 (exam): refused by format-plan.py, the bot wrote 「方案 1｜和平島…」 and 「① 雲頂溫泉行館…」 by
 # hand, with prices nobody checked. A package goes out only as format-plan.py printed it.
-PACKAGE_LINE = re.compile(r"^\s*(?:[①②③④⑤]|方案\s*[1-5一二三四五][｜|：:])")
-HAND_WRITTEN = ("這次沒組成能直接訂的方案：有幾個地方的價格沒能在官網確認，所以先不給你。"
+# 「1. 源來如池：雙人湯屋 300元」 too (exam, 2026-11-26: prices nobody checked, written as a plain numbered list).
+PACKAGE_LINE = re.compile(r"^\s*(?:[①②③④⑤]|方案\s*[1-5一二三四五][｜|：:]|[1-5][.、．]\s*\S)")
+HAND_WRITTEN = ("這次沒組成能直接訂的方案：\n有幾個地方的價格沒能在官網確認，\n所以先不給你。\n"
                 "回我一聲，我就換別的地方重查。")
 
 
@@ -916,15 +1199,37 @@ def package_heads(text):
     return heads
 
 
+# 2026-11-26 (exam): refused (「只有 2 個」), the bot wrote one plan by hand: 「首選：…・房型：…・費用明細：」,
+# and the unchecked prices under 費用明細 were dropped, leaving an empty line.
+COST_LABEL = re.compile(r"^[\s・•*\-]*(?:費用明細|費用|總價|價格)\s*[：:]", re.M)
+PLAN_LABEL = re.compile(r"^[\s・•*\-]*(?:房型|交通|住宿)\s*[：:]", re.M)
+
+
 def hand_written(text, session_id, home):
-    """True when the reply has packages that no format-plan.py run in this conversation printed."""
+    """True when the reply has packages, or one plan, that no format-plan.py run in this conversation printed."""
     heads = package_heads(text)
-    if not heads:
+    # 「・總計：NT$250」 counts too (Antigravity's review): bullets and a colon are how hand-written plans look.
+    totals = [line.strip().lstrip("・•*- \t") for line in text.splitlines()
+              if line.strip().lstrip("・•*- \t").startswith("總計")]
+    single = not heads and PLAN_LABEL.search(text) and (COST_LABEL.search(text) or totals)
+    # 「• 四季溫泉：雙人 50 分鐘 300 元」「• 春水笈：…380 元」 with no total (exam, 2026-11-26): places and prices no
+    # tool checked. format-plan.py always prints a 總計, so a price list without one is written by hand.
+    # Only for 「更便宜」: elsewhere a bullet price is often fine (a card's 「• 機票：NT$12,281」).
+    if not heads and not single and not totals:
+        if sum(bool(BULLET_ENTRY.match(line) and money.PRICE.search(line)) for line in text.splitlines()) < 2:
+            return False
+        said = sessions.owner_words(home, session_id)
+        return bool(said) and bool(CHEAPER.search(said[-1]))
+    if not heads and not single:
         return False
-    printed = tool_outputs(session_id, home, "format-plan.py")
+    printed = tool_outputs(session_id, home, COST_TOOLS if single else "format-plan.py")
     if printed is UNKNOWN:
         return False
     made = "\n".join(printed)
+    if single:  # one plan goes out only with a total a cost tool printed (its wording is corrected later)
+        amounts = [found.group(0) for found in map(re.compile(AMOUNT).search, totals) if found]
+        # The whole amount: NT$80 is not in 「總計 NT$800」 (Antigravity's review).
+        return not amounts or any(not re.search(rf"總計 {re.escape(amount)}(?![\d,])", made) for amount in amounts)
     return any(head not in made for head in heads)
 
 
@@ -937,6 +1242,9 @@ def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
                 and repeats(response_text, pending["question"]):
             return timeout_reply(response_text, pending)
         home = os.environ.get("HERMES_HOME") or Path.home() / ".hermes"
+        honest = not_cheaper(response_text, session_id, home)  # first: for 「太貴」 the honest answer is this one
+        if honest:
+            return honest
         if hand_written(response_text, session_id, home):
             return HAND_WRITTEN
         fixed = without_unseen_photos(response_text, session_id)
@@ -950,6 +1258,10 @@ def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
             if hide:  # every package of the latest run is printed, not only its first
                 latest = ["\n".join(runs[-1])] if runs else []
                 fixed = without_unconfirmed(fixed, latest, reviewed_card_amounts(session_id, home))
+        # 2026-11-26 (exam): blank lines between packages made 15 phone lines of 13. Only format-plan.py's
+        # ①②③ packages: an ordinary numbered list keeps its spacing (review).
+        if len(SHOWN.findall(fixed)) >= 2:
+            fixed = re.sub(r"\n[ \t]*(?:\n[ \t]*)+", "\n", fixed).strip("\n")
         return fixed if fixed != response_text else None
     except Exception:
         return None

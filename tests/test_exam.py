@@ -45,7 +45,7 @@ class DatesTests(unittest.TestCase):
         for q in exam.questions():
             self.assertNotIn(q["id"], seen)
             seen.add(q["id"])
-            self.assertIn(q["expect"], ("packages", "ask_dates"), q["id"])
+            self.assertIn(q["expect"], ("packages", "ask_dates", "one", "cheaper"), q["id"])
             self.assertIn(q["profile"], ("project-manager", "trip"), q["id"])
             self.assertTrue(q["turns"], q["id"])
             self.assertNotRegex(json.dumps(q, ensure_ascii=False), r"\d{1,2}/\d{1,2}", "use {週六} so it never goes stale")
@@ -75,6 +75,67 @@ class GradeTests(unittest.TestCase):
         # 2026-11-26: three packages were three rooms of one 龍山溫泉旅館.
         twin = PLAN.replace("② 乙湯屋", "② 甲湯屋")
         self.assertIn("「甲湯屋」重複：三個方案要三個不同的地方", self.grade(twin, outputs=(twin,)))
+
+    def test_no_phone_line_is_fine_when_the_owner_hides_unconfirmed(self):
+        # 「未確認就不要傳給我」: the plugin drops 「電話：未取得」, so the package has no phone line.
+        bare = PLAN.replace(" 📞 03-2", "")
+        self.assertTrue(any("incomplete_package" in p for p in self.grade(bare, outputs=(bare,))))
+        printed = PLAN.replace(" 📞 03-2", "\n電話：未取得")  # what format-plan.py printed
+        self.assertEqual(self.grade(bare, outputs=(printed,), hide_unconfirmed=True), [])
+        # The tool found a phone and the reply left it out: still a fault (Antigravity's review).
+        self.assertTrue(any("incomplete_package" in p for p in self.grade(bare, outputs=(PLAN,), hide_unconfirmed=True)))
+        # ② had none, but ③'s phone was found and left out: one 未取得 does not forgive the other (review).
+        both = bare.replace(" 📞 03-3", "")
+        self.assertTrue(any("incomplete_package" in p for p in self.grade(both, outputs=(printed,), hide_unconfirmed=True)))
+        # An earlier run's 未取得 does not count once the last run found the photo or phone.
+        self.assertTrue(any("incomplete_package" in p for p in self.grade(bare, outputs=(printed, PLAN),
+                                                                         hide_unconfirmed=True)))
+        one = dict(PACKAGES, expect="one", place=None, budget=None)
+        plain = ("11/28 礁溪 2人\n總計 NT$300\n📍 [Google 地圖・查空房](https://maps.example/)\n"
+                 "🏨 [官網訂房](https://a.example/)\n📞 03-1")  # 「照片：未取得」 dropped
+        self.assertTrue(any("missing_photo" in p for p in self.grade(plain, outputs=(plain,), question=one)))
+        self.assertEqual(self.grade(plain, outputs=(plain + "\n照片：未取得",), question=one, hide_unconfirmed=True), [])
+        found = plain + "\nMEDIA:C:/photos/a.jpg"  # the tool had a photo the reply left out
+        self.assertTrue(any("missing_photo" in p for p in self.grade(plain, outputs=(found,), question=one,
+                                                                    hide_unconfirmed=True)))
+        # An earlier run without a photo does not count once the last one found it (review).
+        self.assertTrue(any("missing_photo" in p for p in self.grade(plain, outputs=(plain + "\n照片：未取得", found),
+                                                                    question=one, hide_unconfirmed=True)))
+        # A run with a photo somewhere and 未取得 elsewhere: a photo was found, so leaving it out fails.
+        mixed = found + "\n照片：未取得"
+        self.assertTrue(any("missing_photo" in p for p in self.grade(plain, outputs=(mixed,), question=one,
+                                                                    hide_unconfirmed=True)))
+        no_link = PLAN.replace("🏨 [官網](https://b.example/) 📞 03-2", "")
+        self.assertTrue(any("incomplete_package" in p for p in self.grade(no_link, outputs=(no_link,),
+                                                                         hide_unconfirmed=True)))
+
+    def test_pick_one_wants_one_full_plan(self):
+        # 2026-11-26 (exam): 「你幫我挑一個」 got two packages.
+        one = dict(PACKAGES, expect="one", place=None, budget=None)
+        single = "11/29 烏來 2人\n總計 NT$800\n照片：未取得\n🏨 [官網](https://a.example/) 📞 03-1"
+        self.assertEqual(self.grade(single, outputs=(single,), question=one), [])
+        self.assertIn("要它挑一個，卻給了 3 個方案", self.grade(PLAN, question=one))
+        self.assertIn("總價不是 format-plan.py 算的", self.grade(single, outputs=(), question=one))
+        self.assertIn("沒有總價", self.grade("烏來比較好", outputs=(), question=one))
+        two = single + "\n\n11/28 礁溪 2人\n總計 NT$4,200\n🏨 [官網](https://b.example/) 📞 03-2"
+        self.assertIn("要它挑一個，卻給了 2 個方案", self.grade(two, outputs=(two,), question=one))
+        headed = "① 烏來｜湯屋\n" + two
+        self.assertIn("要它挑一個，卻給了 2 個方案", self.grade(headed, outputs=(headed,), question=one))
+
+    def test_cheaper_wants_cheaper_packages_or_an_honest_not_found(self):
+        # 2026-11-26 (exam): the first reply's cheapest was NT$300 and nothing cheaper was found; saying so is right.
+        cheaper = dict(PACKAGES, expect="cheaper")
+        honest = "玫瑰園的雙人湯屋每間 NT$300，查了礁溪幾家官網，沒有找到更便宜的。"
+        self.assertEqual(self.grade(honest, outputs=(), question=cheaper, earlier=(PLAN,)), [])
+        plain = "玫瑰園原泉湯屋為整間 NT$300（50分鐘）\n目前官網核實價格中，\n沒有比玫瑰園更便宜的雙人湯屋。"
+        self.assertEqual(self.grade(plain, outputs=(), question=cheaper, earlier=(PLAN,)), [])
+        lazy = "玫瑰園 NT$300，沒有比較其他家，應該有更便宜的"  # across clauses: not a not-found (review)
+        self.assertIn("沒有更便宜的方案，也沒說沒找到", self.grade(lazy, outputs=(), question=cheaper, earlier=(PLAN,)))
+        self.assertIn("沒有更便宜的方案，也沒說沒找到",
+                      self.grade("好的，我再找找", outputs=(), question=cheaper, earlier=(PLAN,)))
+        self.assertIn("沒有比原本最便宜的 NT$1,200 更便宜", self.grade(PLAN, question=cheaper, earlier=(PLAN,)))
+        less = PLAN.replace("NT$1,200", "NT$900").replace("NT$1,500", "NT$950").replace("NT$1,800", "NT$1,000")
+        self.assertEqual(self.grade(less, outputs=(less,), question=cheaper, earlier=(PLAN,)), [])
 
     def test_no_packages_or_wrong_place_fail(self):
         self.assertIn("沒有給 ①②③ 方案", self.grade("請問想去哪裡？", outputs=()))

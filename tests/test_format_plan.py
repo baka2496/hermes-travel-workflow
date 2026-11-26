@@ -22,6 +22,13 @@ HTML = """<html><head><title>範例溫泉</title></head><body>
 </body></html>"""
 
 
+def load_phone_check():
+    spec = importlib.util.spec_from_file_location("phone_check", REPO / "scripts/phone-check.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def run_format(*args):
     result = subprocess.run([sys.executable, str(REPO / "scripts/format-plan.py"), *args],
                             capture_output=True, text=True, encoding="utf-8")
@@ -303,6 +310,19 @@ class PackageTests(unittest.TestCase):
         status = subprocess.run([sys.executable, str(REPO / "scripts/phone-check.py")], input=out,
                                 capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(status.returncode, 0, status.stdout)
+
+    def test_three_packages_with_a_long_header_are_not_too_long(self):
+        # 2026-11-26 (exam): 「11/28 週末出遊 2人（自駕預估）」 made format-plan.py's own packages 15 phone lines,
+        # refused as too long, and the bot wrote them by hand.
+        rc, out, err = run_format("--header", "11/28 週末出遊 2人（自駕預估）走走看看", "--date", "2026-12-14",
+                                  "--checkout", "2026-12-15", "--guests", "2", "--hermes-root", str(self.root),
+                                  "--records", str(self.records), "--preferences", str(self.prefs),
+                                  *self.package("a", transport="開車約 50 分鐘，國道五號雪隧假日下午容易塞車"),
+                                  *self.package("b"), *self.package("c"))
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(sum(line[:1] in "①②③" for line in out.splitlines()), 3)
+        lines = load_phone_check().check(out)["phone_lines"]
+        self.assertGreater(lines, 14)  # over the old one-reply limit, the case the exam hit
 
     def test_fewer_than_three_needs_a_reason(self):
         rc, _, err = self.run_packages(self.package("a"), self.package("b"))

@@ -146,7 +146,7 @@ def owner_words(home, session_id=None):
         try:
             with read_only(path) as db:
                 words += [row[0] for row in db.execute(
-                    "SELECT content FROM messages WHERE session_id = ? AND role = 'user'", (wanted,))]
+                    "SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id", (wanted,))]
         except sqlite3.Error:
             continue
     # Hermes stores its own notes as user messages too: a compacted summary repeats what the agent

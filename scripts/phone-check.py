@@ -22,6 +22,10 @@ LINE_WIDTH = 40          # 20 full-width characters per bubble line on a phone
 NARROW = 0.7             # width of a Latin letter or digit, in half full-width units
 SCREEN_LINES = 30        # bubble lines visible on one phone screen
 MAX_MESSAGE_LINES = 14   # a reply should be readable at a glance; details on request
+# 2026-11-26 (exam): format-plan.py --package's three packages were refused as too long (15 lines: one header
+# and four lines each), and the bot wrote them by hand. Each package is a place, its total, transport, its
+# photo caption and links: up to six lines each, plus two for the header.
+PACKAGE_LINES = 6
 NARRATION = re.compile(r"^(我先|我會先|我正在|接著我|首先我)")
 INTERNAL_ID = re.compile(r"(?<![\w-])(t_[0-9a-f]{6,}|opp-\d{8}[-\w]*|local-[0-9a-f]{16,})")
 MAX_LINES_PER_ITEM = 2   # one bullet or sentence should wrap to at most two lines
@@ -494,9 +498,11 @@ def check(message, card=None):
                          "hint": "page-prices.py prints the page's phone numbers: pass one to booking-links.py "
                                  "with --phone and --phone-source; write 電話：未取得 when the page has none"})
     screens = round(phone_lines / SCREEN_LINES, 2)
-    if phone_lines > MAX_MESSAGE_LINES:
+    packages = min(len(package_blocks(message)), PACKAGES)
+    limit = 2 + PACKAGE_LINES * packages if packages >= 2 else MAX_MESSAGE_LINES
+    if phone_lines > limit:
         problems.append({"kind": "too_long", "phone_lines": math.ceil(phone_lines),
-                         "hint": f"keep to {MAX_MESSAGE_LINES} phone lines; cut repeats and offer details on request"})
+                         "hint": f"keep to {limit} phone lines; cut repeats and offer details on request"})
     return {"phone_lines": math.ceil(phone_lines), "screens": screens, "problems": problems}
 
 

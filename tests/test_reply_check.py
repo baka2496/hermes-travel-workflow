@@ -359,6 +359,25 @@ class CheckersAreOffLimitsTests(unittest.TestCase):
                         f"python {self.TOOLS}/format-plan.py --header x --package --place y"):
             self.assertIsNone(check.pre_tool_call("terminal", {"command": command}, session_id="s1"), command)
 
+    def test_earlier_exam_answers_are_not_evidence(self):
+        # 2026-11-26 (exam): the bot searched the whole folder for 「pick-one」 and sent an earlier exam's answer.
+        def blocked(tool, args):
+            result = check.pre_tool_call(tool, args, session_id="s1")
+            return bool(result) and result.get("action") == "block" and "exam-results" in result["message"]
+        self.assertTrue(blocked("search_files", {"path": self.TOOLS, "pattern": "pick-one"}))
+        self.assertTrue(blocked("search_files", {"path": "C:/Users/shiro/AppData/Local/hermes/", "pattern": "兩天一夜"}))
+        # No path, 「.」, 「..」, a relative folder or one further up reach it too (Antigravity's review).
+        for path in (None, "", ".", "..", "./", "travel-workflow", "C:/Users/shiro/AppData/Local", "C:\\Users"):
+            args = {"pattern": "pick-one"} if path is None else {"path": path, "pattern": "pick-one"}
+            self.assertTrue(blocked("search_files", args), path)
+        self.assertTrue(blocked("read_file", {"path": f"{self.TOOLS}/exam-results/20261126-212147.json"}))
+        self.assertTrue(blocked("terminal", {"command": f"type {self.TOOLS}\\exam-results\\x.html"}))
+        # Listing the folder, or searching one file, stays fine.
+        self.assertIsNone(check.pre_tool_call("search_files", {"path": self.TOOLS, "pattern": "*", "target": "files"},
+                                              session_id="s1"))
+        self.assertIsNone(check.pre_tool_call("search_files", {"path": f"{self.TOOLS}/opportunities.json",
+                                                               "pattern": "礁溪"}, session_id="s1"))
+
     def test_editing_or_reading_the_checkers_is_blocked(self):
         self.assertTrue(self.blocked("patch", path=f"{self.TOOLS}/page_evidence.py", old_string="a", new_string="b"))
         self.assertTrue(self.blocked("write_file", path=r"C:\hermes\shared\travel-workflow\trip-cost.py", content="x"))
@@ -595,11 +614,249 @@ class PackageReplyTests(unittest.TestCase):
         self.assertEqual(self.transform(home, "方案 1｜和平島地質公園\n• 交通：開車約 50 分鐘\n• 門票 NT$120"),
                          check.HAND_WRITTEN)
         self.assertNotEqual(self.transform(home, PACKAGES_OUT), check.HAND_WRITTEN)
+        # One plan by hand (exam: refused for 「只有 2 個」, then 「首選：…・費用明細：」 with its prices dropped).
+        first = ("首選：宜蘭玫瑰園民宿原泉湯屋\n・房型：雙人湯屋 50分鐘\n・交通：開車約 50 分鐘\n・費用明細：\n"
+                 "・電話：039883364")
+        self.assertEqual(self.transform(home, first), check.HAND_WRITTEN)
+        self.assertEqual(self.transform(home, first.replace("・費用明細：", "總計 NT$250")), check.HAND_WRITTEN)
+        single = home_with("11/29 烏來 2人\n總計 NT$800\n• 溪景湯屋 60分鐘 NT$800", tool="format-plan.py")
+        made = "推薦烏來。\n11/29 烏來 2人\n總計 NT$800\n• 溪景湯屋 60分鐘 NT$800\n交通：開車約 50 分鐘"
+        self.assertNotEqual(self.transform(single, made), check.HAND_WRITTEN)
+        # A bulleted 「・總計：」 and a shortened amount are caught too (Antigravity's review).
+        self.assertEqual(self.transform(single, made.replace("總計 NT$800", "・總計：NT$250")), check.HAND_WRITTEN)
+        self.assertEqual(self.transform(single, made.replace("總計 NT$800", "總計 NT$80")), check.HAND_WRITTEN)
+        self.assertNotEqual(self.transform(home, "交通：開車約 50 分鐘，你要哪天出發？"), check.HAND_WRITTEN)
+        # 「1. 源來如池：雙人湯屋 300元」: a plain numbered list with prices is a package too.
+        self.assertEqual(self.transform(home, "1. 源來如池：雙人湯屋 300元\n2. 四季溫泉：雙人湯屋 300元"),
+                         check.HAND_WRITTEN)
+        self.assertNotEqual(self.transform(home, "要哪一個？\n1. 11/27–11/28 兩天一夜\n2. 11/28–11/29 兩天一夜"),
+                            check.HAND_WRITTEN)
+        # Blank lines between format-plan.py's packages are taken out (exam: 15 phone lines of 13).
+        spaced = PACKAGES_OUT.replace("\n② ", "\n\n② ").replace("\n③ ", "\n\n③ ")
+        self.assertEqual(self.transform(home, spaced), PACKAGES_OUT)
+        steps = "要訂之前：\n\n1. 先確認日期\n\n2. 再確認人數"  # an ordinary list keeps its spacing (review)
+        self.assertIsNone(self.transform(home_with("", tool="calendar-check.py"), steps))
         # A numbered list without prices is not a package (Antigravity's review), even with no format-plan run.
         steps = "要幫你訂之前想確認兩件事：\n① 出發日是 12/6 還是 12/13？\n② 兩個人還是三個人？"
         self.assertNotEqual(self.transform(home_with("", tool="calendar-check.py"), steps), check.HAND_WRITTEN)
         self.assertNotEqual(self.transform(home, steps), check.HAND_WRITTEN)
         self.assertIsNone(self.transform(home, "好的，幫你記下來了"))
+
+    def test_the_plugins_own_replies_pass_the_phone_check(self):
+        # 2026-11-27 (exam): the honest not-found was one long line, four phone lines, flagged long_line.
+        spec = importlib.util.spec_from_file_location("phone_check_own", REPO / "scripts/phone-check.py")
+        phone = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(phone)
+        for text in (check.NOT_CHEAPER.format(floor="NT$12,300", kind="湯屋"), check.HAND_WRITTEN):
+            self.assertEqual(phone.check(text)["problems"], [], text)
+
+    def test_a_price_list_for_cheaper_is_hand_written(self):
+        # 2026-11-26 (exam): the first plan failed, then 「太貴」 got 「• 四季溫泉：雙人 50 分鐘 300 元」 with no tool behind it.
+        listed = "礁溪平價湯屋：\n• 四季溫泉：雙人 50 分鐘 300 元\n• 春水笈：雙人 50 分鐘 380 元"
+        home = home_with("", tool="calendar-check.py")
+        self.assertNotEqual(self.transform(home, listed), check.HAND_WRITTEN)  # the owner asked nothing cheaper
+        db = sqlite3.connect(home / "profiles" / "travel-commander" / "state.db")
+        db.execute("INSERT INTO messages (session_id, role, content) VALUES ('s1', 'user', '一個小時六百也太貴，有沒有更便宜的湯屋')")
+        db.commit()
+        db.close()
+        self.assertEqual(self.transform(home, listed), check.HAND_WRITTEN)
+        self.assertNotEqual(self.transform(home, "• 四季溫泉：雙人 50 分鐘 300 元"), check.HAND_WRITTEN)  # one line
+        spaced = "• Dormy Inn 淺草：NT$3,200\n• 蔥澡 (小池)：1,000 元"  # names with spaces (review)
+        self.assertEqual(self.transform(home, spaced), check.HAND_WRITTEN)
+        # Times, links and long sentences are not entries (review).
+        for line in ("• 下午 15:00 入住，房價 NT$3,200", "• 官網參考 https://example.com 每人 300 元",
+                     "• 離車站很近走路就到不用搭車也不用開車真的很方便喔，提醒：每人 300 元"):
+            self.assertIsNone(check.BULLET_ENTRY.match(line), line)
+        for line in ("• 門票:300元", "• 蔥澡:1,000元", "• 四季溫泉：雙人 50 分鐘 300 元", "• Day 1: NT$3,000",
+                     "• 7-11: 150 元"):  # still entries (review)
+            self.assertIsNotNone(check.BULLET_ENTRY.match(line), line)
+        flights = "• 機票：NT$12,281\n• 住宿：NT$3,200"
+        self.assertNotEqual(self.transform(home_with("", tool="calendar-check.py"), flights), check.HAND_WRITTEN)
+
+
+class OwnerRequestTests(unittest.TestCase):
+    """2026-11-26 (exam): the role said to ask when dates disagree and to pick one when asked; now checked."""
+    SINGLE = '"python" "C:/hermes/shared/travel-workflow/format-plan.py" --header x --date 2026-11-28 --place a'
+    PLAN = SINGLE.replace(" --place a", " --package --place a")
+
+    def run_plan(self, *said, command=PLAN, tool="terminal", answer=None, raw=None, raw_tool="clarify"):
+        home = home_with()
+        db = sqlite3.connect(home / "profiles" / "travel-commander" / "state.db")
+        for text in said:
+            db.execute("INSERT INTO messages (session_id, role, content) VALUES ('s1', 'user', ?)", (text,))
+        if answer is not None:  # the owner's button answer comes back as clarify's result
+            result = {"responses": [{"question": "要哪幾天？", "status": "answered" if answer else "unanswered",
+                                     "user_response": answer}], "outcome": "answered" if answer else "timed_out"}
+            db.execute("INSERT INTO messages (session_id, role, content, tool_name) VALUES ('s1', 'tool', ?, 'clarify')",
+                       (json.dumps(result, ensure_ascii=False),))
+        if raw is not None:
+            db.execute("INSERT INTO messages (session_id, role, content, tool_name) VALUES ('s1', 'tool', ?, ?)",
+                       (raw, raw_tool))
+        db.commit()
+        db.close()
+        old = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(home)
+        try:
+            args = {"command": command} if tool == "terminal" else {"query": "礁溪 湯屋"}
+            result = check.pre_tool_call(tool, args, session_id="s1")
+        finally:
+            if old is None:
+                del os.environ["HERMES_HOME"]
+            else:
+                os.environ["HERMES_HOME"] = old
+        return result["message"] if result and result.get("action") == "block" else None
+
+    def test_dates_that_disagree_with_the_trip_length_are_asked_first(self):
+        why = self.run_plan("11/27–11/29 兩天一夜去礁溪，兩個人預算 NT$8,000，幫我排方案")
+        self.assertIn("11/27–11/29 是 2 晚", why)
+        self.assertIn("clarify", why)
+        self.assertIn("2 晚", self.run_plan("12/5-12/7 二天一夜"))
+        self.assertIsNone(self.run_plan("12/30~1/1 三天兩夜"))  # over the new year: two nights
+        self.assertIsNone(self.run_plan("11/28–11/29 兩天一夜去礁溪"))
+        self.assertIsNone(self.run_plan("11/28-29 兩天一夜"))
+        self.assertIsNone(self.run_plan("11/28 想去礁溪泡湯，2人"))
+        self.assertIsNone(self.run_plan("11/28 礁溪過夜和 11/29 烏來一日，你幫我挑一個", command=self.SINGLE))
+        # The two choices offered are the real dates and lengths (Antigravity's review).
+        self.assertIn("「11/27–11/29 三天兩夜」還是「11/27–11/28 兩天一夜」", why)
+        why = self.run_plan("11/28-11/29 烏來一日遊")
+        self.assertIn("是 1 晚", why)
+        self.assertIn("「11/28–11/29 兩天一夜」還是「11/28 一日遊」", why)
+        self.assertIn("「12/31–1/2 三天兩夜」還是「12/31–1/1 兩天一夜」", self.run_plan("12/31-1/2 兩天一夜"))
+        # 「第一日」「一日券」 are not a same-day trip.
+        self.assertIsNone(self.run_plan("11/28-11/30 去礁溪，第一日先買一日券"))
+        # Answered: the owner's latest words decide, not the first message.
+        self.assertIsNone(self.run_plan("11/27–11/29 兩天一夜去礁溪", "11/28–11/29 兩天一夜"))
+        # Research waits too (exam: 19 minutes of searching around the refused plan); the calendar does not.
+        self.assertIn("先不要查價格", self.run_plan("11/27–11/29 兩天一夜", command='"python" "…/page-prices.py" https://a'))
+        self.assertIn("先不要查價格", self.run_plan("11/27–11/29 兩天一夜", tool="web_search"))
+        self.assertIsNone(self.run_plan("11/27–11/29 兩天一夜", command='"python" "…/calendar-check.py" --from x'))
+        # The owner's button answer (clarify's result) settles it; no answer (timed out) does not.
+        self.assertIsNone(self.run_plan("11/27–11/29 兩天一夜", answer="11/28–11/29 兩天一夜"))
+        self.assertIn("沒人回答或逾時", self.run_plan("11/27–11/29 兩天一夜", answer=""))
+        # Only clarify's own result counts, and an odd one does not break the check (Antigravity's review).
+        answered = json.dumps({"responses": [{"user_response": "11/28–11/29"}], "outcome": "answered"})
+        self.assertIsNone(self.run_plan("11/27–11/29 兩天一夜", raw=answered))  # the control: clarify's counts
+        self.assertIn("沒人回答或逾時", self.run_plan("11/27–11/29 兩天一夜", raw=answered, raw_tool="read_file"))
+        for odd in ('["user_response"]', '"user_response"', '{"responses": "user_response"}', "not json"):
+            self.assertIn("沒人回答或逾時", self.run_plan("11/27–11/29 兩天一夜", raw=odd), odd)
+
+    def test_pick_one_gets_one_plan_not_packages(self):
+        said = "11/28 礁溪過夜和 11/29 烏來一日，你幫我挑一個"
+        self.assertIn("不要加 --package", self.run_plan(said))
+        self.assertIsNone(self.run_plan(said, command=self.SINGLE))
+        self.assertIsNone(self.run_plan("我想出去玩"))
+
+    def test_one_plan_comes_after_three(self):
+        # 2026-11-26 (exam): 「幫我比價找最便宜的雙人湯屋，給我完整方案」 got one plan, not three to choose from.
+        said = "11/28 想去礁溪泡湯，2人，預算 2000，幫我比價找最便宜的雙人湯屋，給我完整方案"
+        self.assertIn("第一次給方案要給 3 個", self.run_plan(said, command=self.SINGLE))
+        # Only one place had a price: the block says how to send a short list (jiaoxi-budget re-ran it six times).
+        self.assertIn("--few-reason", self.run_plan(said, command=self.SINGLE))
+        self.assertIsNone(self.run_plan(said))
+        self.assertIsNone(self.run_plan(said, command=self.SINGLE.replace(" --place a", " --help")))
+        # After three were shown (the owner picks ②), the one plan's full detail is fine.
+        shown = "11/28 礁溪 2人｜3 個方案\n① 甲｜雙人湯屋\n總計 NT$300"
+        home = home_with(shown, tool="format-plan.py --package")
+        # Printed in this round is not shown (jiaoxi-budget, 2026-11-26: three printed, one plan sent).
+        self.assertFalse(check.offered("s1", home))
+        self.assertFalse(check.offered("s1", home_with()))
+        # Put in a button question this round and answered: shown.
+        asked = home_with(shown, tool="format-plan.py --package")
+        db = sqlite3.connect(asked / "profiles" / "travel-commander" / "state.db")
+        db.execute("INSERT INTO messages (session_id, role, content, tool_name) VALUES ('s1', 'tool', ?, 'clarify')",
+                   (json.dumps({"responses": [{"user_response": "①"}]}),))
+        db.commit()
+        db.close()
+        self.assertTrue(check.offered("s1", asked))
+        # A button answered before the packages (the head count) does not show them (Antigravity's review).
+        early = home_with()
+        db = sqlite3.connect(early / "profiles" / "travel-commander" / "state.db")
+        db.execute("INSERT INTO messages (session_id, role, content, tool_name) VALUES ('s1', 'tool', ?, 'clarify')",
+                   (json.dumps({"responses": [{"user_response": "2 人"}]}),))
+        db.commit()
+        db.close()
+        home_with(shown, tool="format-plan.py --package", home=early)
+        self.assertFalse(check.offered("s1", early))
+        # 「好」 said again in a new round, with no compaction between, is a new round (review).
+        again = home_with()
+        self.say(again, "好")
+        home_with(shown, tool="format-plan.py --package", home=again)
+        self.say(again, "好")
+        self.assertTrue(check.offered("s1", again))
+        self.say(home, "我選①")
+        self.assertTrue(check.offered("s1", home))
+        # A compaction repeating 「我選①」 is still the same round.
+        self.say(home, "[CONTEXT COMPACTION — REFERENCE ONLY] summary")
+        self.say(home, "我選①")
+        self.assertTrue(check.offered("s1", home))
+        # A new trip later in the same chat starts over: three first (Antigravity's review).
+        self.say(home, "下週想去九份，幫我排")
+        self.assertFalse(check.offered("s1", home))
+        # The Thursday weekend job pushes one plan: a scheduled run, named as such (review).
+        job = home_with()
+        db = sqlite3.connect(job / "profiles" / "travel-commander" / "state.db")
+        db.execute("UPDATE messages SET content = ? WHERE role = 'user'",
+                   ("[IMPORTANT: You are running as a scheduled cron job. DELIVERY: …] 執行 weekend-scout.py",))
+        db.commit()
+        db.close()
+        self.assertTrue(check.offered("s1", job))
+
+    def say(self, home, text):
+        db = sqlite3.connect(home / "profiles" / "travel-commander" / "state.db")
+        db.execute("INSERT INTO messages (session_id, role, content) VALUES ('s1', 'user', ?)", (text,))
+        db.commit()
+        db.close()
+
+
+class NotCheaperTests(unittest.TestCase):
+    """2026-11-26 (exam): 「太貴，有沒有更便宜的湯屋」 got the same NT$300 places again as 「平價」."""
+
+    def reply(self, follow_up, text, *earlier):
+        earlier = earlier or ("NT$300",)
+        home = home_with(*[f"11/28 礁溪 2人｜3 個方案\n① 甲｜雙人湯屋\n總計 {total}\n交通：開車約 50 分鐘"
+                           for total in earlier], tool="format-plan.py")
+        db = sqlite3.connect(home / "profiles" / "travel-commander" / "state.db")
+        db.execute("INSERT INTO messages (session_id, role, content) VALUES ('s1', 'user', ?)", (follow_up,))
+        db.commit()
+        db.close()
+        old = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(home)
+        try:
+            return check.not_cheaper(text, "s1", home)
+        finally:
+            if old is None:
+                del os.environ["HERMES_HOME"]
+            else:
+                os.environ["HERMES_HOME"] = old
+
+    def test_the_same_price_again_becomes_an_honest_not_found(self):
+        same = "11/28 礁溪 2人｜平價湯屋\n① 玫瑰園｜雙人湯屋\n總計 NT$300\n② 龍山｜原石湯屋\n總計 NT$300"
+        said = self.reply("一個小時六百也太貴，有沒有更便宜的湯屋", same)
+        self.assertIn("沒找到比上次最便宜的 NT$300 更便宜的湯屋", said)
+        cheaper = same.replace("總計 NT$300\n② 龍山", "總計 NT$250\n② 龍山")
+        self.assertIsNone(self.reply("太貴了，有沒有更便宜的", cheaper))
+        self.assertIsNone(self.reply("那烏來呢", same))  # not a cheaper request
+        self.assertIsNone(self.reply("太貴了", "查了幾家，沒找到更便宜的。"))  # no packages: left as written
+        # A plain numbered list at the same price (exam: 「有，礁溪有多間雙人湯屋只要 300 元」).
+        listed = ("有，礁溪有多間雙人湯屋只要 300 元（50分鐘）：\n1. 宜蘭玫瑰園民宿：雙人湯屋 300元\n📞 03-9883364\n"
+                  "2. 源來如池：雙人湯屋 300元\n📞 03-9880210\n自備毛巾即可直接現場泡，不用花到600元。")
+        self.assertIn("沒找到比上次最便宜的 NT$300", self.reply("一個小時六百也太貴，有沒有更便宜的湯屋", listed))
+        # A bullet list of places and prices no tool checked (exam, 2026-11-26).
+        bullets = ("礁溪每小時更便宜的平價湯屋（現場排隊、毛巾自備）：\n• 四季溫泉：雙人 50 分鐘 300 元（每小時約 360 元）\n"
+                   "• 春水笈：雙人 50 分鐘 380 元\n可預約獨立湯屋最低價：\n• 蔥澡小池：90 分鐘 1,000 元（03-9876688）")
+        self.assertIn("沒找到比上次最便宜的 NT$300", self.reply("一個小時六百也太貴，有沒有更便宜的湯屋", bullets))
+        # The same cheapest place again in prose (exam, 2026-11-26), not as packages.
+        prose = "原方案沐恩假日 NT$1,200、風華 NT$1,800。\n官網確認最便宜的是宜蘭玫瑰園民宿。\n雙人湯屋 50 分鐘只要 NT$300（限 2 人）。"
+        self.assertIn("沒找到比上次最便宜的 NT$300", self.reply("一個小時六百也太貴，有沒有更便宜的湯屋", prose))
+        self.assertIsNone(self.reply("一個小時六百也太貴，有沒有更便宜的湯屋", prose.replace("NT$300", "NT$250")))
+        # A small extra in the text is not a cheaper package (review): 「租毛巾 50 元」.
+        self.assertIn("沒找到比上次最便宜的 NT$300",
+                      self.reply("太貴了，有沒有更便宜的", listed + "\n租毛巾 50 元"))
+        # An older, cheaper trip in the same chat does not count, only the last plan (Antigravity's review).
+        hotel = "11/28 礁溪 2人｜3 個方案\n① 乙飯店｜雙人房\n總計 NT$3,200"
+        self.assertIsNone(self.reply("太貴了，有沒有更便宜的", hotel, "NT$300", "NT$5,000"))
+        self.assertIn("NT$5,000", self.reply("太貴了，有沒有更便宜的", hotel.replace("3,200", "5,000"),
+                                             "NT$300", "NT$5,000"))
 
 
 class KanbanCommandTests(unittest.TestCase):
