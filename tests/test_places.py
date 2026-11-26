@@ -113,5 +113,19 @@ class PlacesTests(unittest.TestCase):
         self.assertEqual(self.saved()[0]["status"], "ok")
 
 
+class StrftimeTests(unittest.TestCase):
+    def test_no_strftime_format_holds_chinese(self):
+        # 2026-11-26: time.strftime("%m/%d 推過") passed here but raised UnicodeEncodeError on CI's locale.
+        import re
+        found = []
+        for path in [*REPO.glob("scripts/*.py"), *REPO.glob("tools/*.py"), *REPO.glob("plugins/*/*.py"),
+                     REPO / "setup.py"]:
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                for fmt in re.findall(r"strftime\(\s*[rf]?([\"'])(.*?)\1", line):
+                    if any(ord(ch) > 127 for ch in fmt[1]):
+                        found.append(f"{path.relative_to(REPO)}:{number}")
+        self.assertEqual(found, [], "put the Chinese outside strftime: strftime('%m/%d') + ' 推過'")
+
+
 if __name__ == "__main__":
     unittest.main()
