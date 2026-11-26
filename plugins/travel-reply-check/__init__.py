@@ -776,12 +776,17 @@ def earlier_plan_floor(session_id, home):
 TOTAL_FIRST = re.compile(rf"^總計 ({AMOUNT})", re.M)
 
 
+BULLET_ENTRY = re.compile(r"^\s*[•・*\-]\s*[^：:\s]{2,}[：:]")  # 「• 四季溫泉：…」: a place and what it costs
+
+
 def not_cheaper(text, session_id, home):
     """The honest 「沒找到」 when the owner asked for cheaper and every package is not, else None."""
     totals = [int(re.sub(r"\D", "", a)) for a in TOTAL_FIRST.findall(text)]
     if not totals:  # 「1. 源來如池：雙人湯屋 300元」: the price on each entry's own line, not 「租毛巾 50 元」 (review)
+        # 「• 四季溫泉：雙人 50 分鐘 300 元」 too (exam, 2026-11-26: a bullet list of prices no tool checked).
+        entries = package_heads(text) or [line for line in text.splitlines() if BULLET_ENTRY.match(line)]
         totals = [int(re.sub(r"\D", "", found.group(0)))
-                  for found in map(money.PRICE.search, package_heads(text)) if found]
+                  for found in map(money.PRICE.search, entries) if found]
     if not totals:
         return None
     said = sessions.owner_words(home, session_id)
@@ -1201,6 +1206,14 @@ def hand_written(text, session_id, home):
     totals = [line.strip().lstrip("・•*- \t") for line in text.splitlines()
               if line.strip().lstrip("・•*- \t").startswith("總計")]
     single = not heads and PLAN_LABEL.search(text) and (COST_LABEL.search(text) or totals)
+    # 「• 四季溫泉：雙人 50 分鐘 300 元」「• 春水笈：…380 元」 with no total (exam, 2026-11-26): places and prices no
+    # tool checked. format-plan.py always prints a 總計, so a price list without one is written by hand.
+    # Only for 「更便宜」: elsewhere a bullet price is often fine (a card's 「• 機票：NT$12,281」).
+    if not heads and not single and not totals:
+        if sum(bool(BULLET_ENTRY.match(line) and money.PRICE.search(line)) for line in text.splitlines()) < 2:
+            return False
+        said = sessions.owner_words(home, session_id)
+        return bool(said) and bool(CHEAPER.search(said[-1]))
     if not heads and not single:
         return False
     printed = tool_outputs(session_id, home, COST_TOOLS if single else "format-plan.py")

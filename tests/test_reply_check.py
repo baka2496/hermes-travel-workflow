@@ -642,6 +642,20 @@ class PackageReplyTests(unittest.TestCase):
         self.assertNotEqual(self.transform(home, steps), check.HAND_WRITTEN)
         self.assertIsNone(self.transform(home, "好的，幫你記下來了"))
 
+    def test_a_price_list_for_cheaper_is_hand_written(self):
+        # 2026-11-26 (exam): the first plan failed, then 「太貴」 got 「• 四季溫泉：雙人 50 分鐘 300 元」 with no tool behind it.
+        listed = "礁溪平價湯屋：\n• 四季溫泉：雙人 50 分鐘 300 元\n• 春水笈：雙人 50 分鐘 380 元"
+        home = home_with("", tool="calendar-check.py")
+        self.assertNotEqual(self.transform(home, listed), check.HAND_WRITTEN)  # the owner asked nothing cheaper
+        db = sqlite3.connect(home / "profiles" / "travel-commander" / "state.db")
+        db.execute("INSERT INTO messages (session_id, role, content) VALUES ('s1', 'user', '一個小時六百也太貴，有沒有更便宜的湯屋')")
+        db.commit()
+        db.close()
+        self.assertEqual(self.transform(home, listed), check.HAND_WRITTEN)
+        self.assertNotEqual(self.transform(home, "• 四季溫泉：雙人 50 分鐘 300 元"), check.HAND_WRITTEN)  # one line
+        flights = "• 機票：NT$12,281\n• 住宿：NT$3,200"
+        self.assertNotEqual(self.transform(home_with("", tool="calendar-check.py"), flights), check.HAND_WRITTEN)
+
 
 class OwnerRequestTests(unittest.TestCase):
     """2026-11-26 (exam): the role said to ask when dates disagree and to pick one when asked; now checked."""
@@ -810,6 +824,10 @@ class NotCheaperTests(unittest.TestCase):
         listed = ("有，礁溪有多間雙人湯屋只要 300 元（50分鐘）：\n1. 宜蘭玫瑰園民宿：雙人湯屋 300元\n📞 03-9883364\n"
                   "2. 源來如池：雙人湯屋 300元\n📞 03-9880210\n自備毛巾即可直接現場泡，不用花到600元。")
         self.assertIn("沒找到比上次最便宜的 NT$300", self.reply("一個小時六百也太貴，有沒有更便宜的湯屋", listed))
+        # A bullet list of places and prices no tool checked (exam, 2026-11-26).
+        bullets = ("礁溪每小時更便宜的平價湯屋（現場排隊、毛巾自備）：\n• 四季溫泉：雙人 50 分鐘 300 元（每小時約 360 元）\n"
+                   "• 春水笈：雙人 50 分鐘 380 元\n可預約獨立湯屋最低價：\n• 蔥澡小池：90 分鐘 1,000 元（03-9876688）")
+        self.assertIn("沒找到比上次最便宜的 NT$300", self.reply("一個小時六百也太貴，有沒有更便宜的湯屋", bullets))
         # A small extra in the text is not a cheaper package (review): 「租毛巾 50 元」.
         self.assertIn("沒找到比上次最便宜的 NT$300",
                       self.reply("太貴了，有沒有更便宜的", listed + "\n租毛巾 50 元"))
