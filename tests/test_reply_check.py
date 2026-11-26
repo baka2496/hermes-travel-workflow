@@ -837,6 +837,10 @@ class NotCheaperTests(unittest.TestCase):
         bullets = ("礁溪每小時更便宜的平價湯屋（現場排隊、毛巾自備）：\n• 四季溫泉：雙人 50 分鐘 300 元（每小時約 360 元）\n"
                    "• 春水笈：雙人 50 分鐘 380 元\n可預約獨立湯屋最低價：\n• 蔥澡小池：90 分鐘 1,000 元（03-9876688）")
         self.assertIn("沒找到比上次最便宜的 NT$300", self.reply("一個小時六百也太貴，有沒有更便宜的湯屋", bullets))
+        # The same cheapest place again in prose (exam, 2026-11-26), not as packages.
+        prose = "原方案沐恩假日 NT$1,200、風華 NT$1,800。\n官網確認最便宜的是宜蘭玫瑰園民宿。\n雙人湯屋 50 分鐘只要 NT$300（限 2 人）。"
+        self.assertIn("沒找到比上次最便宜的 NT$300", self.reply("一個小時六百也太貴，有沒有更便宜的湯屋", prose))
+        self.assertIsNone(self.reply("一個小時六百也太貴，有沒有更便宜的湯屋", prose.replace("NT$300", "NT$250")))
         # A small extra in the text is not a cheaper package (review): 「租毛巾 50 元」.
         self.assertIn("沒找到比上次最便宜的 NT$300",
                       self.reply("太貴了，有沒有更便宜的", listed + "\n租毛巾 50 元"))

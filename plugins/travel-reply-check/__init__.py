@@ -790,6 +790,8 @@ def not_cheaper(text, session_id, home):
         entries = package_heads(text) or [line for line in text.splitlines() if BULLET_ENTRY.match(line)]
         totals = [int(re.sub(r"\D", "", found.group(0)))
                   for found in map(money.PRICE.search, entries) if found]
+    if not totals:  # 「官網確認最便宜的是玫瑰園…只要 NT$300」 (exam, 2026-11-26): the same place in prose
+        totals = [int(re.sub(r"\D", "", found)) for found in money.PRICE.findall(text)]
     if not totals:
         return None
     said = sessions.owner_words(home, session_id)
