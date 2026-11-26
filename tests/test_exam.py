@@ -105,6 +105,8 @@ class GradeTests(unittest.TestCase):
         self.assertEqual(self.grade(honest, outputs=(), question=cheaper, earlier=(PLAN,)), [])
         plain = "玫瑰園原泉湯屋為整間 NT$300（50分鐘）\n目前官網核實價格中，\n沒有比玫瑰園更便宜的雙人湯屋。"
         self.assertEqual(self.grade(plain, outputs=(), question=cheaper, earlier=(PLAN,)), [])
+        lazy = "玫瑰園 NT$300，沒有比較其他家，應該有更便宜的"  # across clauses: not a not-found (review)
+        self.assertIn("沒有更便宜的方案，也沒說沒找到", self.grade(lazy, outputs=(), question=cheaper, earlier=(PLAN,)))
         self.assertIn("沒有更便宜的方案，也沒說沒找到",
                       self.grade("好的，我再找找", outputs=(), question=cheaper, earlier=(PLAN,)))
         self.assertIn("沒有比原本最便宜的 NT$1,200 更便宜", self.grade(PLAN, question=cheaper, earlier=(PLAN,)))
