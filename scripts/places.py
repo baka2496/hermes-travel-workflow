@@ -142,7 +142,8 @@ def pick(args):
     lines = []
     for place in found[:args.limit]:
         when = last_recommended(place, history)
-        said = time.strftime("%m/%d 推過", time.localtime(when)) if when else "沒推過"
+        # Chinese outside strftime: CI's locale cannot encode it (UnicodeEncodeError on 推).
+        said = time.strftime("%m/%d", time.localtime(when)) + " 推過" if when else "沒推過"
         price = (place.get("prices") or [""])[0] or ("官方頁沒列收費" if place.get("free") == "unlisted"
                                                   else "免費" if place.get("free") else "未確認")
         lines.append(f"• {place['name']}｜{place['area']}・{place['kind']}｜{said}｜{price}"
