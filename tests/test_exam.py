@@ -98,6 +98,13 @@ class GradeTests(unittest.TestCase):
         found = plain + "\nMEDIA:C:/photos/a.jpg"  # the tool had a photo the reply left out
         self.assertTrue(any("missing_photo" in p for p in self.grade(plain, outputs=(found,), question=one,
                                                                     hide_unconfirmed=True)))
+        # An earlier run without a photo does not count once the last one found it (review).
+        self.assertTrue(any("missing_photo" in p for p in self.grade(plain, outputs=(plain + "\n照片：未取得", found),
+                                                                    question=one, hide_unconfirmed=True)))
+        # A run with a photo somewhere and 未取得 elsewhere: a photo was found, so leaving it out fails.
+        mixed = found + "\n照片：未取得"
+        self.assertTrue(any("missing_photo" in p for p in self.grade(plain, outputs=(mixed,), question=one,
+                                                                    hide_unconfirmed=True)))
         no_link = PLAN.replace("🏨 [官網](https://b.example/) 📞 03-2", "")
         self.assertTrue(any("incomplete_package" in p for p in self.grade(no_link, outputs=(no_link,),
                                                                          hide_unconfirmed=True)))

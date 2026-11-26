@@ -122,7 +122,7 @@ def grade(question, said, reply, tool_outputs, elapsed=0, error="", earlier=(), 
     # the tool found and the reply left out still fails (Antigravity's review).
     # The last run only, and each package by its own block (review: one 未取得 must not forgive the others).
     last = tool_outputs[-1] if tool_outputs else ""
-    dropped_photo = hide_unconfirmed and "照片：未取得" in last
+    dropped_photo = hide_unconfirmed and "照片：未取得" in last and "MEDIA:" not in last  # no photo found at all
 
     def dropped_phone(problem):
         text = problem.get("text", "")
