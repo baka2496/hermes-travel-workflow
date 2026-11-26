@@ -80,6 +80,23 @@ class PlacesTests(unittest.TestCase):
         rc, _, err = self.add("甲", "礁溪", "購物", "https://a.example/", "<p>NT$500</p>")
         self.assertEqual(rc, 1)
         self.assertIn("--kind 要是其中一種", err)
+        rc, _, err = self.run_places("pick", "--kind", "購物")
+        self.assertEqual(rc, 1)
+        self.assertIn("--kind 要是其中一種", err)
+
+    def test_staying_overnight_picks_hot_spring_hotels_too(self):
+        # 2026-11-27 (exam overnight-budget): pick --kind 住宿 said 「地點庫沒有」 though seven 礁溪 hot-spring
+        # hotels were kept as 溫泉, then add --kind 住宿 was refused.
+        self.add("甲溫泉飯店", "礁溪", "溫泉", "https://a.example/room", "<p>雙人房 假日 NT$4,200</p>")
+        rc, out, err = self.add("乙旅館", "礁溪", "住宿", "https://b.example/room", "<p>雙人房 假日 NT$1,800</p>")
+        self.assertEqual(rc, 0, err)
+        self.add("丙步道", "礁溪", "自然步道、看風景", "https://c.example/trail", "<p>免費入園</p>")
+        rc, out, err = self.run_places("pick", "--kind", "住宿", "--area", "礁溪")
+        self.assertEqual(rc, 0, err)
+        names = sorted(line.split("｜")[0].lstrip("• ") for line in out.splitlines() if line.startswith("•"))
+        self.assertEqual(names, ["乙旅館", "甲溫泉飯店"])
+        rc, out, _ = self.run_places("pick", "--kind", "溫泉", "--area", "礁溪")
+        self.assertNotIn("乙旅館", out)
 
     def test_pick_offers_the_least_recently_recommended_first_and_never_stale_ones(self):
         now = time.time()

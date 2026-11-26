@@ -4,7 +4,8 @@
 few pages each time and only those few showed a price it could read. The owner: 「這是一個很嚴重的問題」.
 This keeps every place found once, so the next question starts from many, the least recently recommended first.
 
-  places.py pick --kind 溫泉 [--area 礁溪]     挑候選：最久沒推的排前面（過期、失效的不給）
+  places.py pick --kind 溫泉 [--area 礁溪]     挑候選：最久沒推的排前面（過期、失效的不給）；
+                                              要過夜用 --kind 住宿（溫泉飯店也列）
   places.py add --name … --area … --kind … --official <官網> [--price-page <價格頁>]
                                               打開網頁，價格或「免費」讀得到才收進來
   places.py recheck [--days 7]                重開超過幾天沒查的網頁；讀不到就標失效（不刪）
@@ -23,7 +24,16 @@ import sys
 import time
 
 HERE = Path(__file__).resolve().parent
-KINDS = ("溫泉", "自然步道、看風景", "海邊", "老街、小吃、夜市", "其他")
+KINDS = ("溫泉", "住宿", "自然步道、看風景", "海邊", "老街、小吃、夜市", "其他")
+# 2026-11-27: 「礁溪住一晚」 asked pick --kind 住宿, got 「地點庫沒有」 though seven 礁溪 hot-spring hotels were kept
+# as 溫泉, then add --kind 住宿 was refused. A room can be at a 溫泉 place too, so 住宿 picks both.
+ALSO = {"住宿": ("溫泉",)}
+
+
+def kind_problem(kind):
+    if kind and kind not in KINDS:
+        return f"--kind 要是其中一種：{'、'.join(KINDS)}（要過夜就用 住宿，溫泉飯店也會列出來）"
+    return None
 STALE_DAYS = 30          # prices not read again for this long are not offered
 FREE = re.compile(r"免費入園|免費參觀|免費開放|免費入場|免門票|免收費|不收費|不需門票|無需門票|免入園費"
                   r"|(門票|入園|入場|參觀)[^。\n]{0,6}免費")
@@ -95,8 +105,8 @@ def last_recommended(place, history):
 
 
 def add(args):
-    if args.kind not in KINDS:
-        return f"--kind 要是其中一種：{'、'.join(KINDS)}"
+    if kind_problem(args.kind):
+        return kind_problem(args.kind)
     page_url = args.price_page or args.official
     found, error = read_page(page_url, args)
     if found is None:
@@ -129,11 +139,13 @@ def add(args):
 def candidates(places, history, kind=None, area=None, now=None):
     """Usable places of this kind and area, the least recently recommended first."""
     usable = [p for p in places if p.get("status") == "ok" and age_days(p, now) <= STALE_DAYS
-              and (not kind or p.get("kind") == kind) and (not area or area in p.get("area", ""))]
+              and (not kind or p.get("kind") in (kind, *ALSO.get(kind, ()))) and (not area or area in p.get("area", ""))]
     return sorted(usable, key=lambda p: (last_recommended(p, history), p.get("name", "")))
 
 
 def pick(args):
+    if kind_problem(args.kind):
+        return None, kind_problem(args.kind)
     history = load("format_plan", "format-plan.py").read_history(args.history)
     found = candidates(read_places(args.places), history, args.kind, args.area, args.now)
     if not found:
