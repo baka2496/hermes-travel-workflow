@@ -116,14 +116,20 @@ class PlacesTests(unittest.TestCase):
 class StrftimeTests(unittest.TestCase):
     def test_no_strftime_format_holds_chinese(self):
         # 2026-11-26: time.strftime("%m/%d 推過") passed here but raised UnicodeEncodeError on CI's locale.
-        import re
+        # Read as code (Antigravity's review): a call over several lines or `datetime.strftime(d, fmt)` counts,
+        # a comment does not.
+        import ast
         found = []
         for path in [*REPO.glob("scripts/*.py"), *REPO.glob("tools/*.py"), *REPO.glob("plugins/*/*.py"),
-                     REPO / "setup.py"]:
-            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-                for fmt in re.findall(r"strftime\(\s*[rf]?([\"'])(.*?)\1", line):
-                    if any(ord(ch) > 127 for ch in fmt[1]):
-                        found.append(f"{path.relative_to(REPO)}:{number}")
+                     *REPO.glob("tests/*.py"), REPO / "setup.py"]:
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if not (isinstance(node, ast.Call) and getattr(node.func, "attr", getattr(node.func, "id", None))
+                        == "strftime"):
+                    continue
+                for arg in node.args:
+                    texts = [n.value for n in ast.walk(arg) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+                    if any(ord(ch) > 127 for text in texts for ch in text):
+                        found.append(f"{path.relative_to(REPO)}:{node.lineno}")
         self.assertEqual(found, [], "put the Chinese outside strftime: strftime('%m/%d') + ' 推過'")
 
 
