@@ -659,6 +659,8 @@ class PackageReplyTests(unittest.TestCase):
         for line in ("• 下午 15:00 入住，房價 NT$3,200", "• 官網參考 https://example.com 每人 300 元",
                      "• 離車站很近走路就到不用搭車也不用開車真的很方便喔，提醒：每人 300 元"):
             self.assertIsNone(check.BULLET_ENTRY.match(line), line)
+        for line in ("• 門票:300元", "• 蔥澡:1,000元", "• 四季溫泉：雙人 50 分鐘 300 元"):  # still entries (review)
+            self.assertIsNotNone(check.BULLET_ENTRY.match(line), line)
         flights = "• 機票：NT$12,281\n• 住宿：NT$3,200"
         self.assertNotEqual(self.transform(home_with("", tool="calendar-check.py"), flights), check.HAND_WRITTEN)
 
