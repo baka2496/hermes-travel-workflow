@@ -661,7 +661,8 @@ class OwnerRequestTests(unittest.TestCase):
         self.assertIsNone(self.run_plan("11/27–11/29 兩天一夜", answer="11/28–11/29 兩天一夜"))
         self.assertIn("沒人回答或逾時", self.run_plan("11/27–11/29 兩天一夜", answer=""))
         # Only clarify's own result counts, and an odd one does not break the check (Antigravity's review).
-        answered = json.dumps({"responses": [{"user_response": "11/28–11/29"}]})
+        answered = json.dumps({"responses": [{"user_response": "11/28–11/29"}], "outcome": "answered"})
+        self.assertIsNone(self.run_plan("11/27–11/29 兩天一夜", raw=answered))  # the control: clarify's counts
         self.assertIn("沒人回答或逾時", self.run_plan("11/27–11/29 兩天一夜", raw=answered, raw_tool="read_file"))
         for odd in ('["user_response"]', '"user_response"', '{"responses": "user_response"}', "not json"):
             self.assertIn("沒人回答或逾時", self.run_plan("11/27–11/29 兩天一夜", raw=odd), odd)
