@@ -344,7 +344,11 @@ class ReplyCheckTravelIntegrationTests(unittest.TestCase):
         escaped_check = json.dumps({"command": '"C:/py/python.exe" "C:/h/shared/travel-workflow/travel.py" check --text "local trip"'})
         self.assertTrue(plugin.TRAVEL_PLAN_SUBCMD.search(escaped_overseas))
         self.assertTrue(plugin.TRAVEL_PLAN_SUBCMD.search(double_escaped))
+        self.assertTrue(plugin.TRAVEL_LOCAL_SUBCMD.search(escaped_local))
+        self.assertTrue(plugin.TRAVEL_LOCAL_SUBCMD.search(json.dumps(escaped_local)))
+        self.assertFalse(plugin.TRAVEL_LOCAL_SUBCMD.search(escaped_check))
         self.assertTrue(plugin.RESEARCH.search(escaped_local))
+        self.assertTrue(plugin.RESEARCH.search(double_escaped))
         self.assertFalse(plugin.TRAVEL_PLAN_SUBCMD.search(escaped_check))
         self.assertFalse(plugin.RESEARCH.search(escaped_check))
 
@@ -375,6 +379,20 @@ class ReplyCheckTravelIntegrationTests(unittest.TestCase):
             stripped = plugin.transform_llm_output(response_text=card, session_id="s2", turn_id="t2")
             self.assertIsNotNone(stripped)
             self.assertNotIn("未確認", stripped)
+
+            # Chronological order: an earlier travel.py overseas must NOT shadow a newer format-plan.py run
+            con = sqlite3.connect(db_path)
+            fp_args = json.dumps({"command": '"C:/py/python.exe" "C:/h/shared/travel-workflow/format-plan.py" --package'})
+            fp_tc = json.dumps([{"id": "c2", "function": {"name": "terminal", "arguments": fp_args}}])
+            local_reply = "12/05 泡湯 2人｜3 個方案，點連結就能訂\n① 甲溫泉\n總計 NT$300，預算剩 NT$1,700\n📍 [地圖](https://a)"
+            con.execute("INSERT INTO messages VALUES (5, 's1', 'user', '改查泡湯 預算 2000', NULL, NULL, NULL, 5)")
+            con.execute("INSERT INTO messages VALUES (6, 's1', 'assistant', '', NULL, ?, NULL, 6)", (fp_tc,))
+            con.execute("INSERT INTO messages VALUES (7, 's1', 'tool', ?, 'c2', NULL, 'terminal', 7)", (json.dumps({"output": local_reply}),))
+            con.commit()
+            con.close()
+            after = plugin.transform_llm_output(response_text=local_reply, session_id="s1", turn_id="t3")
+            final_text = local_reply if after is None else after
+            self.assertIn("總計 NT$300", final_text)
         finally:
             if old is None:
                 os.environ.pop("HERMES_HOME", None)
