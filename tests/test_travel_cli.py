@@ -228,21 +228,83 @@ class OverseasTravelTests(unittest.TestCase):
         # 4 guests in a 4-person family room needs only 1 room x 2 nights = 2 room-nights
         label, unit, qty = travel.select_best_price_line(["溫馨四人房：4800元"], nights=2, guests=4)
         self.assertEqual((unit, qty), (4800, 2))
-        # Day-trip bathhouse (湯屋) is 1 room/session, not multiplied by room count
+        # Day-trip bathhouse capacity: 家庭湯屋 fits 4 (1 room), 雙人湯屋 for 4 guests needs 2 rooms
         label, unit, qty = travel.select_best_price_line(["家庭湯屋：800元 / 60分鐘"], nights=0, guests=4)
         self.assertEqual((unit, qty), (800, 1))
-        # Real sweetme.com.tw lines on a winter Sunday (11/29): must skip meal sub-item ($980),
-        # skip off-season ($2,400/$1,200), and pick weekend price (假日 $3,000 / $1,500), NOT weekday!
+        label, unit, qty = travel.select_best_price_line(["雙人湯屋：800元 / 60分鐘"], nights=0, guests=4)
+        self.assertEqual((unit, qty), (800, 2))
+        # Room/bathhouse lines with 贈送/套餐 must NOT be dropped; standalone meal sub-items and bus fares ARE dropped
+        label, unit, qty = travel.select_best_price_line(
+            ["交通指南｜車資：每人 NT$15／單程", "饗湯專案｜1.享用經典套餐$980元2客", "雙人房 $3,200 贈送早餐"],
+            nights=1, guests=2,
+        )
+        self.assertEqual((unit, qty), (3200, 1))
+        # 非假日 must be treated as 平日, NEVER as 假日
+        label, unit, qty = travel.select_best_price_line(
+            ["雙人房 非假日$2,000", "雙人房 假日$2,800"], nights=1, guests=2, is_weekend=True
+        )
+        self.assertEqual((unit, qty), (2800, 1))
+        self.assertEqual(travel._price_for_day_type("雙人湯屋 非假日$1,200 假日$1,600", True), 1600)
+        self.assertEqual(travel._price_for_day_type("雙人湯屋 非假日$1,200 假日$1,600", False), 1200)
+        # Season check: ONLY filter by explicit month/date ranges (never guess winter=peak for all venues!)
+        chunho_lines = ["價位資訊｜夏季 (5-9月)：599元 / 60分鐘", "價位資訊｜冬季 (10-4月)：699元 / 60分鐘"]
+        self.assertEqual(travel.select_best_price_line(chunho_lines, nights=0, guests=2, month=7)[1], 599)
+        self.assertEqual(travel.select_best_price_line(chunho_lines, nights=0, guests=2, month=11)[1], 699)
+        beach_lines = ["海景雙人房 旺季 (6-9月)：$2,000", "海景雙人房 淡季 (10-5月)：$1,200"]
+        self.assertEqual(travel.select_best_price_line(beach_lines, nights=1, guests=2, month=7)[1], 2000)
+        # Expired promo date range is skipped when trip_date is past end date
+        promo_lines = [
+            "超時泡湯優惠~2025/4/1-2025/10/31止｜套房泡湯$2,000",
+            "溪景湯屋｜假日特價 $800 / 1小時",
+        ]
+        self.assertEqual(travel.select_best_price_line(promo_lines, nights=0, guests=2, trip_date="2026-12-06")[1], 800)
+        # Un-dated ambiguous 淡季/旺季 without explicit month ranges must NOT be guessed
         sweetme_lines = [
             "饗湯專案｜淡季平假日$2,400元",
             "饗湯專案｜旺季平日$2,600元、假日$3,000元",
             "饗湯專案｜1.享用經典套餐$980元2客",
         ]
-        label, unit, qty = travel.select_best_price_line(sweetme_lines, nights=0, guests=2, is_weekend=True, month=11)
-        self.assertEqual((unit, qty), (3000, 1))
-        # Legacy owner_quoted_budget without currency/scope still works; JPY is rejected
+        self.assertIsNone(travel.select_best_price_line(sweetme_lines, nights=0, guests=2, is_weekend=True, month=11))
+        # Section heading like '平假日定義' must not mask '/ 平日' or replace room label '山景溫泉湯屋'
+        spring_spa_lines = [
+            "平假日定義｜山景溫泉湯屋：$1600 / 平日",
+            "平假日定義｜山景溫泉湯屋：$2000 / 假日",
+            "溫泉房型｜加床成人：NT$ 1,000 / 假日",
+        ]
+        label, unit, qty = travel.select_best_price_line(spring_spa_lines, nights=0, guests=2, is_weekend=True)
+        self.assertEqual((label, unit, qty), ("山景溫泉湯屋", 2000, 1))
+        # Legacy owner_quoted_budget without currency/scope still works for TWD; JPY (even without currency) is rejected
         self.assertEqual(travel.owner_quoted_budget({"budget": {"amount": 2000, "quote": "預算2000"}}), 2000)
+        self.assertIsNone(travel.owner_quoted_budget({"budget": {"amount": 50000, "quote": "預算5萬日圓"}}))
         self.assertIsNone(travel.owner_quoted_budget({"budget": {"amount": 50000, "currency": "JPY", "quote": "5萬日圓"}}))
+
+    def test_calendar_conflict_filtering_and_passthrough_kind_normalization(self):
+        travel = load_travel()
+        from unittest import mock
+
+        root = Path(scratch.new_dir("cal-check"))
+        cal_dir = root / "shared" / "annual-schedule"
+        cal_dir.mkdir(parents=True)
+        (cal_dir / "calendar.json").write_text("[]", encoding="utf-8")
+        fake_out = "12/06–12/06 行事曆：\n• 12/06 10:00 非常非常長的一場跨部門重要會議與專案討論報告\n"
+        with mock.patch.object(travel.subprocess, "run") as mrun:
+            mrun.return_value = mock.Mock(returncode=0, stdout=fake_out)
+            note = travel.check_calendar_conflict("2026-12-06", "2026-12-06", root)
+        self.assertIsNotNone(note)
+        self.assertNotIn("行事曆：", note)
+        self.assertFalse(note.startswith("•"))
+        self.assertTrue(note.endswith("…"))
+        self.assertLessEqual(len(note), 23)
+
+        with mock.patch.object(travel.subprocess, "run") as mrun:
+            mrun.return_value = mock.Mock(returncode=0)
+            travel.run_passthrough("add-place", ["--name", "測試湯屋", "--kind", "泡湯"])
+            cmd1 = mrun.call_args[0][0]
+            self.assertIn("溫泉", cmd1)
+            self.assertNotIn("泡湯", cmd1)
+            travel.run_passthrough("add-place", ["--name", "測試湯屋", "--kind=泡湯"])
+            cmd2 = mrun.call_args[0][0]
+            self.assertIn("--kind=溫泉", cmd2)
 
     def test_profile_hermes_home_resolves_shared_root(self):
         travel = load_travel()
@@ -316,6 +378,44 @@ class LocalTravelTests(unittest.TestCase):
         self.assertIn("開車／騎車前往礁溪", res.stdout)
         self.assertNotIn("大眾運輸", res.stdout)
         self.assertIn("總計 NT$600，預算剩 NT$1,400", res.stdout)
+
+    def test_local_three_packages_with_calendar_conflict_still_passes_phone_check(self):
+        from unittest import mock
+        travel = load_travel()
+        phone_check = travel.load_module("phone_check", "phone-check.py")
+        d = Path(scratch.new_dir("travel-local-cal"))
+        shared = d / "shared" / "travel-workflow"
+        shared.mkdir(parents=True)
+        (shared / "preferences.json").write_text(json.dumps({"traveler_count": 2}), encoding="utf-8")
+        html = d / "sample.html"
+        html.write_text(
+            "<html><head><title>範例溫泉</title></head><body><h1>雙人湯屋</h1><p>雙人湯屋 60分鐘 NT$600</p></body></html>",
+            encoding="utf-8",
+        )
+        places = {
+            "schema_version": 1,
+            "places": [
+                {"name": n, "area": "礁溪", "kind": "溫泉",
+                 "official": f"https://{k}.example/bath", "price_page": f"https://{k}.example/bath",
+                 "phone": "", "prices": ["雙人湯屋 NT$600"], "free": False, "checked_at": "2026-11-27", "status": "ok"}
+                for n, k in [("甲溫泉", "a"), ("乙溫泉", "b"), ("丙溫泉", "c")]
+            ],
+        }
+        (shared / "places.json").write_text(json.dumps(places, ensure_ascii=False), encoding="utf-8")
+        (shared / "recommended.json").write_text("[]", encoding="utf-8")
+
+        import io
+        buf = io.StringIO()
+        with mock.patch.object(travel, "check_calendar_conflict", return_value="12/05 14:00 牙醫預約"), \
+             mock.patch.object(sys, "stdout", buf):
+            rc = travel.main([
+                "local", "--area", "礁溪", "--kind", "溫泉", "--date", "2026-12-05",
+                "--hermes-root", str(d), "--html-file", str(html),
+            ])
+        self.assertEqual(rc, 0)
+        out = buf.getvalue().strip()
+        self.assertIn("⚠️ 行事曆", out)
+        self.assertEqual(phone_check.check(out)["problems"], [])
 
 
 class SyncLiveTests(unittest.TestCase):
@@ -424,12 +524,17 @@ class ReplyCheckTravelIntegrationTests(unittest.TestCase):
             self.assertIn("總計 NT$300", final_text)
             self.assertIn("預算剩 NT$1,700", final_text)
 
-            # Hard cap on web_search per turn prevents 108-search spirals
+            # Hard cap on web_search per turn prevents 108-search spirals; resets across turns & ignores empty turn_id
             for i in range(plugin.MAX_SEARCHES_PER_TURN):
                 self.assertIsNone(plugin.pre_tool_call("web_search", {"query": f"q{i}"}, session_id="s_cap", turn_id="t_cap"))
             blocked = plugin.pre_tool_call("web_search", {"query": "too_many"}, session_id="s_cap", turn_id="t_cap")
             self.assertIsInstance(blocked, dict)
             self.assertEqual(blocked.get("action"), "block")
+            # Next turn resets counter
+            self.assertIsNone(plugin.pre_tool_call("web_search", {"query": "fresh"}, session_id="s_cap", turn_id="t_cap_2"))
+            # Empty turn_id does not accumulate across turns
+            for i in range(plugin.MAX_SEARCHES_PER_TURN + 2):
+                self.assertIsNone(plugin.pre_tool_call("web_search", {"query": f"u{i}"}, session_id="s_cap", turn_id=""))
         finally:
             if old is None:
                 os.environ.pop("HERMES_HOME", None)

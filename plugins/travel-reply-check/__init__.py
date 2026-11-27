@@ -847,9 +847,9 @@ SEARCH_CAP_PROBLEM = ("這輪已經搜尋很多次了，不要再繼續 web_sear
 
 
 def search_loop_problem(tool_name, session_id, turn_id):
-    if tool_name != "web_search" or not session_id:
+    if tool_name != "web_search" or not session_id or not turn_id:
         return None
-    key = (session_id, turn_id or "")
+    key = (session_id, turn_id)
     count = SEARCH_COUNTS.get(key, 0) + 1
     SEARCH_COUNTS[key] = count
     return SEARCH_CAP_PROBLEM if count > MAX_SEARCHES_PER_TURN else None
