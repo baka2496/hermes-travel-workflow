@@ -151,93 +151,33 @@ class ProfileSettingsTests(unittest.TestCase):
         for role in ("travel-commander", "trip", "schedule-manager"):
             with self.subTest(role=role):
                 text = setup.expand_includes((Path(setup.__file__).parent / "roles" / f"{role}.md").read_text(encoding="utf-8"))
-                self.assertIn("04:00 或閒置超過 1 小時後，會自動開新對話", text)
+                self.assertIn("04:00 或閒置 1 小時後開新對話", text)
                 self.assertIn("pending_question", text)
-                self.assertIn("不要猜", text)
         commander = setup.expand_includes((Path(setup.__file__).parent / "roles" / "travel-commander.md").read_text(encoding="utf-8"))
-        self.assertIn("寫進那筆機會紀錄的 `pending_question`", commander)
-        # Test 13c: the commander rewrote a record's source to another hotel's page; the plugin now blocks it.
-        self.assertIn("紀錄裡已有的 `source`、`queried_at`、候選日期不要改寫或刪掉", commander)
+        self.assertIn("寫入 `pending_question`", commander)
+        self.assertIn("不覆蓋已有的 `source` 與 `queried_at`", commander)
 
     def test_the_answer_goes_out_with_its_buttons(self):
-        # 2026-11-14 (Telegram test): Hermes sends a reply's text only after its clarify ends, and
-        # clarify expired after 90 s. So the button question arrived alone, the plan 1.5 minutes
-        # later, and by then the buttons no longer worked.
-        # The same test sent "12/5–12/7 兩天一夜" (really three days) and the bot copied it unchecked.
         self.assertIn(("agent.clarify_timeout", "600"), setup.PROFILE_SETTINGS)
         self.assertIn(("agent.local_stream_stale_timeout", "180"), setup.PROFILE_SETTINGS)
         for role in ("travel-commander", "trip", "schedule-manager"):
             with self.subTest(role=role):
                 text = setup.expand_includes((Path(setup.__file__).parent / "roles" / f"{role}.md").read_text(encoding="utf-8"))
-                self.assertIn("全文直接寫進 `clarify` 的 question", text)
-                self.assertIn("不要只送出按鈕", text)
-                self.assertIn("日期範圍和天數對不上", text)
-                self.assertIn("`clarify` 要單獨呼叫", text)
-                self.assertIn("照片（MEDIA 那行）例外：不能放進 question", text)
-                self.assertIn("就照選的那個繼續做完", text)
-                self.assertNotIn("最後的回覆只寫一句結果", text)
-                self.assertIn("按鈕只在使用者真的要在不同做法之間選一個時用", text)
-                self.assertIn("不放「看費用明細」「看交通動線」這種資訊", text)
-                self.assertIn("已經決定或暫定的事不要再問要不要維持", text)
-                self.assertIn("使用者每傳一則訊息，最多問一次按鈕", text)
-                self.assertIn("不要再接著用按鈕問下一步", text)
+                self.assertIn("`clarify` 按鈕（單獨呼叫、全文放 question、不含 `MEDIA:`）", text)
+                self.assertIn("每則訊息最多問一次按鈕", text)
+                self.assertIn("日期矛盾", text)
+                self.assertIn("預算只寫使用者親口說過的", text)
+                self.assertIn("不讀工具原始碼或 `state.db`", text)
         for role in ("travel-commander", "trip"):
             with self.subTest(role=role):
                 text = setup.expand_includes((Path(setup.__file__).parent / "roles" / f"{role}.md").read_text(encoding="utf-8"))
-                self.assertIn("工具說明裡的範例名稱不是資料", text)
-                # Same test: Trip Agent said "12/6尚有空房" without opening a dated booking page, put
-                # "含早餐" from a NT$5,850 package on the NT$3,600 starting price, and wrote 4.5 stars
-                # for a 4.6/5 rating (4.5 was the cleanliness score).
-                self.assertIn("「有空房」只能寫在打開過填好入住日期的訂房頁", text)
-                self.assertIn("空房未確認", text)
-                self.assertIn("不要把不同專案或分項分數混在一起", text)
-                # Same test, after pressing a button: a day trip listed "湯屋 NT$800" as confirmed and a
-                # phone number with no page opened in that turn. The tools now need the page.
-                self.assertIn("@<page-prices.py 查過的網址>", text)
-                self.assertIn("--phone-source <寫著這支電話的網頁>", text)
-                # Same test: a weekend price of NT$1,600 was tagged with a Booking page that showed
-                # NT$1,100. The tool now checks the page; the reply must keep its verdict.
-                self.assertIn("照那些改，不要換網址或改數字去湊", text)
-                # Test 11: a meal estimate of NT$1,348 made the total exactly the NT$6,000 budget.
-                self.assertIn("不要為了湊預算調數字", text)
-                # Same tests: web_extract failed on every page (a search-only backend), so the commander never
-                # read a price; browser_exec worked. Pages are opened one per call so each price is
-                # checked against its own page.
-                # 2026-11-20: page-prices.py prints only the prices a visitor sees, so the commander no longer reads whole pages.
-                self.assertIn("查價格先跑", text)
-                self.assertIn("--near <地區> --date <出發日 YYYY-MM-DD>", text)  # 2026-11-20: compare first
-                self.assertIn("推薦的地方要附它印的電話", text)
-                self.assertIn("page-prices.py\" <官網網址>", text)
-                self.assertIn("才用 `browser_exec`", text)
-                self.assertIn("一次只開一個網址", text)
-                self.assertIn("`web_extract` 在這台電腦讀不到網頁", text)
-                # 2026-11-26: format-plan.py prints the total and every item line itself; it is the only way.
-                self.assertIn("方案只用 format-plan.py 組，不要自己拼工具輸出", text)
-                # 2026-11-19: a record's 「TWD 120」 for another route confirmed a fare; records no longer
-                # vouch for prices, so reusing one means opening its page again.
-                self.assertIn("紀錄裡的價格只是去哪裡查的線索", text)
-                # 2026-11-19: 「湯屋 NT$600」 was 「$600 / 1小時」; and 「我都是騎車或開車，不要再給我大眾運輸了」.
-                self.assertIn("項目名稱寫推薦的是什麼（湯屋、房型），加時長或人數", text)
-                self.assertIn("`public_transit` 是 false", text)
-                self.assertIn("交通費算油錢（估算）、停車費、國道通行費", text)
-                # 2026-11-19 (Telegram): 「客房泡湯2小時 NT$800」 used a 假日 1-hour price.
-                self.assertIn("--date <出發日 YYYY-MM-DD>", text)  # trip-cost.py now checks the day and season
-                # 2026-11-19: 「為甚麼要給我看不相干的圖」 — a 溪景湯屋 plan came with the lobby photo.
-                self.assertIn("不要用大廳、閱覽區、外觀或 logo 代替", text)
-                self.assertIn("用 `vision_analyze` 一張一張看，只用真的拍到推薦項目本身的那張", text)
-                # 2026-11-19: 「未確認就不要傳給我，傳給我確認過的就好」.
-                self.assertIn("`show_unconfirmed` 是 false 時", text)
-                # 2026-11-19: 42 minutes and a patch to page_evidence.py to make one price pass.
-                self.assertIn("的結果就是結論", text)
-                self.assertIn("要用就用 page-prices.py 重開那個網址", text)
-                self.assertIn("只推薦 page-prices.py 確認比原方案便宜的地方", text)
-                self.assertIn("--for \"<方案裡推薦的項目，照方案寫>\"", text)
-                self.assertNotIn("--label <房型或外觀>", text)
-                self.assertNotIn("或機會紀錄裡的）", text)
-                self.assertNotIn("機會紀錄裡有附來源網址的也可以用那個網址", text)
-                for old in ("下一步用 `clarify` 按鈕給 2–4 個選項", "再用按鈕問下一步）", "用按鈕提供「看費用明細」",
-                            "費用明細等使用者要看再列"):
-                    self.assertNotIn(old, text)
+                self.assertIn("travel.py\" local", text)
+                self.assertIn("travel.py\" overseas", text)
+                self.assertIn("travel.py photo", text)
+                self.assertIn("vision_analyze", text)
+                self.assertIn('travel.py" detail', text)
+                self.assertIn("travel.py remind", text)
+                self.assertIn("直接原樣貼上輸出", text)
 
     def test_commands_are_written_for_the_bash_terminal(self):
         # 2026-11-14: every turn's first command failed with "/usr/bin/bash: syntax error near `&'":
@@ -259,14 +199,12 @@ class ProfileSettingsTests(unittest.TestCase):
                     self.assertNotIn(real, example)
 
     def test_older_talks_are_searched_and_lasting_preferences_remembered(self):
-        # 2026-11-12: after the daily reset, "昨天那間飯店" could not be traced, and the commander never saved
-        # lasting preferences (its memories folder was empty).
         for role in ("travel-commander", "trip", "schedule-manager"):
             with self.subTest(role=role):
                 text = setup.expand_includes((Path(setup.__file__).parent / "roles" / f"{role}.md").read_text(encoding="utf-8"))
-                self.assertIn("先用 `session_search` 搜舊對話", text)
-                self.assertIn("用 `memory` 記到 `user`", text)
-                self.assertIn("一次性的行程、價格、日期不要記", text)
+                self.assertIn("用 `memory`（延後載入，先 `tool_search`）記到 `user`", text)
+        commander = setup.expand_includes((Path(setup.__file__).parent / "roles" / "travel-commander.md").read_text(encoding="utf-8"))
+        self.assertIn("session_search", commander)
 
 
 class UpgradeTests(unittest.TestCase):
@@ -306,9 +244,10 @@ class UpgradeTests(unittest.TestCase):
         # Role includes were expanded in installed SOUL.md.
         soul = (self.root / "profiles/schedule-manager/SOUL.md").read_text(encoding="utf-8")
         self.assertNotIn("{{INCLUDE:", soul)
-        self.assertIn("calendar-check.py", soul)
+        self.assertIn('travel.py" schedule', soul)
         self.assertNotIn("page-prices.py", soul)
-        # format-plan.py was installed.
+        # travel.py and format-plan.py were installed.
+        self.assertTrue((self.root / "shared/travel-workflow/travel.py").is_file())
         self.assertTrue((self.root / "shared/travel-workflow/format-plan.py").is_file())
         # Previously applied setting was not re-applied, while new settings were.
         set_keys = [c[4] for c in self.calls if len(c) >= 5 and c[2] == "config" and c[3] == "set"]
@@ -373,7 +312,7 @@ class LiveSoulTests(unittest.TestCase):
         self.root = Path(scratch.new_dir("hermes-live-souls-"))
         self.home = self.root / "profiles" / "trip"
         self.home.mkdir(parents=True)
-        (self.home / "SOUL.head.md").write_text("# 自己的規則\n路徑 {{ROOT}}\n{{INCLUDE:roles/_shared/trip-telegram.md}}\n",
+        (self.home / "SOUL.head.md").write_text("# 自己的規則\n路徑 {{ROOT}}\n{{INCLUDE:roles/_shared/telegram-core.md}}\n",
                                                 encoding="utf-8")
         (self.home / "SOUL.md").write_text(OLD_SOUL, encoding="utf-8")
 
@@ -397,7 +336,7 @@ class LiveSoulTests(unittest.TestCase):
         self.assertEqual(backup.read_text(encoding="utf-8"), OLD_SOUL)
         soul = (self.home / "SOUL.md").read_bytes().decode("utf-8")
         self.assertTrue(soul.startswith(f"# 自己的規則\n路徑 {self.root.as_posix()}\n"))
-        self.assertIn((REPO / "roles/_shared/trip-telegram.md").read_text(encoding="utf-8").splitlines()[0], soul)
+        self.assertIn((REPO / "roles/_shared/telegram-core.md").read_text(encoding="utf-8").splitlines()[0], soul)
         self.assertIn('"C:/py/python.exe"', soul)
         self.assertNotIn("\r", soul)
         self.assertNotIn("{{", soul)

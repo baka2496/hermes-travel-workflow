@@ -11,8 +11,8 @@ import unittest
 import setup
 
 ROOT = Path(setup.__file__).parent
-# Bytes (UTF-8) after expanding shared includes. Raise one only after shortening something else.
-ROLE_LIMITS = {"trip": 14_000, "travel-commander": 17_500, "schedule-manager": 6_500}
+# Bytes (UTF-8) after expanding shared includes. V2 keeps roles genuinely slim (< 6.5 KB).
+ROLE_LIMITS = {"trip": 6_000, "travel-commander": 6_500, "schedule-manager": 4_000}
 # Tools a role tells the agent to call; deferring one would hide it from the opening prompt.
 ROLE_TOOLS = {"trip": ("terminal", "browser_exec", "clarify", "vision_analyze", "kanban_request_review",
                        "kanban_show", "kanban_complete", "read_file", "patch", "web_search"),
@@ -20,8 +20,8 @@ ROLE_TOOLS = {"trip": ("terminal", "browser_exec", "clarify", "vision_analyze", 
                                    "kanban_request_changes", "kanban_complete", "read_file", "patch"),
               "schedule-manager": ("terminal", "clarify", "read_file", "patch")}
 HERMES = Path(os.environ.get("LOCALAPPDATA", "")) / "hermes" / "profiles"
-# The live profiles' own SOULs (characters): trip 8,115 and project-manager 9,702 after the slimming.
-LIVE_SOUL_LIMITS = {"trip": 8_600, "project-manager": 10_200}
+# The live profiles' own SOULs (characters): slimmed down >60% in V2.
+LIVE_SOUL_LIMITS = {"trip": 4_000, "project-manager": 4_500}
 
 
 class RoleSizeTest(unittest.TestCase):
@@ -44,11 +44,10 @@ class RoleSizeTest(unittest.TestCase):
 
     def test_card_rules_keep_their_point_without_the_whole_story(self):
         text = setup.expand_includes((ROOT / "roles" / "trip.md").read_text(encoding="utf-8"))
-        for rule in ("不寫航空公司首頁價或自己估的「約」價", "已含它算的托運行李，不要再加", "要寫「未含托運行李」",
-                     "最多重跑一次 `plan`", "不要讀 trip-bot 的程式碼、cache 或設定來除錯", "也不要自己挑沒查過價格的飯店"):
+        for rule in ("travel.py overseas", 'travel.py" local', "不讀 `trip-bot` 程式碼除錯", "未確認"):
             self.assertIn(rule, text)
         longest = max(len(line) for line in text.splitlines())
-        self.assertLess(longest, 1_300, "one paragraph of trip.md grew back into a wall of text")
+        self.assertLess(longest, 500, "one paragraph of trip.md grew back into a wall of text")
 
 
 class ToolOutputSizeTest(unittest.TestCase):
@@ -59,7 +58,8 @@ class ToolOutputSizeTest(unittest.TestCase):
                      *([HERMES / "project-manager" / "SOUL.md"] if (HERMES / "project-manager" / "SOUL.md").is_file() else [])]:
             with self.subTest(path=path.name):
                 text = path.read_text(encoding="utf-8")
-                self.assertIn("list --sort created-desc`，不加 `--json`", text)
+                self.assertIn("list --sort created-desc", text)
+                self.assertIn("不加 `--json`", text)
                 self.assertNotIn("list --json", text)
 
 

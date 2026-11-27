@@ -4,22 +4,22 @@
 
 ```mermaid
 flowchart TB
-    subgraph S1["1. 專員分工與即時查核"]
-        trip["Trip Agent<br/>掃描機票・查海外實價"]
-        sched["Schedule Manager<br/>全年行程・時段核對"]
-        tools["查核工具與外掛<br/>比價・天氣・看圖・導航"]
+    subgraph S1["1. 統一程式引擎（確定性查價與排版）"]
+        engine["travel.py 統一入口<br/>overseas 機酒・local 3方案・detail・remind"]
+        scanner["Trip Bot 掃描器<br/>每 15 分鐘背景掃票・平行查房"]
+        sched["Schedule Manager<br/>全年行程・時段核對與入曆"]
     end
 
-    cmd["Travel Commander<br/>整合預算與日期・產出方案"]
+    cmd["Travel Commander（精簡角色）<br/>理解需求・呼叫 travel.py・原樣交付"]
 
     subgraph S2["2. 交付與行前閉環"]
         direction LR
-        out["提案推播<br/>週摘要・機票・週四週末"] --> owner["本人決策<br/>確認訂位與付款"] --> remind["自動行前提醒<br/>取消前24h・前一晚・前1h"]
+        out["Telegram 手機卡片<br/>含航空時間・房型・可點擊連結"] --> owner["本人決策<br/>確認訂位與付款"] --> remind["自動行前提醒<br/>取消前24h・前一晚・前1h"]
     end
 
-    trip <-->|"看板派工"| cmd
+    scanner --> engine
     sched <-->|"核對／入曆"| cmd
-    tools --> cmd
+    engine --> cmd
     cmd --> S2
 ```
 
@@ -94,9 +94,9 @@ py -3 .\setup.py check --root "$workflowRoot"
 
 `setup.py check` 只讀取、不修改，會列出三個排程的狀態、投遞目標和最近一次結果，並指出缺少的掃描器套件、連續失敗的排程，以及提醒還在等待哪些資料（例如 `budget`、`calendar_coverage`）。有問題時結束代碼為 1。行程涵蓋的結束日已過時，提醒會視為涵蓋不足而保持靜默。推送到 GitHub 時，`.github/workflows/test.yml` 會自動執行上面三組測試。
 
-要出方案時，機器人一次給 3 個能直接訂的方案（日期、交通、房型、總價、訂房連結，便宜的排第一），只用 `format-plan.py --package` 組，使用者只要選一個、點連結付款。
+要出方案時，機器人統一透過 `travel.py` 執行（`travel.py local` 一次給 3 個能直接訂的國內方案，`travel.py overseas` 直接查海外機酒並產出含去回程航空與時間、房型與可點擊連結的手機卡片，不再繞經多輪看板派工與 AI 覆核）。
 
-正在跑的 `trip`、`project-manager` 兩個 profile 不是 `install` 裝的：各自的 `SOUL.head.md` 只放自己的規則（身分、路徑、Telegram ID，不放進這個公開 repo），共用規則用 `{{INCLUDE:roles/_shared/…}}` 帶進來。`py -3 .\setup.py live-souls --root "$workflowRoot"` 只檢查 `SOUL.md` 是否和兩者組起來的一樣；加 `--write` 會先備份成 `SOUL.before-generated-<時間>.md` 再改寫。
+正在跑的 `trip`、`project-manager` 兩個 profile 不是 `install` 裝的：各自的 `SOUL.head.md` 只放自己的規則（身分、路徑、Telegram ID，不放進這個公開 repo），共用規則用 `{{INCLUDE:roles/_shared/…}}` 帶進來。執行 `py -3 .\setup.py sync-live --root "$workflowRoot"` 可一次將最新腳本（含 `travel.py`）、外掛與精簡 `SOUL.md` 同步到正式環境，不會動到使用者資料檔；只檢查規則可跑 `py -3 .\setup.py live-souls --root "$workflowRoot"`。
 
 安裝命令可以重跑以檢查已安裝設定，並沿用這個資料目錄目前的投遞設定；若不想套用內建的個人輔助模型設定，安裝或升級時可加上 `--no-model-defaults`。拉下新版程式碼後，執行 `py -3 .\setup.py upgrade --root "$workflowRoot"` 可一次更新未經手改的角色規則、工具腳本、外掛與新設定，不會動到你的行程、偏好與機會紀錄（有手改過的檔案會停下來提醒，確認要覆蓋才加 `--force`）。要切換投遞方式時用 `setup.py delivery local|telegram`；重跑安裝時指定不同的 `--deliver`，安裝器會停止並提示改用這個指令，不會改動既有排程。若發現角色或排程定義衝突，先在本機檢視錯誤訊息。移機時使用新的 checkout 和 Hermes 資料目錄，按上面步驟配置帳號。需要延續原有行程和偏好時，在本機核對 schema 後移轉 `shared/annual-schedule/calendar.json` 及 `shared/travel-workflow/` 下的 `preferences.json` 與 `opportunities.json`。新安裝的 `runtime.json` 記錄新環境的路徑。個人資料、掃描 SQLite、帳號憑證、聊天紀錄和私人 Hermes 外掛由原環境獨立管理。
 

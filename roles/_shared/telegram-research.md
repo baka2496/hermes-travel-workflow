@@ -1,19 +1,12 @@
-查資料要快又對：
-- 先列出要回答的事實（例如：房內有沒有溫泉浴缸、週日價、照片），只查這些。
-- 每項事實找到兩個一致的來源就停；官網或訂房網站本身的頁面優先，部落格只當補充。最多 8 次搜尋或開頁，查不到就標「未確認」並說明缺什麼，不要一直找。一次只開需要的頁面。
-- 價格只用最近一年內的官網、售票頁或訂房頁；舊新聞、施工期間的臨時價、部落格價格都標「未確認」。沒有親自打開來源頁，就不能寫「官網核實」。
-- 查價格先跑 `"{{PYTHON}}" "{{ROOT}}/shared/travel-workflow/page-prices.py" <官網網址> ...`：它只印網頁上看得到的價格（含房型、時長、平日假日、季節）和電話。比價一次給 3–5 家官網，加 `--near <地區> --date <出發日 YYYY-MM-DD>` 連以前查過的同地區官網一起比。候選先跑 `"{{PYTHON}}" "{{ROOT}}/shared/travel-workflow/places.py" pick --kind <類型> [--area <地區>]`；不夠才 web_search，讀得到價格的 `places.py add` 收進去。三個方案要不同地方、不能都是最近推過的。推薦的地方要附它印的電話。只能從這裡挑價格。它說沒看到價格（網頁用程式載入）才用 `browser_exec`：`new_tab('<網址>')`、`wait_for_load()`、`print(js('document.body.innerText'))`，一次只開一個網址。電話、設施也從讀到的文字找。`web_extract` 在這台電腦讀不到網頁，不要用。
-
-出方案：使用者只想付錢，不想自己規劃。
-- 要出去玩、問去哪、要方案時，同一輪查完，一則回覆給 3 個能直接訂的方案（日期、交通、房型、總價、訂房連結），不要先一題一題問。沒說的用預設並寫在第一行：日期用最近的週末，人數、出發地、交通照 preferences.json 和記憶。只有日期互相矛盾或要付款訂位才問。沒說玩什麼，三個方案從 preferences.json 的 `interests` 挑不同類型，不要全是溫泉；官方頁寫免費用 `--item "門票=0@<那頁>"`，沒列收費用 `--no-fee-listed <那頁>`（`places.py add` 也加），不能寫成免費。
-- 方案只用 format-plan.py 組，不要自己拼工具輸出：`"{{PYTHON}}" "{{ROOT}}/shared/travel-workflow/format-plan.py" --header "<日期 地點 人數>" --date <出發日 YYYY-MM-DD> --checkout <退房日> --guests <人數> --package --place "<名稱>" --room "<房型>" --transport "<交通與時間>" --item "<項目>=<單價>x<數量>@<page-prices.py 查過的網址>" --official <官網房型頁> --phone <電話> --phone-source <寫著這支電話的網頁> --package ...`（共 3 個 `--package`）。它算總價、附連結、便宜的排第一並檢查手機排版；原樣送出免重跑 `phone-check.py`，改字就重跑。它說不行時照它說的改，網頁價格不符就照那些改，不要換網址或改數字去湊；真的只有一兩個符合才加 `--few-reason "只有…符合，因為…"`。
-- 使用者選了一個（或要你挑一個、排程只推一個）時，用同一支工具不加 `--package` 出那個方案的完整明細：同樣的 `--item`、`--place`、`--official`、`--phone`，再加 `--photo`、`--photo-caption`、`--weather-place`、`--route`、`--reservation-script`。
-- `--item`：交通、門票、住宿、餐飲都算，估算的不加 `@`；餐費照一般行情，不要為了湊預算調數字。項目名稱寫推薦的是什麼（湯屋、房型），加時長或人數（例如「溫泉湯屋 50分鐘」）；page-prices.py 那行「｜」前面是房型名稱就照用，是「價位資訊」這種標題就不要用。交通照 preferences.json 的 `transport_mode`；`public_transit` 是 false 時不排捷運、公車、客運、火車，交通費算油錢（估算）、停車費、國道通行費，`--transport` 寫開車或騎車大約多久。
-- `--official` 只能是這間自己網域的官網（部落格、文章、新聞不算）；`--booking <網址> --booking-label Agoda` 只用你開過、確認是這間的頁面，不要用搜尋結果連結；電話只用這次打開過、寫著這支電話的頁面（`--phone-source`），沒看到就不加。
-- 照片：跑 `"{{PYTHON}}" "{{ROOT}}/shared/travel-workflow/place-photo.py" "<名稱>" --page <這間官網介紹這個項目的那頁> --for "<方案裡推薦的項目，照方案寫>"`，它會存幾張候選照片；用 `vision_analyze` 一張一張看，只用真的拍到推薦項目本身的那張傳給 `--photo`。不要用大廳、閱覽區、外觀或 logo 代替，也不要用別處的圖；都不是就不加。設施只寫官網現在寫的（公共露天池不能寫成房內浴池）。
-- preferences.json 的 `show_unconfirmed` 是 false 時（使用者說「未確認就不要傳給我」），只寫確認過的事：不寫估算、「待確認」、沒查證的評分或設施；工具在錯誤輸出說沒列的項目，回覆裡也不要提。不是 false 時，待確認最多兩項。
-- 工具的結果就是結論：不查原因、不讀或改它們的程式碼和 state.db，也不換寫法重跑同一個價格。使用者嫌貴時，只推薦 page-prices.py 確認比原方案便宜的地方，寫出兩邊的價格；找不到就直說沒找到。
-- 推薦的地點、房型、價格、電話、訂房連結，只能來自這次真的打開過的官網或訂房頁，或機會紀錄裡附來源和查詢日期的資料（已取消、已失效的不算）。工具說明裡的範例名稱不是資料；查不到寫「未確認」，不推薦沒查過的地方。
-- 預算只寫使用者親口說過的（有才加 `--budget`），沒說就寫「預算未確認」或不提；全部超出預算就直說超出多少，推最便宜的。
-- 「有空房」只能寫在打開過填好入住日期的訂房頁、親眼看到可訂的時候；官網「XX 起」是起價，空房寫「空房未確認」。含早餐、評分要和價格出自同一個來源，照原樣寫，不要把不同專案或分項分數混在一起。
-- 第一輪盡量同時平行跑 `calendar-check.py`、讀 `preferences.json` 與 `page-prices.py`。使用者確認成行或丟訂房截圖時，讀出日期、地點、訂位代號與免費取消日，跑 `trip-reminders.py` 排好免費取消前 24h、前一晚行前清單與出發前 1h 導航提醒，並請 `schedule-manager` 入曆。
+統一工具（查價、算錢、附連結、排方案都走 `travel.py`，直接原樣貼上輸出，不手抄改寫，免重跑檢查）：
+- **國內出遊／週末／泡湯／住宿（一次產出 3 個能直接訂的方案）**：
+  `"{{PYTHON}}" "{{ROOT}}/shared/travel-workflow/travel.py" local [--area <地區>] [--kind <類型>] [--date <YYYY-MM-DD>] [--nights <晚數>] [--guests <人數>] [--budget <金額>] [--cheaper-than <金額>]`
+  - 地點庫不夠 3 家時，用 `web_search` 找官網（`web_extract` 讀不到網頁不用；`--official` 只用店家自己網域，訂房連結只用開過的頁面），跑 `travel.py add-place --name <名> --area <區> --kind <類> --official <官網> [--price-page <價格頁>] [--no-fee-listed]`（沒列收費不寫免費）收錄後再跑 `local`。
+- **海外機票＋住宿（直接查價並產出含去回程航空與時間、行李說明、房型與可點擊連結的卡片，不走多輪看板覆核）**：
+  `"{{PYTHON}}" "{{ROOT}}/shared/travel-workflow/travel.py" overseas <城市> <出發 YYYY-MM-DD> <回程 YYYY-MM-DD> [--guests <人數>] [--budget <金額>]`
+  - 若回傳「未確認」或 Google 限流就照實回報，不重跑、不猜價。
+- **使用者選定單一方案（附真照片、天氣、導航、預約話術）**：
+  先跑 `travel.py photo "<名稱>" --page <官網頁> --for "<項目>"` 並用 `vision_analyze` 逐張確認拍到推薦項目本身（不用大廳或外觀代替），再跑：
+  `"{{PYTHON}}" "{{ROOT}}/shared/travel-workflow/travel.py" detail --header "<日期 地點 人數>" --date <YYYY-MM-DD> [--budget <金額>] --item "<項目>=<單價>x<數>@<網址>" --place "<名稱>" --official <官網> [--phone <電話> --phone-source <網址>] [--photo <圖檔> --photo-caption "<說明>"] [--weather-place <地點>] [--route <起> <迄>] [--reservation-script]`
+- **確認成行或收到訂房截圖**：跑 `travel.py remind --date <YYYY-MM-DD> --place "<名稱>" [--free-cancel <YYYY-MM-DD>] [--booking-ref <代號>]` 並請 `schedule-manager` 入曆。
+- 事實底線：「有空房」只寫在開過填好日期的訂房頁時（官網起價寫「空房未確認」）；含早餐與評分須和價格同來源，不為湊預算改數字。只有非 `travel.py` 產生的手寫回覆，才需送出前跑 `"{{PYTHON}}" "{{ROOT}}/shared/travel-workflow/travel.py" check --text "<整則訊息>"`。

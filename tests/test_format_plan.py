@@ -37,10 +37,10 @@ def run_format(*args):
 
 class SkipPhoneCheckRuleTests(unittest.TestCase):
     def test_role_only_skips_phone_check_for_unedited_output(self):
-        # 2026-11-25 (Antigravity's review of ddb1750): the role said a passing format-plan.py means
-        # phone-check.py can be skipped, without "only if sent as is"; edited text went out unchecked.
+        # V2: travel.py runs phone-check internally; only hand-written replies run travel.py check.
         role = (REPO / "roles/_shared/telegram-research.md").read_text(encoding="utf-8")
-        self.assertIn("原樣送出免重跑 `phone-check.py`，改字就重跑", role)
+        self.assertIn("直接原樣貼上輸出，不手抄改寫，免重跑檢查", role)
+        self.assertIn("只有非 `travel.py` 產生的手寫回覆", role)
 
 
 class FormatPlanTests(unittest.TestCase):
@@ -388,14 +388,15 @@ class PackageTests(unittest.TestCase):
 
 
 class OneWayTests(unittest.TestCase):
-    """format-plan.py is the one way to write a plan reply (2026-11-26)."""
+    """travel.py (wrapping format-plan.py) is the one way to write a plan reply."""
 
     def test_roles_name_no_other_way_to_assemble_a_plan(self):
         for role in ("trip", "travel-commander"):
             with self.subTest(role=role):
                 text = setup.expand_includes((REPO / "roles" / f"{role}.md").read_text(encoding="utf-8"))
-                self.assertIn("format-plan.py", text)
-                self.assertIn("--package", text)
+                self.assertIn("travel.py", text)
+                self.assertIn("travel.py\" local", text)
+                self.assertIn("travel.py\" overseas", text)
                 for other in ("trip-cost.py", "booking-links.py"):
                     self.assertNotIn(other, text, f"{role} still tells the bot to run {other} by hand")
 
