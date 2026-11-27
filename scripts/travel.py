@@ -362,7 +362,8 @@ TRACKING_QUERY_KEYS = {
 }
 BOOKING_KEEP_KEYS = {
     "dest_id", "highlighted_hotels", "dest_type",
-    "checkin", "checkout", "group_adults", "no_rooms", "lang", "selected_currency",
+    "checkin", "checkout", "group_adults", "group_children", "age", "req_children", "room1",
+    "no_rooms", "lang", "selected_currency",
 }
 
 

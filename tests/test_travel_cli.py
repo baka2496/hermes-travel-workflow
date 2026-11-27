@@ -223,14 +223,16 @@ class OverseasTravelTests(unittest.TestCase):
             "https://www.google.com/travel/lodging/clk?pc=" + "A" * 220
             + "&pcurl=https%3A%2F%2Fwww.booking.com%2Fsearchresults.en.html%3Fdest_id%3D1688307"
             + "%26highlighted_hotels%3D1688307%26checkin%3D2027-06-12%26checkout%3D2027-06-16"
-            + "%26group_adults%3D2%26selected_currency%3DTWD%26ext_price_total%3D7162.75%26xfc%3DTWD"
+            + "%26group_adults%3D2%26group_children%3D1%26age%3D6%26selected_currency%3DTWD%26ext_price_total%3D7162.75%26xfc%3DTWD"
         )
         cleaned_hotel = travel.clean_booking_url(google_clk)
         self.assertTrue(cleaned_hotel.startswith("https://www.booking.com/searchresults.en.html?"))
         self.assertIn("highlighted_hotels=1688307", cleaned_hotel)
         self.assertIn("checkin=2027-06-12", cleaned_hotel)
+        self.assertIn("group_children=1", cleaned_hotel)
+        self.assertIn("age=6", cleaned_hotel)
         self.assertNotIn("ext_price_total", cleaned_hotel)
-        self.assertLess(len(cleaned_hotel), 180)
+        self.assertLess(len(cleaned_hotel), 200)
 
         airline_url = (
             "https://booking.tigerairtw.com/?type=single&outbound=KIX-TPE&departureDate=2027-06-16"

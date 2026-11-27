@@ -1053,7 +1053,7 @@ def corrected_costs(text, outputs):
         if items is not None:
             # The cost lines right under a total are the tool's own item lines (2026-11-19: 「捷運及公車
             # NT$240」 merged a confirmed NT$180 with an unconfirmed NT$60). Never drop overseas ✈️/🏨 lines.
-            if "NT$" in line and not total and not line.lstrip().startswith(("✈️", "🏨")):
+            if "NT$" in line and not total and not line.lstrip().startswith(("✈", "🏨")):
                 continue
             lines.extend(items)
             items, placed = None, True
@@ -1333,14 +1333,14 @@ def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
         hide = confirmed_only(home)
         if hide or TOTAL_AMOUNT.search(fixed):
             outputs = tool_outputs(session_id, home, COST_TOOLS)
-            runs = [] if outputs is UNKNOWN else [blocks for o in outputs if (blocks := cost_blocks(o))]
+            last_out = outputs[-1] if (outputs and outputs is not UNKNOWN) else ""
+            is_overseas = any(ln.strip().startswith(("✈", "🏨", "機票與住宿：")) for ln in last_out.splitlines())
+            runs = [] if (outputs is UNKNOWN or is_overseas) else [blocks for o in outputs if (blocks := cost_blocks(o))]
             blocks = [b for run in runs for b in run]  # one per package of a format-plan.py --package run
             fixed = corrected_costs(fixed, blocks) if blocks else fixed
             if hide:  # trust the single most recent plan/cost output chronologically
-                if outputs and outputs is not UNKNOWN:
-                    last_out = outputs[-1]
+                if last_out:
                     last_blocks = cost_blocks(last_out)
-                    is_overseas = any(ln.strip().startswith(("✈️", "🏨", "機票與住宿：")) for ln in last_out.splitlines())
                     latest = [last_out] if (is_overseas or not last_blocks) else ["\n".join(last_blocks)]
                 else:
                     latest = []
