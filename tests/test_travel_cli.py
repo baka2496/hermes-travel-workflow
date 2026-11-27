@@ -507,6 +507,19 @@ class LocalTravelTests(unittest.TestCase):
         self.assertIn("開車／騎車前往礁溪", res.stdout)
         self.assertNotIn("大眾運輸", res.stdout)
         self.assertIn("總計 NT$600，預算剩 NT$1,400", res.stdout)
+        # Also verify travel.py local works when ONLY places.db exists (no places.json)
+        (shared / "places.json").unlink()
+        self.assertTrue((shared / "places.db").exists())
+        (shared / "recommended.json").write_text("[]", encoding="utf-8")
+        res_db_only = subprocess.run(
+            [sys.executable, str(TRAVEL), "local", "--area", "礁溪", "--kind", "泡湯",
+             "--date", "2026-12-05", "--budget", "2000",
+             "--hermes-root", str(d), "--html-file", str(html)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(res_db_only.returncode, 0, res_db_only.stderr)
+        self.assertIn("甲溫泉", res_db_only.stdout)
+        self.assertIn("總計 NT$600，預算剩 NT$1,400", res_db_only.stdout)
 
     def test_local_three_packages_with_calendar_conflict_still_passes_phone_check(self):
         from unittest import mock

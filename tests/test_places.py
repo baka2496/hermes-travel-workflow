@@ -1,6 +1,7 @@
 """places.py: the place pool the bot picks from (2026-11-26: always the same three hot springs)."""
 import json
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import time
@@ -232,6 +233,97 @@ class StrftimeTests(unittest.TestCase):
                     if any(ord(ch) > 127 for text in texts for ch in text):
                         found.append(f"{path.relative_to(REPO)}:{node.lineno}")
         self.assertEqual(found, [], "put the Chinese outside strftime: strftime('%m/%d') + ' 推過'")
+
+
+class PlacesSqliteTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(scratch.new_dir("hermes-places-db-"))
+        self.db = self.root / "places.db"
+        self.history = self.root / "recommended.json"
+
+    def run_places(self, *args, html=None, now=None, places_path=None):
+        extra = ["--places", str(places_path or self.db), "--history", str(self.history), "--hermes-root", str(self.root)]
+        if html is not None:
+            path = self.root / "page.html"
+            path.write_text(html, encoding="utf-8")
+            extra += ["--html-file", str(path)]
+        if now is not None:
+            extra += ["--now", str(now)]
+        result = subprocess.run([sys.executable, str(REPO / "scripts/places.py"), *extra, *args],
+                                capture_output=True, text=True, encoding="utf-8")
+        return result.returncode, result.stdout, result.stderr
+
+    def test_add_pick_list_and_backup_in_sqlite_places_db(self):
+        rc, out, err = self.run_places(
+            "add", "--name", "甲湯屋", "--area", "礁溪", "--kind", "溫泉",
+            "--official", "https://a.example/spa",
+            html=page("甲湯屋", "<p>雙人湯屋 NT$500 / 1小時</p>"),
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(self.db.exists())
+        con = sqlite3.connect(str(self.db))
+        try:
+            rows = con.execute("SELECT name, area, kind, country_code, status FROM places").fetchall()
+            self.assertEqual(rows, [("甲湯屋", "礁溪", "溫泉", "tw", "ok")])
+        finally:
+            con.close()
+
+        # Second write creates online WAL-safe backup places.backup.db
+        rc2, _, err2 = self.run_places(
+            "add", "--name", "乙海灘", "--area", "福隆", "--kind", "海邊",
+            "--official", "https://b.example/beach",
+            html=page("乙海灘", "<p>免費入園參觀</p>"),
+        )
+        self.assertEqual(rc2, 0, err2)
+        self.assertTrue((self.root / "places.backup.db").exists())
+
+        rc_pick, pick_out, pick_err = self.run_places("pick", "--kind", "溫泉", "--area", "礁溪")
+        self.assertEqual(rc_pick, 0, pick_err)
+        self.assertIn("甲湯屋", pick_out)
+
+        rc_list, list_out, list_err = self.run_places("list")
+        self.assertEqual(rc_list, 0, list_err)
+        self.assertIn("甲湯屋", list_out)
+        self.assertIn("乙海灘", list_out)
+
+    def test_auto_migrates_sibling_json_and_explicit_migrate_command(self):
+        legacy = self.root / "places.json"
+        legacy.write_text(json.dumps({
+            "schema_version": 1,
+            "places": [{
+                "name": "老街湯屋", "area": "烏來", "kind": "溫泉",
+                "official": "https://u.example/spa", "price_page": "https://u.example/spa",
+                "phone": "02-2661-0000", "prices": ["雙人湯屋 NT$600"], "free": False,
+                "checked_at": "2026-11-28", "added_at": "2026-11-28", "status": "ok",
+            }],
+        }, ensure_ascii=False), encoding="utf-8")
+
+        # Reading places.db auto-migrates sibling places.json transparently
+        rc, out, err = self.run_places("list")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("老街湯屋", out)
+        self.assertTrue(self.db.exists())
+        self.assertTrue(legacy.exists())  # original JSON kept intact
+
+        # Explicit migrate command into a second DB path
+        db2 = self.root / "migrated.db"
+        rc2, out2, err2 = self.run_places("migrate", "--from", str(legacy), places_path=db2)
+        self.assertEqual(rc2, 0, err2)
+        self.assertIn("已將 1 筆台灣地點", out2)
+        self.assertTrue(db2.exists())
+
+    def test_corrupt_sqlite_db_raises_instead_of_returning_empty_list(self):
+        # Regression (Claude review): read_places must never swallow sqlite3.Error as [], or add() would wipe the DB.
+        corrupt = self.root / "corrupt.db"
+        corrupt.write_bytes(b"not a valid sqlite file")
+        rc, _, err = self.run_places(
+            "add", "--name", "甲湯屋", "--area", "礁溪", "--kind", "溫泉",
+            "--official", "https://a.example/spa",
+            html=page("甲湯屋", "<p>雙人湯屋 NT$500 / 1小時</p>"),
+            places_path=corrupt,
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertIn("DatabaseError", err)
 
 
 if __name__ == "__main__":

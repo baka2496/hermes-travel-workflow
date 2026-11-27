@@ -14,11 +14,11 @@
 // This portable build prints locally; Hermes owns account setup and delivery.
 import { CITY_NAMES, cityLabel } from './deals/message';
 import { TRIP_LENGTHS, buildCardSearchUrl, isTripLength, type TripLength } from './deals/explore-page';
-import { buildHotelNameUrl, hotelArea, inTown, isNonSmokingRoom, isPrivateHotel, isSmokingRoom, isWrongCountryHotel, nearbyAreas, parseGoogleRoomRow, roomKey, sanitizeCachedPicks, type HotelListQuote, type SiteOffer, type HotelPhotos } from './deals/hotel-page';
+import { buildHotelNameUrl, expectedCountryCode, hotelArea, inTown, isNonSmokingRoom, isPrivateHotel, isSmokingRoom, isWrongCountryHotel, nearbyAreas, parseGoogleRoomRow, roomKey, sanitizeCachedPicks, type HotelListQuote, type SiteOffer, type HotelPhotos } from './deals/hotel-page';
 import { bookFlight, captureHotelList, checkHotelRooms, deliverDealAlerts, NoFittingFlight, retryIfEmpty, runDueDealWatches, searchFlights } from './deals/runner';
 import type { FlightOption } from './deals/flight-list';
 import { SHORT_TRIP_NIGHTS, chooseBookingOption, chooseFlight, chooseReturn, hotelTimes, readPrefs, type Prefs } from './prefs';
-import { createWatch, findWatch, listWatches as listRegionWatches, observations, pruneObservations, recentAlerts, scheduleAllNow, setRegionActive, updateWatch, type AlertMessage } from './store';
+import { createWatch, deleteHotelProfilesByCountry, findWatch, getCacheEntry, listCacheEntries, listWatches as listRegionWatches, observations, pruneCacheEntries, pruneObservations, recentAlerts, scheduleAllNow, setCacheEntry, setRegionActive, updateWatch, type AlertMessage } from './store';
 import { bookingSearchUrl, bookingUrlFromGoogle, fetchBookingRooms, type BookingRoom } from './deals/booking-rooms';
 import { fetchTripRooms, tripHotelIdFromGoogle } from './deals/trip-rooms';
 import type { MarketLevel } from './google/market-insight';
@@ -27,11 +27,11 @@ import { airlineName, bedText, flightLines, noPlanReason, phoneLines, shortDurat
 import { readdirSync, readFileSync } from 'node:fs';
 import { auditFlights, auditStays, type AuditPick } from './audit';
 import { createHash } from 'node:crypto';
-import { freshProfile, saveProfile } from './hotel-profiles';
+import { freshProfile, importLegacyProfiles, saveProfile } from './hotel-profiles';
 import { spawnSync } from 'node:child_process';
 import { checkOutput } from './rules';
 import { Output } from './output';
-import { JsonFile, dataFile, objectOf, writeAtomic, DATA_DIR } from './state';
+import { JsonFile, dataFile, objectOf, DATA_DIR } from './state';
 import { bedsTooFew, bookingRoomsForParty, nightsOf, partyCost as costForParty, roomForParty, roomTypeLabel, roomsNeeded as roomsNeededFor, sortRooms, type Party } from './party-rules';
 import { join } from 'node:path';
 import { FLIGHT_DROP, HOTEL_DROP, checkFlight, checkHotel, findOrAddWatch as addWatch, upcoming, watchesFile, type TripWatch, type WatchStay } from './trip-watches';
@@ -206,23 +206,47 @@ const shownNightly = (pick: { nightly: number; sites: readonly SiteOffer[] }) =>
  * confirmed private rooms come first priced at that room's rate.
  */
 /**
- * Results kept for a few hours in cache/, so a hotel list the background job already fetched
- * ("deals prefetch") opens in seconds instead of a minute or two of page loads.
+ * Results kept for a few hours in trip-bot.db (`query_cache`), so a hotel list the background job
+ * already fetched ("deals prefetch") opens in seconds instead of a minute or two of page loads.
  */
-const CACHE_DIR = join(DATA_DIR, 'cache');
+const CACHE_DIR = join(DATA_DIR, 'cache'); // legacy read-only fallback during transition
 const CACHE_HOURS = 6;
+const CACHE_PRUNE_HOURS = 24;
+
+function cacheCity(kind: string, key: readonly unknown[]): string | null {
+  const stay = (kind === 'stays' ? key[0] : key[1]) as Partial<Stay> | undefined;
+  return typeof stay?.city === 'string' && stay.city.trim() ? stay.city.trim() : null;
+}
 
 async function cached<T>(kind: string, key: readonly unknown[], compute: () => Promise<T | null>, fresh = false): Promise<T | null> {
-  const file = join(CACHE_DIR, `${kind}-${createHash('sha1').update(JSON.stringify(key)).digest('hex').slice(0, 16)}.json`);
+  const keyJson = JSON.stringify(key);
+  const cacheKey = `${kind}-${createHash('sha1').update(keyJson).digest('hex').slice(0, 16)}`;
+  const city = cacheCity(kind, key);
+  const countryCode = city ? expectedCountryCode(city) : null;
   if (!fresh) {
+    const row = getCacheEntry(cacheKey);
+    if (row && Date.now() - Date.parse(row.savedAt) < CACHE_HOURS * 3_600_000) {
+      try { return JSON.parse(row.valueJson) as T; } catch { /* fall through */ }
+    }
+    // Transparent one-time fallback for still-fresh legacy cache/*.json entries
     try {
-      const saved = JSON.parse(readFileSync(file, 'utf8')) as { savedAt: string; value: T };
-      if (Date.now() - Date.parse(saved.savedAt) < CACHE_HOURS * 3_600_000) return saved.value;
-    } catch { /* no usable cache entry */ }
+      const legacy = JSON.parse(readFileSync(join(CACHE_DIR, `${cacheKey}.json`), 'utf8')) as { savedAt: string; value: T };
+      if (Date.now() - Date.parse(legacy.savedAt) < CACHE_HOURS * 3_600_000) {
+        let value = legacy.value;
+        if (kind === 'stays' && city && value && typeof value === 'object' && Array.isArray((value as unknown as { picks?: Pick[] }).picks)) {
+          const picks = (value as unknown as { picks: Pick[] }).picks;
+          const cleaned = sanitizeCachedPicks(city, picks, name => freshProfile(name)?.hotelUrl ?? null);
+          if (cleaned.needsRefresh) throw new Error('legacy stays cache contaminated');
+          value = { ...(value as object), picks: cleaned.picks } as T;
+        }
+        setCacheEntry({ cacheKey, kind, city, countryCode, keyJson, valueJson: JSON.stringify(value), savedAt: legacy.savedAt });
+        return value;
+      }
+    } catch { /* no usable legacy cache entry */ }
   }
   const value = await compute();
   if (value !== null) {
-    writeAtomic(file, JSON.stringify({ savedAt: new Date().toISOString(), key, value }));
+    setCacheEntry({ cacheKey, kind, city, countryCode, keyJson, valueJson: JSON.stringify(value), savedAt: new Date().toISOString() });
   }
   return value;
 }
@@ -514,13 +538,16 @@ const PROFILES_PER_RUN = 4;
  */
 async function profileHotels(limit = PROFILES_PER_RUN): Promise<number> {
   let fetched = 0;
-  let files: string[] = [];
-  try { files = readdirSync(CACHE_DIR).filter(file => file.startsWith('stays-')); } catch { return 0; }
-  for (const file of files) {
-    let saved: { key: [Stay, string, ...unknown[]]; value: { picks: Pick[] } | null };
-    try { saved = JSON.parse(readFileSync(join(CACHE_DIR, file), 'utf8')); } catch { continue; }
-    const [stay, currency] = saved.key;
-    for (const pick of saved.value?.picks ?? []) {
+  const since = new Date(Date.now() - CACHE_PRUNE_HOURS * 3_600_000).toISOString();
+  for (const row of listCacheEntries(['stays'], since)) {
+    let key: [Stay, string, ...unknown[]];
+    let value: { picks: Pick[] } | null;
+    try {
+      key = JSON.parse(row.keyJson) as [Stay, string, ...unknown[]];
+      value = JSON.parse(row.valueJson) as { picks: Pick[] } | null;
+    } catch { continue; }
+    const [stay, currency] = key;
+    for (const pick of value?.picks ?? []) {
       if (fetched >= limit) return fetched;
       if (isWrongCountryPick(stay.city, pick)) continue;
       if (freshProfile(pick.hotel.name)) continue;
@@ -1251,7 +1278,44 @@ async function tick() {
     return;
   }
   pruneObservations(new Date(Date.now() - OBSERVATION_DAYS * 86_400_000));
+  pruneCacheEntries(new Date(Date.now() - CACHE_PRUNE_HOURS * 3_600_000).toISOString());
+  deleteHotelProfilesByCountry('tw');
   await runJobs();
+}
+
+/**
+ * Migrate legacy hotel-profiles.json and still-fresh cache/*.json entries into trip-bot.db,
+ * drop wrong-country Taiwan profiles from the overseas DB, and prune expired cache rows.
+ */
+function migrateDb(): void {
+  const { imported, skipped } = importLegacyProfiles(undefined, { skipCountries: ['tw'] });
+  const droppedTw = deleteHotelProfilesByCountry('tw');
+  let migratedCache = 0;
+  let skippedExpired = 0;
+  const cutoff = Date.now() - CACHE_HOURS * 3_600_000;
+  let files: string[] = [];
+  try { files = readdirSync(CACHE_DIR).filter(name => name.endsWith('.json')); } catch { files = []; }
+  for (const file of files) {
+    const match = /^(stays|flights|booking)-([0-9a-f]+)\.json$/.exec(file);
+    if (!match) continue;
+    let saved: { savedAt: string; key: unknown[]; value: unknown };
+    try { saved = JSON.parse(readFileSync(join(CACHE_DIR, file), 'utf8')); } catch { continue; }
+    if (Date.parse(saved.savedAt) < cutoff) { skippedExpired++; continue; }
+    const kind = match[1]!;
+    const cacheKey = `${kind}-${match[2]!}`;
+    const city = cacheCity(kind, saved.key);
+    const countryCode = city ? expectedCountryCode(city) : null;
+    let value = saved.value;
+    if (kind === 'stays' && city && value && typeof value === 'object' && Array.isArray((value as { picks?: Pick[] }).picks)) {
+      const cleaned = sanitizeCachedPicks(city, (value as { picks: Pick[] }).picks, name => freshProfile(name)?.hotelUrl ?? null);
+      if (cleaned.needsRefresh) continue;
+      value = { ...(value as object), picks: cleaned.picks };
+    }
+    setCacheEntry({ cacheKey, kind, city, countryCode, keyJson: JSON.stringify(saved.key), valueJson: JSON.stringify(value), savedAt: saved.savedAt });
+    migratedCache++;
+  }
+  const prunedCache = pruneCacheEntries(new Date(Date.now() - CACHE_PRUNE_HOURS * 3_600_000).toISOString());
+  say(`trip-bot.db 遷移完成：匯入飯店檔 ${imported} 筆（略過台灣 ${skipped} 筆、清除舊台灣檔 ${droppedTw} 筆）；匯入有效快取 ${migratedCache} 筆（略過過期檔 ${skippedExpired} 筆、清除過期列 ${prunedCache} 筆）。`);
 }
 
 /**
@@ -1260,18 +1324,16 @@ async function tick() {
  */
 function auditCache(): string[] {
   const problems: string[] = [];
-  let files: string[] = [];
-  try { files = readdirSync(CACHE_DIR); } catch { return problems; }
-  // Only hotel lists and flight pages: the cache also keeps booking pages and Booking room lists.
-  for (const file of files.filter(name => /^(stays|flights)-/.test(name))) {
-    let saved: { savedAt: string; key: unknown[]; value: unknown };
-    try { saved = JSON.parse(readFileSync(join(CACHE_DIR, file), 'utf8')); } catch { continue; }
-    if (Date.now() - Date.parse(saved.savedAt) > CACHE_HOURS * 3_600_000) continue;
-    const stay = (file.startsWith('stays-') ? saved.key[0] : saved.key[1]) as Stay | undefined;
-    const label = stay ? `${cityLabel(stay.city)} ${md(stay.outboundDate)}–${md(stay.returnDate)}` : file;
-    const found = file.startsWith('stays-')
-      ? auditStays((saved.value as { picks: AuditPick[] } | null)?.picks ?? [], travelers)
-      : auditFlights(saved.value as Parameters<typeof auditFlights>[0]);
+  const since = new Date(Date.now() - CACHE_HOURS * 3_600_000).toISOString();
+  for (const row of listCacheEntries(['stays', 'flights'], since)) {
+    let key: unknown[];
+    let value: unknown;
+    try { key = JSON.parse(row.keyJson); value = JSON.parse(row.valueJson); } catch { continue; }
+    const stay = (row.kind === 'stays' ? key[0] : key[1]) as Stay | undefined;
+    const label = stay ? `${cityLabel(stay.city)} ${md(stay.outboundDate)}–${md(stay.returnDate)}` : row.cacheKey;
+    const found = row.kind === 'stays'
+      ? auditStays((value as { picks: AuditPick[] } | null)?.picks ?? [], travelers)
+      : auditFlights(value as Parameters<typeof auditFlights>[0]);
     problems.push(...found.map(problem => `${label}｜${problem}`));
   }
   return problems;
@@ -1351,6 +1413,7 @@ try {
   else if (command === 'jobs') await runJobs();
   else if (command === 'tick') await tick();
   else if (command === 'audit') audit();
+  else if (command === 'migrate-db') migrateDb();
   else if (command === 'check') await checkAll();
   else if (command === 'profile') say(`profiled ${await profileHotels(Number(words[0]) || PROFILES_PER_RUN)} hotels`);
   else throw new Error('指令：report、trip、plan、hotels-for、rooms、watch、watch-hotel、watches、unwatch、travelers、regions、add-region、remove-region、scan-now、jobs');

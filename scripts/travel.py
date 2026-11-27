@@ -1021,7 +1021,7 @@ def cmd_local(args):
     root = Path(args.hermes_root or default_hermes_root())
     shared = root / "shared" / "travel-workflow"
     prefs_path = Path(args.preferences) if args.preferences else shared / "preferences.json"
-    places_path = Path(args.places) if args.places else shared / "places.json"
+    places_path = Path(args.places) if args.places else shared / "places.db"
     history_path = Path(args.history) if args.history else shared / "recommended.json"
 
     prefs = read_json_safe(prefs_path)

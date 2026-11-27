@@ -3,7 +3,7 @@
 import { afterAll, test } from 'vitest';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -171,6 +171,34 @@ test('a lookup someone waits on is noted; a limit pauses the background and plan
   assert.ok(source.includes('不用查原因') && source.includes('這張卡不要重跑') && !source.includes('分鐘後再跑一次 plan'));
   // A limit does not message the user; a block still does.
   assert.match(source, /noteBlocked\(error\) && !isLimited\(error\)\) await sendAlert/);
+});
+
+test('migrate-db imports overseas profiles/cache into trip-bot.db while skipping Taiwan profiles and contaminated caches', { timeout: 60_000 }, () => {
+  const data = fresh('migrate-db');
+  const cacheDir = join(data, 'cache');
+  mkdirSync(cacheDir, { recursive: true });
+  const nowIso = new Date().toISOString();
+  writeFileSync(join(data, 'hotel-profiles.json'), JSON.stringify({
+    apa: { name: 'APA Hotel Osaka Higobashi Ekimae', hotelUrl: 'https://www.booking.com/hotel/jp/apa.en-gb.html', rooms: [], fetchedAt: nowIso },
+    yisu: { name: 'Yi Su Hotel', hotelUrl: 'https://www.booking.com/hotel/tw/yi-su-taipei-taipei5.en-gb.html', rooms: [], fetchedAt: nowIso },
+  }));
+  const taipeiTs = Buffer.from('\x08\x01\x12#108, Wanhua District, Taipei City', 'utf8').toString('base64url');
+  const osakaTs = Buffer.from('\x08\x01\x12\x0f/m/0dqyw: Osaka', 'utf8').toString('base64url');
+  writeFileSync(join(cacheDir, 'stays-0123456789abcdef.json'), JSON.stringify({
+    savedAt: nowIso,
+    key: [{ city: 'Osaka', outboundDate: '2027-06-12', returnDate: '2027-06-16' }, 'TWD', 'TW', 15, 8, true],
+    value: {
+      picks: [
+        { hotel: { name: 'Yi Su Hotel', link: `https://www.google.com/travel/search?ts=${taipeiTs}` }, nightly: 1791, note: '✅ 雙人房', sites: [] },
+        { hotel: { name: 'APA Hotel Osaka Higobashi Ekimae', link: `https://www.google.com/travel/search?ts=${osakaTs}` }, nightly: 1954, note: '✅ 雙人房', sites: [] },
+      ],
+      shared: [],
+    },
+  }));
+  const run = deals(data, 'migrate-db');
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /匯入飯店檔 1 筆（略過台灣 1 筆/);
+  assert.match(run.stdout, /匯入有效快取 1 筆/);
 });
 
 // 2026-11-22: plan printed 「分開訂可省 NT$38,423」 on a NT$13,237 fare: the difference was absolute, so
