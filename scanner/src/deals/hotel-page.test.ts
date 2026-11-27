@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { bookingCountryCode, decodeGoogleTsLocation, expectedCountryCode, hotelArea, inTown, isDormBed, isNonSmokingRoom, isSmokingRoom, isWrongCountryHotel, parseGoogleRoomRow, roomKey, siteLocalCurrency, buildHotelNameUrl, buildHotelSearchUrl, classifyRooms, dateInputLabel, isPrivateHotel, nearbyAreas, parseBelowUsual, parseHotelList, parseLabelRatings, parseRoomOffers, parseSiteOffers, attachSiteLinks, largePhotoUrl, roomPhotos, summarizeHotels, bestSiteRating } from './hotel-page';
+import { bookingCountryCode, decodeGoogleTsLocation, expectedCountryCode, filterHotelsForCity, hotelArea, inTown, isDormBed, isNonSmokingRoom, isSmokingRoom, isWrongCountryHotel, parseGoogleRoomRow, parseOverviewAddress, roomKey, sanitizeCachedPicks, siteLocalCurrency, buildHotelNameUrl, buildHotelSearchUrl, classifyRooms, dateInputLabel, isPrivateHotel, nearbyAreas, parseBelowUsual, parseHotelList, parseLabelRatings, parseRoomOffers, parseSiteOffers, attachSiteLinks, largePhotoUrl, roomPhotos, summarizeHotels, bestSiteRating } from './hotel-page';
 
 // Excerpt captured from a live Google Hotels search (Okinawa, Nov 1-7 2026, hl=en, curr=TWD).
 const LIVE = `Skip to main content
@@ -514,5 +514,64 @@ describe('dorm beds', () => {
       sites: [{ url: bookingTwClick }],
       profileUrl: 'https://www.booking.com/hotel/tw/yi-su-taipei-taipei5.en-gb.html',
     })).toBe(false);
+
+    // Regression: Japanese wards/cities sharing kanji with Taiwan (台東區=Taito, 板橋=Itabashi, 高雄=Takao)
+    // must NEVER be rejected as Taiwan hotels.
+    expect(isWrongCountryHotel('Tokyo', { name: 'APA Hotel Asakusa', address: '台東區' })).toBe(false);
+    expect(isWrongCountryHotel('Tokyo', { name: '東横INN板橋駅前', address: '1-1-1 Itabashi, Itabashi City, Tokyo 173-0004, Japan' })).toBe(false);
+    expect(isWrongCountryHotel('Kyoto', { name: '高雄観光ホテル' })).toBe(false);
+  });
+
+  it('parses Overview addresses without mistaking Google Taiwan footer text for a hotel address', () => {
+    const footerOnly = 'Back to list of all results\nAPA Hotel Asakusa\nLoading details...\nLocation: Taiwan · Currency: New Taiwan Dollar (TWD)';
+    expect(parseOverviewAddress(footerOnly)).toBeNull();
+
+    const jpWithTaiwanFooter = 'Back to list of all results\nAPA Hotel Asakusa\n3 Chome-7-11 Kotobuki, Taito City, Tokyo 111-0042, Japan\nLocation: Taiwan · Currency: New Taiwan Dollar';
+    expect(parseOverviewAddress(jpWithTaiwanFooter)).toBe('3 Chome-7-11 Kotobuki, Taito City, Tokyo 111-0042, Japan');
+
+    const twAddress = 'Back to list of all results\nYi Su Hotel\nNo. 42, Kangding Rd, Wanhua District, Taipei City, Taiwan 108\nLocation: Taiwan';
+    expect(parseOverviewAddress(twAddress)).toBe('No. 42, Kangding Rd, Wanhua District, Taipei City, Taiwan 108');
+  });
+
+  it('filters hotel lists and cached stays (keeping real hotels and flagging 100% wrong-country caches for refresh)', () => {
+    const taipeiTs = Buffer.from('\x08\x01\x12#108, Wanhua District, Taipei City', 'utf8').toString('base64url');
+    const osakaTs = Buffer.from('\x08\x01\x12\x0f/m/0dqyw: Osaka', 'utf8').toString('base64url');
+    const taipeiLink = `https://www.google.com/travel/search?q=hotels&ts=${taipeiTs}`;
+    const osakaLink = `https://www.google.com/travel/search?q=hotels&ts=${osakaTs}`;
+
+    // captureHotelList helper: partial contamination keeps real Osaka hotels
+    const partial = filterHotelsForCity('Osaka', [
+      { name: 'Yi Su Hotel', link: taipeiLink },
+      { name: 'APA Hotel Osaka Higobashi Ekimae', link: osakaLink },
+    ]);
+    expect(partial?.map(h => h.name)).toEqual(['APA Hotel Osaka Higobashi Ekimae']);
+
+    // captureHotelList helper: 100% contamination returns null so caller retries instead of caching empty
+    expect(filterHotelsForCity('Saga', [
+      { name: 'Funny Ximen Hotel', link: taipeiLink },
+      { name: 'MEANDER Taipei', link: taipeiLink },
+    ])).toBeNull();
+    expect(filterHotelsForCity('Osaka', [])).toEqual([]);
+
+    // cachedStays helper: partial contamination strips Taipei without refetch; 100% contamination triggers refresh
+    const partialCache = sanitizeCachedPicks('Osaka', [
+      { hotel: { name: 'Yi Su Hotel', link: taipeiLink }, sites: [], area: '位置未確認' },
+      { hotel: { name: 'APA Hotel Osaka Higobashi Ekimae', link: osakaLink }, sites: [], area: '大阪西區' },
+    ], name => name === 'Yi Su Hotel' ? 'https://www.booking.com/hotel/tw/yi-su-taipei-taipei5.en-gb.html' : null);
+    expect(partialCache.needsRefresh).toBe(false);
+    expect(partialCache.picks.map(p => p.hotel.name)).toEqual(['APA Hotel Osaka Higobashi Ekimae']);
+
+    const fullPoisonCache = sanitizeCachedPicks('Saga', [
+      { hotel: { name: 'Funny Ximen Hotel', link: taipeiLink }, sites: [], area: '位置未確認' },
+    ]);
+    expect(fullPoisonCache).toEqual({ picks: [], needsRefresh: true });
+
+    // Tokyo Taito-ku (台東區) and Itabashi (板橋) picks stay intact in cache
+    const tokyoCache = sanitizeCachedPicks('Tokyo', [
+      { hotel: { name: 'APA Hotel Asakusa' }, sites: [], area: '台東區' },
+      { hotel: { name: '東横INN板橋駅前' }, sites: [], area: '板橋區' },
+    ]);
+    expect(tokyoCache.needsRefresh).toBe(false);
+    expect(tokyoCache.picks.map(p => p.hotel.name)).toEqual(['APA Hotel Asakusa', '東横INN板橋駅前']);
   });
 });

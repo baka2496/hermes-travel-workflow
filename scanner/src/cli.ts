@@ -14,7 +14,7 @@
 // This portable build prints locally; Hermes owns account setup and delivery.
 import { CITY_NAMES, cityLabel } from './deals/message';
 import { TRIP_LENGTHS, buildCardSearchUrl, isTripLength, type TripLength } from './deals/explore-page';
-import { buildHotelNameUrl, hotelArea, inTown, isNonSmokingRoom, isPrivateHotel, isSmokingRoom, isWrongCountryHotel, nearbyAreas, parseGoogleRoomRow, roomKey, type HotelListQuote, type SiteOffer, type HotelPhotos } from './deals/hotel-page';
+import { buildHotelNameUrl, hotelArea, inTown, isNonSmokingRoom, isPrivateHotel, isSmokingRoom, isWrongCountryHotel, nearbyAreas, parseGoogleRoomRow, roomKey, sanitizeCachedPicks, type HotelListQuote, type SiteOffer, type HotelPhotos } from './deals/hotel-page';
 import { bookFlight, captureHotelList, checkHotelRooms, deliverDealAlerts, NoFittingFlight, retryIfEmpty, runDueDealWatches, searchFlights } from './deals/runner';
 import type { FlightOption } from './deals/flight-list';
 import { SHORT_TRIP_NIGHTS, chooseBookingOption, chooseFlight, chooseReturn, hotelTimes, readPrefs, type Prefs } from './prefs';
@@ -227,10 +227,10 @@ async function cached<T>(kind: string, key: readonly unknown[], compute: () => P
   return value;
 }
 
+// Do NOT pass pick.area as address: hotelArea() outputs Chinese ward labels like "台東區" (Tokyo Taito-ku).
 const isWrongCountryPick = (city: string, pick: Pick): boolean =>
   isWrongCountryHotel(city, {
     name: pick.hotel.name,
-    address: pick.area === '位置未確認' ? null : pick.area,
     link: pick.hotel.link,
     sites: pick.sites,
     profileUrl: freshProfile(pick.hotel.name)?.hotelUrl ?? null,
@@ -240,14 +240,15 @@ async function cachedStays(watch: { currency: string; country: string }, stay: S
   const key = [stay, watch.currency, watch.country, candidatesWanted, limit, readUserPrefs().nonSmoking] as const;
   const result = await cached('stays', key, () => verifiedStays(watch, stay, candidatesWanted, limit), fresh);
   if (!result) return null;
-  const cleanPicks = result.picks.filter(pick => !isWrongCountryPick(stay.city, pick));
-  if (!fresh && result.picks.length > 0 && cleanPicks.length === 0) {
+  const profileUrlFor = (name: string) => freshProfile(name)?.hotelUrl ?? null;
+  const cleaned = sanitizeCachedPicks(stay.city, result.picks, profileUrlFor);
+  if (!fresh && cleaned.needsRefresh) {
     // Cache was 100% contaminated by wrong-country fallback hotels (e.g. Taipei for Saga); refetch cleanly.
     const refreshed = await cached('stays', key, () => verifiedStays(watch, stay, candidatesWanted, limit), true);
     if (!refreshed) return null;
-    return { ...refreshed, picks: refreshed.picks.filter(pick => !isWrongCountryPick(stay.city, pick)) };
+    return { ...refreshed, picks: sanitizeCachedPicks(stay.city, refreshed.picks, profileUrlFor).picks };
   }
-  return cleanPicks.length === result.picks.length ? result : { ...result, picks: cleanPicks };
+  return cleaned.picks.length === result.picks.length ? result : { ...result, picks: cleaned.picks };
 }
 
 // A flight page without a verdict or flights is a failed load, not worth keeping.

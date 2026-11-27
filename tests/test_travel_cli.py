@@ -295,6 +295,35 @@ class OverseasTravelTests(unittest.TestCase):
         self.assertIn("大阪西區", out)
         self.assertIn("總計 NT$29,884（預算剩 NT$15,116）", out)
 
+        # Regression: Tokyo 台東區 (Taito-ku) and 板橋 (Itabashi) hotels must NEVER be dropped as Taiwan!
+        tokyo_raw = """✈️ [去 中華航空 09:00→13:15](https://www.google.com/travel/flights)
+回 中華航空 14:30→17:10
+來回每人 NT$12,000
+
+1. [APA Hotel Asakusa](https://www.google.com/travel/search?q=hotels+in+Tokyo+APA)
+⭐4.1・雙人房・📍台東區
+每晚含稅 NT$2,000
+在 [Booking](https://www.booking.com/hotel/jp/apa-asakusa.html) 訂
+4晚 NT$8,000
+2人含機票 NT$32,000
+
+2. [東横INN板橋駅前](https://www.google.com/travel/search?q=hotels+in+Tokyo+Toyoko)
+⭐4.0・雙人房・📍板橋區
+每晚含稅 NT$2,100
+在 [Booking](https://www.booking.com/hotel/jp/toyoko-itabashi.html) 訂
+4晚 NT$8,400
+2人含機票 NT$32,400
+"""
+        rc_tk, out_tk, err_tk = self.run_overseas(
+            tokyo_raw, "--guests", "2", "--budget", "45000",
+            city="東京", out="2027-06-12", ret="2027-06-16",
+        )
+        self.assertEqual(rc_tk, 0, err_tk)
+        self.assertIn("APA Hotel Asakusa", out_tk)
+        self.assertIn("台東區", out_tk)
+        self.assertIn("東横INN板橋駅前", out_tk)
+        self.assertIn("板橋區", out_tk)
+
     def test_four_guests_scaling_and_season_weekend_and_subitem_filtering(self):
         travel = load_travel()
         # Per-person ticket scales with 4 guests

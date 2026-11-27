@@ -409,9 +409,14 @@ _TAIWAN_DEST_RE = re.compile(
     r"|台灣|臺灣|台北|臺北|新北|台中|臺中|台南|臺南|高雄|花蓮|台東|臺東|宜蘭|墾丁",
     re.I,
 )
+# Exclude CJK place names overlapping Japanese wards/cities (台東區=Taito, 板橋區=Itabashi, 高雄=Takao).
 _TAIWAN_HOTEL_RE = re.compile(
     r"\b(taipei|taiwan|ximen|ximending|wanhua|banqiao|kaohsiung|taichung|tainan|hualien|taitung|yilan|kenting|beitou|tamsui)\b"
-    r"|台北|臺北|台灣|臺灣|西門|萬華|康定館|中和館|板橋|高雄|台中|臺中|台南|臺南|花蓮|台東|宜蘭|墾丁|烏來|北投|士林|淡水",
+    r"|台北|臺北|台灣|臺灣|西門|萬華|康定館|中和館|花蓮|宜蘭|墾丁|烏來|北投",
+    re.I,
+)
+_TAIWAN_AREA_RE = re.compile(
+    r"\b(taiwan|taipei|new taipei)\b|台灣|臺灣|台北|臺北|新北|萬華|西門",
     re.I,
 )
 _TAIWAN_TS_RE = re.compile(
@@ -468,7 +473,7 @@ def is_wrong_country_overseas_hotel(city, hotel):
     area = (hotel.get("area") or "").strip()
 
     if not is_tw_dest:
-        if _TAIWAN_HOTEL_RE.search(name) or (area and _TAIWAN_DEST_RE.search(area)):
+        if _TAIWAN_HOTEL_RE.search(name) or (area and _TAIWAN_AREA_RE.search(area)):
             return True
 
     for key in ("_raw_booking_url", "booking_url", "google_url"):
