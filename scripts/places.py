@@ -21,6 +21,7 @@ import importlib.util
 import json
 from pathlib import Path
 import re
+import sqlite3
 import sys
 import time
 import urllib.request
@@ -49,7 +50,51 @@ def load(name, filename):
     return module
 
 
-def read_places(path):
+PLACES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS places (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  area TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  country_code TEXT NOT NULL DEFAULT 'tw',
+  official TEXT NOT NULL,
+  price_page TEXT NOT NULL,
+  phone TEXT NOT NULL DEFAULT '',
+  prices_json TEXT NOT NULL DEFAULT '[]',
+  free_json TEXT NOT NULL DEFAULT 'false',
+  checked_at TEXT NOT NULL,
+  added_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ok',
+  fail_reason TEXT,
+  extra_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_places_kind_status ON places (kind, status);
+CREATE INDEX IF NOT EXISTS idx_places_area_status ON places (area, status);
+CREATE INDEX IF NOT EXISTS idx_places_country ON places (country_code);
+"""
+
+_STANDARD_PLACE_KEYS = {
+    "name", "area", "kind", "country_code", "official", "price_page",
+    "phone", "prices", "free", "checked_at", "added_at", "status", "fail_reason",
+}
+
+
+def is_sqlite_path(path):
+    return Path(path).suffix.lower() in {".db", ".sqlite", ".sqlite3"}
+
+
+def _open_places_db(path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(path), timeout=10.0)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode = WAL;")
+    con.execute("PRAGMA busy_timeout = 10000;")
+    con.executescript(PLACES_SCHEMA)
+    return con
+
+
+def _read_places_json(path):
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
@@ -58,17 +103,151 @@ def read_places(path):
     return [p for p in places if isinstance(p, dict)] if isinstance(places, list) else []
 
 
-def write_places(path, places):
-    """Write through a temporary file, keeping the previous version as places.backup.json (one only)."""
+def _row_to_place(row):
+    try:
+        prices = json.loads(row["prices_json"])
+        if not isinstance(prices, list):
+            prices = []
+    except (TypeError, ValueError):
+        prices = []
+    try:
+        free = json.loads(row["free_json"])
+    except (TypeError, ValueError):
+        free = False
+    try:
+        extra = json.loads(row["extra_json"])
+        if not isinstance(extra, dict):
+            extra = {}
+    except (TypeError, ValueError):
+        extra = {}
+    place = {
+        **extra,
+        "name": row["name"],
+        "area": row["area"],
+        "kind": row["kind"],
+        "country_code": row["country_code"] or "tw",
+        "official": row["official"],
+        "price_page": row["price_page"],
+        "phone": row["phone"] or "",
+        "prices": prices,
+        "free": free,
+        "checked_at": row["checked_at"],
+        "added_at": row["added_at"],
+        "status": row["status"],
+    }
+    if row["fail_reason"] is not None:
+        place["fail_reason"] = row["fail_reason"]
+    return place
+
+
+def read_places(path):
+    """Read places from places.db (SQLite) or legacy places.json; auto-migrates sibling places.json on first DB read."""
     path = Path(path)
-    # The new version first: a failed write leaves places.json as it was, never missing (Antigravity's review).
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps({"schema_version": 1, "places": places}, ensure_ascii=False, indent=1) + "\n",
-                         encoding="utf-8")
+    if not is_sqlite_path(path):
+        return _read_places_json(path)
+    if not path.exists():
+        legacy = path.with_suffix(".json")
+        if legacy.exists():
+            migrated = _read_places_json(legacy)
+            if migrated:
+                write_places(path, migrated)
+                return read_places(path)
+        return []
+    try:
+        con = _open_places_db(path)
+        try:
+            rows = con.execute(
+                "SELECT name, area, kind, country_code, official, price_page, phone, "
+                "prices_json, free_json, checked_at, added_at, status, fail_reason, extra_json "
+                "FROM places ORDER BY id ASC"
+            ).fetchall()
+            return [_row_to_place(r) for r in rows]
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return []
+
+
+def write_places(path, places):
+    """Atomically persist places to places.db (WAL + online backup) or legacy places.json."""
+    path = Path(path)
+    if not is_sqlite_path(path):
+        # The new version first: a failed write leaves places.json as it was, never missing (Antigravity's review).
+        temporary = path.with_name(path.name + ".tmp")
+        temporary.write_text(json.dumps({"schema_version": 1, "places": places}, ensure_ascii=False, indent=1) + "\n",
+                             encoding="utf-8")
+        if path.exists():
+            backup = path.with_name("places.backup.json")
+            backup.write_bytes(path.read_bytes())
+        temporary.replace(path)
+        return
+
     if path.exists():
-        backup = path.with_name("places.backup.json")
-        backup.write_bytes(path.read_bytes())
-    temporary.replace(path)
+        backup = path.with_name("places.backup.db")
+        try:
+            src = sqlite3.connect(str(path), timeout=10.0)
+            dst = sqlite3.connect(str(backup), timeout=10.0)
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+                src.close()
+        except sqlite3.Error:
+            pass
+
+    con = _open_places_db(path)
+    try:
+        with con:
+            con.execute("DELETE FROM places")
+            rows = []
+            for p in places:
+                extra = {k: v for k, v in p.items() if k not in _STANDARD_PLACE_KEYS}
+                rows.append((
+                    str(p.get("name") or ""),
+                    str(p.get("area") or ""),
+                    str(p.get("kind") or ""),
+                    str(p.get("country_code") or "tw"),
+                    str(p.get("official") or ""),
+                    str(p.get("price_page") or p.get("official") or ""),
+                    str(p.get("phone") or ""),
+                    json.dumps(p.get("prices") if isinstance(p.get("prices"), list) else [], ensure_ascii=False),
+                    json.dumps(p.get("free", False), ensure_ascii=False),
+                    str(p.get("checked_at") or ""),
+                    str(p.get("added_at") or p.get("checked_at") or ""),
+                    str(p.get("status") or "ok"),
+                    p.get("fail_reason"),
+                    json.dumps(extra, ensure_ascii=False),
+                ))
+            con.executemany(
+                "INSERT INTO places (name, area, kind, country_code, official, price_page, phone, "
+                "prices_json, free_json, checked_at, added_at, status, fail_reason, extra_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+    finally:
+        con.close()
+
+
+def migrate(args):
+    """Explicitly migrate legacy places.json into places.db (SQLite), keeping the original JSON intact."""
+    src = Path(args.source) if args.source else Path(args.places).with_suffix(".json")
+    dst = Path(args.places)
+    if not is_sqlite_path(dst):
+        return f"目標路徑必須是 SQLite（.db），目前為：{dst}"
+    if not src.exists():
+        return f"找不到來源 JSON：{src}"
+    places = _read_places_json(src)
+    for p in places:
+        p.setdefault("country_code", "tw")
+    write_places(dst, places)
+    by_kind = {}
+    for p in places:
+        if p.get("status") == "ok":
+            by_kind[p.get("kind", "?")] = by_kind.get(p.get("kind", "?"), 0) + 1
+    print(f"已將 {len(places)} 筆台灣地點從 {src.name} 遷移到 {dst.name}（有效 {sum(by_kind.values())} 筆）。")
+    if by_kind:
+        print("各類分布：" + "、".join(f"{k} {v}" for k, v in sorted(by_kind.items(), key=lambda kv: -kv[1])))
+    return None
 
 
 def today(now=None):
@@ -408,7 +587,7 @@ def main():
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--places", default=HERE / "places.json", help=argparse.SUPPRESS)
+    parser.add_argument("--places", default=HERE / "places.db", help=argparse.SUPPRESS)
     parser.add_argument("--history", default=HERE / "recommended.json", help=argparse.SUPPRESS)
     parser.add_argument("--hermes-root", default=HERE.parent.parent, help=argparse.SUPPRESS)
     parser.add_argument("--html-file", help=argparse.SUPPRESS)  # tests only
@@ -435,7 +614,9 @@ def main():
                       help="要抓的縣市，逗號分隔（例如 台北,新北,基隆,桃園,宜蘭，或 none 只跑目錄）")
     harv.add_argument("--catalog", help="精選官網 JSON 目錄（預設 scripts/places-catalog.json）")
     harv.add_argument("--max-per-county", type=int, default=12)
-    harv.add_argument("--dry-run", action="store_true", help="只預覽結果，不改寫 places.json")
+    harv.add_argument("--dry-run", action="store_true", help="只預覽結果，不改寫 places.db")
+    mig = sub.add_parser("migrate", help="將舊版 places.json 遷移進 SQLite（places.db）")
+    mig.add_argument("--from", dest="source", help="來源 places.json 路徑（預設與 --places 同目錄）")
     sub.add_parser("list")
     args = parser.parse_args()
     if args.command == "add":
@@ -448,6 +629,8 @@ def main():
         problem = recheck(args)
     elif args.command == "harvest":
         problem = harvest(args)
+    elif args.command == "migrate":
+        problem = migrate(args)
     else:
         for place in read_places(args.places):
             print(f"{place.get('status', '?'):6} {place.get('checked_at', '?')} {place.get('area', '')}・"

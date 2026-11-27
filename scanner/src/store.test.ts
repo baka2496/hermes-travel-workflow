@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,7 +9,11 @@ import { join } from 'node:path';
 const folder = mkdtempSync(join(tmpdir(), 'trip-bot-store-test-'));
 process.env.TRIP_BOT_DB = join(folder, 'test.db');
 let store: typeof import('./store');
-beforeAll(async () => { store = await import('./store'); });
+let profiles: typeof import('./hotel-profiles');
+beforeAll(async () => {
+  store = await import('./store');
+  profiles = await import('./hotel-profiles');
+});
 afterAll(() => {
   store.closeStore();
   rmSync(folder, { recursive: true, force: true });
@@ -50,5 +54,55 @@ describe('store', () => {
       throw new Error('fail');
     })).toThrow('fail');
     expect(store.findWatch('Taipei', 'Thailand', 'week')?.lastError).toBeNull();
+  });
+
+  it('stores hotel profiles in SQLite with countryCode, migrates legacy JSON, and purges wrong-country rows', () => {
+    const legacy = join(folder, 'legacy-profiles.json');
+    const fetchedAt = new Date().toISOString();
+    writeFileSync(legacy, JSON.stringify({
+      apaosaka: {
+        name: 'APA Hotel Osaka Higobashi Ekimae',
+        hotelUrl: 'https://www.booking.com/hotel/jp/apa-osaka-higobashi-ekimae.en-gb.html',
+        rooms: [{ name: 'Double Room', beds: ['1 double bed'], guests: 2, bathroom: 'private', photos: [], bunkInPhotos: false }],
+        fetchedAt,
+      },
+      yisuhotel: {
+        name: 'Yi Su Hotel',
+        hotelUrl: 'https://www.booking.com/hotel/tw/yi-su-taipei-taipei5.en-gb.html',
+        rooms: [{ name: 'Double Room', beds: ['1 double bed'], guests: 2, bathroom: 'private', photos: [], bunkInPhotos: false }],
+        fetchedAt,
+      },
+    }));
+    const skippedRes = profiles.importLegacyProfiles(legacy, { skipCountries: ['tw'] });
+    expect(skippedRes).toEqual({ imported: 1, skipped: 1 });
+    expect(store.countHotelProfiles()).toBe(1);
+    expect(profiles.freshProfile('APA Hotel Osaka Higobashi Ekimae')?.countryCode).toBe('jp');
+    expect(profiles.freshProfile('Yi Su Hotel')).toBeNull();
+
+    // Direct saveProfile tags countryCode automatically and can be purged by country
+    profiles.saveProfile({
+      name: 'Yi Su Hotel',
+      hotelUrl: 'https://www.booking.com/hotel/tw/yi-su-taipei-taipei5.en-gb.html',
+      rooms: [],
+      fetchedAt,
+    });
+    expect(store.listHotelProfiles({ countryCode: 'tw' })).toHaveLength(1);
+    expect(store.deleteHotelProfilesByCountry('tw')).toBe(1);
+    expect(store.listHotelProfiles({ countryCode: 'tw' })).toEqual([]);
+  });
+
+  it('stores, lists, and prunes query_cache entries in SQLite', () => {
+    const oldIso = '2026-10-01T00:00:00.000Z';
+    const freshIso = '2026-11-28T00:00:00.000Z';
+    store.setCacheEntry({ cacheKey: 'stays-old', kind: 'stays', city: 'Osaka', countryCode: 'jp', keyJson: '[]', valueJson: '{"picks":[]}', savedAt: oldIso });
+    store.setCacheEntry({ cacheKey: 'stays-new', kind: 'stays', city: 'Osaka', countryCode: 'jp', keyJson: '[]', valueJson: '{"picks":[1]}', savedAt: freshIso });
+    store.setCacheEntry({ cacheKey: 'flights-new', kind: 'flights', city: 'Osaka', countryCode: 'jp', keyJson: '[]', valueJson: '{}', savedAt: freshIso });
+
+    expect(store.getCacheEntry('stays-new')?.valueJson).toBe('{"picks":[1]}');
+    expect(store.listCacheEntries(['stays'], '2026-11-27T00:00:00.000Z').map(e => e.cacheKey)).toEqual(['stays-new']);
+    expect(store.listCacheEntries(['stays', 'flights'], '2026-11-27T00:00:00.000Z')).toHaveLength(2);
+    expect(store.pruneCacheEntries('2026-11-01T00:00:00.000Z')).toBe(1);
+    expect(store.getCacheEntry('stays-old')).toBeNull();
+    expect(store.getCacheEntry('stays-new')).not.toBeNull();
   });
 });

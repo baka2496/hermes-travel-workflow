@@ -367,11 +367,11 @@ TAMPER_PROBLEM = ("不能查或改檢查程式（shared/travel-workflow 的 .py�
 
 # 2026-11-26: the place pool and the recommendation log are written by their scripts only, so they stay
 # valid and every price keeps its page and date (opportunities.json lost its sources to hand edits).
-TOOL_WRITTEN = re.compile(r"shared[\\/]+travel-workflow[\\/]+(?:places|recommended)\.json$", re.I)
+TOOL_WRITTEN = re.compile(r"shared[\\/]+travel-workflow[\\/]+(?:places(?:\.backup)?\.(?:db(?:-(?:wal|shm))?|json)|recommended\.json)$", re.I)
 # In a terminal command any mention counts (Antigravity's review: `echo … > places.json`, a Python one-liner):
 # the scripts take no path, so a command naming these files is one going around them.
-TOOL_WRITTEN_IN_COMMAND = re.compile(r"\b(?:places|recommended)(?:\.backup)?\.json", re.I)
-TOOL_WRITTEN_PROBLEM = ("地點庫（places.json）和推薦紀錄（recommended.json）不能直接改："
+TOOL_WRITTEN_IN_COMMAND = re.compile(r"\b(?:places(?:\.backup)?\.(?:db(?:-(?:wal|shm))?|json)|recommended(?:\.backup)?\.json)\b", re.I)
+TOOL_WRITTEN_PROBLEM = ("地點庫（places.db／places.json）和推薦紀錄（recommended.json）不能直接改："
                         "收新地方用 `places.py add`，挑候選用 `places.py pick`，看全部用 `places.py list`，"
                         "推薦紀錄由 format-plan.py 自己記。")
 

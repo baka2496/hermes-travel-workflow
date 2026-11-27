@@ -49,6 +49,26 @@ CREATE TABLE IF NOT EXISTS alerts (
   pending INTEGER NOT NULL DEFAULT 1, attempts INTEGER NOT NULL DEFAULT 0, nextAttemptAt TEXT NOT NULL, lastError TEXT
 );
 CREATE INDEX IF NOT EXISTS alerts_pending ON alerts (pending, nextAttemptAt);
+CREATE TABLE IF NOT EXISTS hotel_profiles (
+  key TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  hotelUrl TEXT,
+  countryCode TEXT,
+  rooms TEXT NOT NULL,
+  fetchedAt TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS hotel_profiles_country ON hotel_profiles (countryCode);
+CREATE TABLE IF NOT EXISTS query_cache (
+  cacheKey TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  city TEXT,
+  countryCode TEXT,
+  keyJson TEXT NOT NULL,
+  valueJson TEXT NOT NULL,
+  savedAt TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS query_cache_kind_saved ON query_cache (kind, savedAt);
+CREATE INDEX IF NOT EXISTS query_cache_city ON query_cache (city, countryCode);
 `;
 
 let db: DatabaseSync | null = null;
@@ -189,4 +209,98 @@ export function updateAlert(id: number, patch: Pick<DealAlert, 'pending' | 'atte
 /** Drop scan rows older than the price history needs (the usual price looks back 30 days). */
 export function pruneObservations(before: Date): number {
   return Number(open().prepare('DELETE FROM observations WHERE scannedAt < ?').run(before.toISOString()).changes);
+}
+
+/** One hotel's cached Booking.com room profile stored in trip-bot.db. */
+export interface StoredHotelProfile {
+  key: string;
+  name: string;
+  hotelUrl: string | null;
+  countryCode: string | null;
+  roomsJson: string;
+  fetchedAt: string;
+}
+
+const profileFrom = (row: Row): StoredHotelProfile => ({
+  key: String(row.key),
+  name: String(row.name),
+  hotelUrl: row.hotelUrl === null ? null : String(row.hotelUrl),
+  countryCode: row.countryCode === null ? null : String(row.countryCode),
+  roomsJson: String(row.rooms),
+  fetchedAt: String(row.fetchedAt),
+});
+
+export function getHotelProfile(key: string): StoredHotelProfile | null {
+  const row = open().prepare('SELECT * FROM hotel_profiles WHERE key = ?').get(key) as Row | undefined;
+  return row ? profileFrom(row) : null;
+}
+
+export function upsertHotelProfile(profile: StoredHotelProfile): void {
+  open().prepare(
+    'INSERT INTO hotel_profiles (key, name, hotelUrl, countryCode, rooms, fetchedAt) VALUES (?, ?, ?, ?, ?, ?)'
+    + ' ON CONFLICT(key) DO UPDATE SET name = excluded.name, hotelUrl = excluded.hotelUrl, countryCode = excluded.countryCode, rooms = excluded.rooms, fetchedAt = excluded.fetchedAt',
+  ).run(profile.key, profile.name, profile.hotelUrl, profile.countryCode, profile.roomsJson, profile.fetchedAt);
+}
+
+export function listHotelProfiles(where: { countryCode?: string } = {}): StoredHotelProfile[] {
+  const rows = where.countryCode
+    ? open().prepare('SELECT * FROM hotel_profiles WHERE countryCode = ? ORDER BY key').all(where.countryCode)
+    : open().prepare('SELECT * FROM hotel_profiles ORDER BY key').all();
+  return (rows as Row[]).map(profileFrom);
+}
+
+export function countHotelProfiles(): number {
+  const row = open().prepare('SELECT COUNT(*) AS count FROM hotel_profiles').get() as Row | undefined;
+  return Number(row?.count ?? 0);
+}
+
+export function deleteHotelProfilesByCountry(countryCode: string): number {
+  return Number(open().prepare('DELETE FROM hotel_profiles WHERE countryCode = ?').run(countryCode).changes);
+}
+
+/** One cached search/booking result stored in trip-bot.db (replacing cache/*.json). */
+export interface StoredCacheEntry {
+  cacheKey: string;
+  kind: string;
+  city: string | null;
+  countryCode: string | null;
+  keyJson: string;
+  valueJson: string;
+  savedAt: string;
+}
+
+const cacheFrom = (row: Row): StoredCacheEntry => ({
+  cacheKey: String(row.cacheKey),
+  kind: String(row.kind),
+  city: row.city === null ? null : String(row.city),
+  countryCode: row.countryCode === null ? null : String(row.countryCode),
+  keyJson: String(row.keyJson),
+  valueJson: String(row.valueJson),
+  savedAt: String(row.savedAt),
+});
+
+export function getCacheEntry(cacheKey: string): StoredCacheEntry | null {
+  const row = open().prepare('SELECT * FROM query_cache WHERE cacheKey = ?').get(cacheKey) as Row | undefined;
+  return row ? cacheFrom(row) : null;
+}
+
+export function setCacheEntry(entry: StoredCacheEntry): void {
+  open().prepare(
+    'INSERT INTO query_cache (cacheKey, kind, city, countryCode, keyJson, valueJson, savedAt) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    + ' ON CONFLICT(cacheKey) DO UPDATE SET kind = excluded.kind, city = excluded.city, countryCode = excluded.countryCode, keyJson = excluded.keyJson, valueJson = excluded.valueJson, savedAt = excluded.savedAt',
+  ).run(entry.cacheKey, entry.kind, entry.city, entry.countryCode, entry.keyJson, entry.valueJson, entry.savedAt);
+}
+
+export function listCacheEntries(kinds: readonly string[], sinceIso?: string): StoredCacheEntry[] {
+  if (!kinds.length) return [];
+  const placeholders = kinds.map(() => '?').join(', ');
+  const sql = sinceIso
+    ? `SELECT * FROM query_cache WHERE kind IN (${placeholders}) AND savedAt >= ? ORDER BY savedAt DESC`
+    : `SELECT * FROM query_cache WHERE kind IN (${placeholders}) ORDER BY savedAt DESC`;
+  const params = sinceIso ? [...kinds, sinceIso] : [...kinds];
+  return (open().prepare(sql).all(...params as never[]) as Row[]).map(cacheFrom);
+}
+
+export function pruneCacheEntries(beforeIso: string): number {
+  return Number(open().prepare('DELETE FROM query_cache WHERE savedAt < ?').run(beforeIso).changes);
 }

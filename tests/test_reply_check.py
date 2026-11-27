@@ -372,7 +372,7 @@ class CheckersAreOffLimitsTests(unittest.TestCase):
                     os.environ[key] = value
 
     def test_the_place_pool_and_the_recommendation_log_are_written_by_their_scripts_only(self):
-        for name in ("places.json", "recommended.json"):
+        for name in ("places.db", "places.json", "recommended.json"):
             result = check.pre_tool_call("write_file", {"path": f"{self.TOOLS}/{name}", "content": "[]"}, session_id="s1")
             self.assertIn("places.py add", result["message"])
             result = check.pre_tool_call("patch", {"path": rf"C:\hermes\shared\travel-workflow\{name}",
@@ -381,6 +381,7 @@ class CheckersAreOffLimitsTests(unittest.TestCase):
         self.assertIsNone(check.pre_tool_call("read_file", {"path": f"{self.TOOLS}/places.json"}, session_id="s1"))
         # Nor through the terminal (Antigravity's review), while running the scripts stays fine.
         for command in (f"echo [] > {self.TOOLS}/places.json",
+                        f"sqlite3 {self.TOOLS}/places.db 'DELETE FROM places'",
                         f"python -c \"open(r'{self.TOOLS}\\recommended.json','w').write('[]')\"",
                         f"copy places.backup.json {self.TOOLS}/places.json"):
             result = check.pre_tool_call("terminal", {"command": command}, session_id="s1")
