@@ -337,10 +337,14 @@ class ReplyCheckTravelIntegrationTests(unittest.TestCase):
         plugin = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(plugin)
 
-        # JSON-escaped quotes inside Hermes tool_calls arguments
+        # JSON-escaped quotes inside Hermes tool_calls arguments (1 or 3 backslashes)
         escaped_overseas = json.dumps({"command": '"C:/py/python.exe" "C:/h/shared/travel-workflow/travel.py" overseas 東京 2027-07-10 2027-07-14'})
+        escaped_local = json.dumps({"command": '"C:/py/python.exe" "C:/h/shared/travel-workflow/travel.py" local --area 礁溪'})
+        double_escaped = json.dumps(escaped_overseas)
         escaped_check = json.dumps({"command": '"C:/py/python.exe" "C:/h/shared/travel-workflow/travel.py" check --text "local trip"'})
         self.assertTrue(plugin.TRAVEL_PLAN_SUBCMD.search(escaped_overseas))
+        self.assertTrue(plugin.TRAVEL_PLAN_SUBCMD.search(double_escaped))
+        self.assertTrue(plugin.RESEARCH.search(escaped_local))
         self.assertFalse(plugin.TRAVEL_PLAN_SUBCMD.search(escaped_check))
         self.assertFalse(plugin.RESEARCH.search(escaped_check))
 
@@ -351,11 +355,14 @@ class ReplyCheckTravelIntegrationTests(unittest.TestCase):
         db_path = root / "state.db"
         con = sqlite3.connect(db_path)
         con.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL)")
+        # Explicit rate-limit/unconfirmed status from travel.py overseas must not be stripped to an empty header
         card = "07/10–07/14 東京 5天4夜（2人）\n機票與住宿：這次沒讀到價格（Google 暫時限流），未確認。"
         tc = json.dumps([{"id": "c1", "function": {"name": "terminal", "arguments": escaped_overseas}}])
         con.execute("INSERT INTO messages VALUES (1, 's1', 'user', '查東京', NULL, NULL, NULL, 1)")
         con.execute("INSERT INTO messages VALUES (2, 's1', 'assistant', '', NULL, ?, NULL, 2)", (tc,))
         con.execute("INSERT INTO messages VALUES (3, 's1', 'tool', ?, 'c1', NULL, 'terminal', 3)", (json.dumps({"output": card}),))
+        # Negative control session without travel.py output
+        con.execute("INSERT INTO messages VALUES (4, 's2', 'user', '查東京', NULL, NULL, NULL, 4)")
         con.commit()
         con.close()
 
@@ -363,8 +370,11 @@ class ReplyCheckTravelIntegrationTests(unittest.TestCase):
         try:
             os.environ["HERMES_HOME"] = str(root)
             out = plugin.transform_llm_output(response_text=card, session_id="s1", turn_id="t1")
-            # Must NOT strip the second line printed by travel.py overseas!
             self.assertIsNone(out)
+            # Negative control: same unconfirmed line NOT from travel.py IS stripped when show_unconfirmed=False
+            stripped = plugin.transform_llm_output(response_text=card, session_id="s2", turn_id="t2")
+            self.assertIsNotNone(stripped)
+            self.assertNotIn("未確認", stripped)
         finally:
             if old is None:
                 os.environ.pop("HERMES_HOME", None)
