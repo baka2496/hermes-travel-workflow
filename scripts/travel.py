@@ -32,6 +32,8 @@ REPO_ROOT = HERE.parent
 
 
 def load_module(name, filename):
+    if str(HERE) not in sys.path:
+        sys.path.insert(0, str(HERE))
     path = HERE / filename
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -118,10 +120,17 @@ def check_calendar_conflict(start_iso, end_iso, hermes_root):
     first = out.splitlines()[0].strip()
     if "沒有排定的事" in first:
         return None
-    if "有行程" in first or "衝突" in first or "：" in first:
-        lines = [ln.strip() for ln in out.splitlines() if ln.strip() and not ln.strip().startswith("未知")]
-        return "；".join(lines[:2]) if lines else None
-    return None
+    # Keep only actual event lines (drop redundant header "12/6–12/6 行事曆：" and "未知：...")
+    events = []
+    for ln in out.splitlines():
+        s = ln.strip()
+        if not s or s.startswith("未知") or s.endswith("行事曆："):
+            continue
+        events.append(s.lstrip("•・-* ").strip())
+    if not events:
+        return None
+    joined = "；".join(events[:2])
+    return (joined[:22] + "…") if len(joined) > 23 else joined
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +177,9 @@ HOTEL_START_RE = re.compile(r"^(\d+)\.\s+\[([^\]]+)\]\((https?://[^)\s]+)\)\s*$"
 def parse_deals_plan(raw_text, city, outbound_date, return_date, guests):
     """Deterministically parse `deals plan` stdout into structured flight + hotel data."""
     text = (raw_text or "").replace("\r\n", "\n")
+    # Strip PLAN_TOTAL_NOTE footer first so its instructions ("寫「這次沒讀到訂票頁」", "有「＋托運行李」那行")
+    # never falsely trigger no_booking_page or overwrite bag_estimate_per_person!
+    text = text.split("「含機票」總價＝", 1)[0]
     nights = max(1, nights_between(outbound_date, return_date))
     data = {
         "city": city,
@@ -384,7 +396,7 @@ def format_overseas_card(parsed, budget=None, top=2, calendar_note=None, show_un
 
     lines = [header]
     if calendar_note:
-        lines.append(f"⚠️ 行事曆：{calendar_note[:24]}")
+        lines.append(f"⚠️ 行事曆：{calendar_note}")
 
     # Headline total (from top hotel if available, else flight-only)
     if ranked and ranked[0].get("combined_total"):
@@ -469,11 +481,25 @@ def format_overseas_card(parsed, budget=None, top=2, calendar_note=None, show_un
     return "\n".join(lines)
 
 
+FOREIGN_CURRENCY_RE = re.compile(
+    r"日圓|日幣|円|JPY|美金|美元|USD|歐元|EUR|韓元|韓幣|KRW|港幣|HKD|英鎊|GBP",
+    re.I,
+)
+
+
 def owner_quoted_budget(prefs):
     """Return TWD entire-trip budget amount ONLY when preferences.json carries the owner's own quote."""
     b = prefs.get("budget") if isinstance(prefs, dict) else None
     if isinstance(b, dict) and b.get("amount") and b.get("quote"):
-        if str(b.get("currency", "")).upper() != "TWD" or b.get("scope") != "entire_trip":
+        raw_currency = b.get("currency")
+        if raw_currency:
+            currency = str(raw_currency).upper()
+        else:
+            if FOREIGN_CURRENCY_RE.search(str(b.get("quote"))):
+                return None
+            currency = "TWD"
+        scope = b.get("scope") or "entire_trip"
+        if currency != "TWD" or scope != "entire_trip":
             return None
         try:
             val = int(b["amount"])
@@ -541,7 +567,7 @@ def cmd_overseas(args):
 
 OVERNIGHT_HINTS = ("住宿", "雙人房", "兩人房", "標準房", "精緻", "雅緻", "和室", "客房", "一晚", "套房", "每晚")
 DAY_HINTS = ("湯屋", "泡湯", "大眾池", "裸湯", "小時", "分鐘", "門票", "入場", "入園", "全票", "雙人池")
-BAD_ITEM_HEADS = ("價位資訊", "收費標準", "價格表", "價目表", "費用說明", "房價表")
+BAD_ITEM_HEADS = ("價位資訊", "收費標準", "價格表", "價目表", "費用說明", "房價表", "平假日定義", "溫泉房型", "營運時間及收費", "時間及票價")
 
 
 def _extract_prices_from_line(line):
@@ -556,26 +582,142 @@ def _extract_prices_from_line(line):
 
 
 def _clean_room_label(line, fallback):
-    head = line.split("｜")[0].split("：")[0].split(":")[0].strip()
-    head = re.sub(r"[（(][^）)]*[）)]", "", head).strip()
-    if not head or len(head) > 16 or any(b in head for b in BAD_ITEM_HEADS):
-        return fallback
-    return head
+    parts = [p.strip() for p in (line or "").split("｜") if p.strip()]
+    candidates = []
+    if len(parts) >= 2:
+        # Prefer the specific room/item segment after a generic section heading (e.g. 平假日定義｜山景溫泉湯屋：...)
+        first_head = re.sub(r"[（(][^）)]*[）)]", "", parts[0].split("：")[0].split(":")[0]).strip()
+        second_head = re.sub(r"[（(][^）)]*[）)]", "", parts[-1].split("：")[0].split(":")[0]).strip()
+        if any(b in first_head for b in BAD_ITEM_HEADS) or len(first_head) > 16 or any(k in first_head for k in ("旺季", "淡季")):
+            candidates.extend([second_head, first_head])
+        else:
+            candidates.extend([first_head, second_head])
+    elif parts:
+        candidates.append(re.sub(r"[（(][^）)]*[）)]", "", parts[0].split("：")[0].split(":")[0]).strip())
+    for head in candidates:
+        head = re.sub(r"^[■•‧・\-\s]+", "", head).strip()
+        if head and len(head) <= 16 and not any(b in head for b in BAD_ITEM_HEADS) and not _MONEY.PRICE.search(head):
+            return head
+    return fallback
 
 
-def select_best_price_line(lines, *, nights=0, guests=2, is_weekend=True, cheaper_than=None, budget=None, kind=""):
-    """Pick the best matching (label, unit_price, qty) from page-prices.py lines."""
-    rooms = max(1, (guests + 1) // 2)
+PURE_NOISE_HINTS = (
+    "加價", "加購", "加人", "加床", "加時", "逾時", "延時", "每加",
+    "毛巾", "礦泉水", "沐浴品", "清潔費", "押金", "折抵", "憑券",
+    "車資", "單程", "退款", "退訂", "處理費", "熱水", "冷水", "其他收費",
+    "優待票", "敬老", "孩童", "兒童票", "愛心票",
+)
+MEAL_SUBITEM_HINTS = ("享用", "套餐", "贈送")
+MONTH_RANGE_RE = re.compile(r"(?P<a>1[0-2]|0?[1-9])\s*月?\s*[-–~至到]\s*(?P<b>1[0-2]|0?[1-9])\s*月")
+DATE_RANGE_RE = re.compile(
+    r"(?:(?P<y1>\d{4})[/-])?(?P<m1>1[0-2]|0?[1-9])/(?P<d1>\d{1,2})\s*[-–~至到]\s*"
+    r"(?:(?P<y2>\d{4})[/-])?(?P<m2>1[0-2]|0?[1-9])/(?P<d2>\d{1,2})"
+)
+
+
+def _is_subitem_or_noise(line):
+    if any(k in line for k in PURE_NOISE_HINTS):
+        return True
+    if any(k in line for k in MEAL_SUBITEM_HINTS):
+        if not any(k in line for k in OVERNIGHT_HINTS) and not any(k in line for k in DAY_HINTS):
+            return True
+    return False
+
+
+def _in_month_range(month, start_m, end_m):
+    return start_m <= month <= end_m if start_m <= end_m else (month >= start_m or month <= end_m)
+
+
+def _explicit_month_ranges(line):
+    ranges = [(int(m["a"]), int(m["b"])) for m in MONTH_RANGE_RE.finditer(line or "")]
+    for m in DATE_RANGE_RE.finditer(line or ""):
+        ranges.append((int(m["m1"]), int(m["m2"])))
+    return ranges
+
+
+def _is_expired_promo(line, trip_date):
+    if not trip_date:
+        return False
+    end_dates = []
+    for m in DATE_RANGE_RE.finditer(line or ""):
+        y2 = m.group("y2") or m.group("y1")
+        if y2:
+            try:
+                end_dates.append(dt.date(int(y2), int(m.group("m2")), int(m.group("d2"))))
+            except ValueError:
+                continue
+    return bool(end_dates) and all(trip_date > end_d for end_d in end_dates)
+
+
+def _price_for_day_type(line, is_weekend):
+    """Extract the right price from a line like '旺季平日$2,600元、假日$3,000元' (ignoring section heading before ｜)."""
+    body = (line or "").split("｜")[-1]
+    norm = body.replace("非假日", "平日")
+    if is_weekend and "假日" in norm:
+        after = norm.split("假日", 1)[1]
+        found = _extract_prices_from_line(after)
+        if found:
+            return found[0]
+    if (not is_weekend) and "平日" in norm:
+        after = norm.split("平日", 1)[1]
+        # Stop before '假日' if both appear on one line
+        after = after.split("假日", 1)[0]
+        found = _extract_prices_from_line(after)
+        if found:
+            return found[0]
+    prices = _extract_prices_from_line(norm)
+    return min(prices) if prices else None
+
+
+def _room_capacity(line):
+    if any(k in line for k in ("四人房", "4人房", "家庭房", "四人", "家庭湯屋")):
+        return 4
+    if any(k in line for k in ("三人房", "3人房", "三人")):
+        return 3
+    if any(k in line for k in ("單人房", "1人房")):
+        return 1
+    return 2
+
+
+def select_best_price_line(lines, *, nights=0, guests=2, is_weekend=True, month=None, trip_date=None,
+                           cheaper_than=None, budget=None, kind=""):
+    """Pick the best matching (label, unit_price, qty) from page-prices.py lines without guessing seasons."""
+    if isinstance(trip_date, str):
+        trip_date = dt.date.fromisoformat(trip_date)
+    if trip_date is not None and month is None:
+        month = trip_date.month
+
+    # Detect ambiguous un-dated 淡季/旺季 or 夏季/冬季 pairs so we never guess a venue's season months
+    undated_peak = any(("旺季" in ln or "冬季" in ln) and not _explicit_month_ranges(ln) for ln in (lines or []))
+    undated_off = any(("淡季" in ln or "夏季" in ln) and not _explicit_month_ranges(ln) for ln in (lines or []))
+    has_ambiguous_seasons = undated_peak and undated_off
+
     scored = []
     for ln in lines or []:
-        prices = _extract_prices_from_line(ln)
-        if not prices:
+        if _is_subitem_or_noise(ln):
             continue
-        # If line explicitly says 平日 only on a weekend (without 假日), lower priority
+        if _is_expired_promo(ln, trip_date):
+            continue
+        unit = _price_for_day_type(ln, is_weekend)
+        if unit is None:
+            continue
+
+        # Season check: ONLY filter by explicit month/date ranges printed on the page; never guess!
+        ranges = _explicit_month_ranges(ln)
+        if month is not None and ranges:
+            if not any(_in_month_range(month, a, b) for a, b in ranges):
+                continue
+        elif month is not None and has_ambiguous_seasons and not ranges:
+            if any(k in ln for k in ("淡季", "旺季", "夏季", "冬季")):
+                continue
+
+        # Day-of-week check on the price body (after ｜) so a heading like '平假日定義' doesn't mask '/ 平日'
+        body = ln.split("｜")[-1]
+        norm = body.replace("非假日", "平日")
         weekend_pen = 0
-        if is_weekend and "平日" in ln and "假日" not in ln:
+        if is_weekend and "平日" in norm and "假日" not in norm and "平假日" not in norm:
             weekend_pen = 2
-        elif (not is_weekend) and "假日" in ln and "平日" not in ln:
+        elif (not is_weekend) and "假日" in norm and "平日" not in norm and "平假日" not in norm:
             weekend_pen = 2
 
         mode_score = 0
@@ -590,14 +732,16 @@ def select_best_price_line(lines, *, nights=0, guests=2, is_weekend=True, cheape
             elif any(k in ln for k in ("住宿", "雙人房", "一晚", "客房")):
                 mode_score = 2
 
-        per_person = any(k in ln for k in ("/人", "每人", "一位", "成人", "全票")) and "雙人" not in ln and "2人" not in ln
+        per_person = (
+            any(k in ln for k in ("/人", "每人", "一位", "成人", "全票", "每張", "單人"))
+            and not any(k in ln for k in ("雙人", "2人", "兩人", "四人", "4人", "三人", "3人", "家庭"))
+        )
         if per_person:
             qty = max(1, guests) * (nights if nights > 0 else 1)
-        elif nights > 0:
-            qty = rooms * nights
         else:
-            qty = rooms if ("雙人" in ln or "湯屋" in ln) else 1
-        unit = min(prices)
+            cap = _room_capacity(ln)
+            rooms = max(1, (guests + cap - 1) // cap)
+            qty = rooms * (nights if nights > 0 else 1)
         total = unit * qty
         if cheaper_than is not None and total >= cheaper_than:
             continue
@@ -766,9 +910,10 @@ def cmd_local(args):
         phone_source = url if phone else None
         transport = transport_text(prefs, cand.get("area"))
 
+        trip_date_obj = dt.date.fromisoformat(date_iso)
         picked_price = select_best_price_line(
             price_lines, nights=nights, guests=guests, is_weekend=is_weekend,
-            cheaper_than=args.cheaper_than, budget=budget, kind=cand.get("kind", ""),
+            trip_date=trip_date_obj, cheaper_than=args.cheaper_than, budget=budget, kind=cand.get("kind", ""),
         )
         if picked_price:
             label, unit, qty = picked_price
@@ -835,12 +980,12 @@ def cmd_local(args):
         print("地點庫候選頁的即時價格都未通過核對；請用 web_search 找新官網並用 travel.py add-place 收錄。", file=sys.stderr)
         return 1
 
-    # Header
+    # Header & concise user-facing few_reason (no internal jargon, single primary reason)
     date_label = f"{short_date(date_iso)}–{short_date(checkout_iso)}" if checkout_iso else short_date(date_iso)
     area_label = args.area or (effective_kind or "週末出遊")
     header = f"{date_label} {area_label} {guests}人"
-    reason_text = "、".join(sorted(skip_reasons)) if skip_reasons else "地點庫目前符合的筆數不足"
-    few_reason = f"只有 {len(pkg_objs)} 間符合條件，因為{reason_text}" if len(pkg_objs) < 3 else None
+    primary_reason = next(iter(sorted(skip_reasons)), "目前能查到官網價的僅此幾家")
+    few_reason = f"只有 {len(pkg_objs)} 間符合，因為{primary_reason}" if len(pkg_objs) < 3 else None
 
     common = SimpleNamespace(header=header, few_reason=few_reason, **common_base)
     message, problems, notes = format_mod.build_packages(common, pkg_objs)
@@ -851,15 +996,35 @@ def cmd_local(args):
             print(f"- {p}", file=sys.stderr)
         return 1
     if cal_note:
-        with_cal = f"⚠️ 行事曆：{cal_note[:24]}\n" + message
         phone_check = load_module("phone_check", "phone-check.py")
-        cal_problems = phone_check.check(with_cal)["problems"]
-        if args.for_clarify:
-            cal_problems = [p for p in cal_problems if p.get("kind") != "missing_photo"]
-        if not cal_problems:
+
+        def _try_attach_cal(msg_text):
+            for cal_line in (f"⚠️ 行事曆：{cal_note}", "⚠️ 行事曆有衝突，請先確認"):
+                cand_msg = cal_line + "\n" + msg_text
+                cal_problems = phone_check.check(cand_msg)["problems"]
+                if args.for_clarify:
+                    cal_problems = [p for p in cal_problems if p.get("kind") != "missing_photo"]
+                if not cal_problems:
+                    return cand_msg
+            return None
+
+        with_cal = _try_attach_cal(message)
+        if with_cal is None and len(pkg_objs) > 1:
+            trimmed_objs = pkg_objs[:-1]
+            trimmed_common = SimpleNamespace(
+                header=header,
+                few_reason=f"行事曆有提醒，先列 {len(trimmed_objs)} 間方便手機閱讀",
+                **common_base,
+            )
+            trimmed_msg, trimmed_probs, _ = format_mod.build_packages(trimmed_common, trimmed_objs)
+            if not trimmed_probs:
+                with_cal = _try_attach_cal(trimmed_msg)
+                if with_cal is not None:
+                    pkg_objs = trimmed_objs
+        if with_cal is not None:
             message = with_cal
         else:
-            print(f"行事曆提醒：{cal_note}", file=sys.stderr)
+            print(f"⚠️ 行事曆：{cal_note}", file=sys.stderr)
     if args.json:
         print(json.dumps({"header": header, "packages_count": len(pkg_objs), "message": message}, ensure_ascii=False, indent=2))
         return 0
@@ -886,7 +1051,15 @@ PASSTHROUGH = {
 
 def run_passthrough(command, rest):
     script_name, prefix = PASSTHROUGH[command]
-    proc = subprocess.run([sys.executable, str(HERE / script_name), *prefix, *rest])
+    args_list = list(rest)
+    if command == "add-place":
+        for i, tok in enumerate(args_list):
+            if tok == "--kind" and i + 1 < len(args_list):
+                args_list[i + 1] = normalize_kind(args_list[i + 1]) or args_list[i + 1]
+            elif tok.startswith("--kind="):
+                val = tok.split("=", 1)[1]
+                args_list[i] = "--kind=" + (normalize_kind(val) or val)
+    proc = subprocess.run([sys.executable, str(HERE / script_name), *prefix, *args_list])
     return proc.returncode
 
 

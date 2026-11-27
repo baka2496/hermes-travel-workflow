@@ -1,7 +1,7 @@
 統一工具（查價、算錢、附連結、排方案都走 `travel.py`，直接原樣貼上輸出，不手抄改寫，免重跑檢查）：
 - **國內出遊／週末／泡湯／住宿（一次產出 3 個能直接訂的方案）**：
   `"{{PYTHON}}" "{{ROOT}}/shared/travel-workflow/travel.py" local [--area <地區>] [--kind <類型>] [--date <YYYY-MM-DD>] [--nights <晚數>] [--guests <人數>] [--budget <金額>] [--cheaper-than <金額>]`
-  - 地點庫不夠 3 家時，用 `web_search` 找官網（`web_extract` 讀不到網頁不用；`--official` 只用店家自己網域，訂房連結只用開過的頁面），跑 `travel.py add-place --name <名> --area <區> --kind <類> --official <官網> [--price-page <價格頁>] [--no-fee-listed]`（沒列收費不寫免費）收錄後再跑 `local`。
+  - 地點庫不夠 3 家時，最多 `web_search` 3 次找官網（`web_extract` 讀不到網頁不用；`--official` 只用店家自己網域，訂房連結只用開過的頁面），跑 `travel.py add-place --name <名> --area <區> --kind <類> --official <官網> [--price-page <價格頁>] [--no-fee-listed]`（沒列收費不寫免費）收錄後再跑 `local`；還不夠就直接用已查到的出方案。
 - **海外機票＋住宿（直接查價並產出含去回程航空與時間、行李說明、房型與可點擊連結的卡片，不走多輪看板覆核）**：
   `"{{PYTHON}}" "{{ROOT}}/shared/travel-workflow/travel.py" overseas <城市> <出發 YYYY-MM-DD> <回程 YYYY-MM-DD> [--guests <人數>] [--budget <金額>]`
   - 若回傳「未確認」或 Google 限流就照實回報，不重跑、不猜價。
