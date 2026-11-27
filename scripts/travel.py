@@ -15,6 +15,7 @@ prices, flight times, room types, or clickable booking links:
   travel.py check <phone-check.py flags...>
 """
 import argparse
+import base64
 from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import importlib.util
@@ -282,7 +283,9 @@ def parse_deals_plan(raw_text, city, outbound_date, return_date, guests):
                     lm = MD_LINK_RE.search(sub)
                     if lm:
                         hotel["site_name"] = lm.group(1).strip()
-                        hotel["booking_url"] = clean_booking_url(lm.group(2).strip())
+                        raw_url = lm.group(2).strip()
+                        hotel["_raw_booking_url"] = raw_url
+                        hotel["booking_url"] = clean_booking_url(raw_url)
                 elif re.match(r"^\d+晚", sub):
                     hotel["stay_total"] = parse_amount(sub)
                     if "含機票" in sub:
@@ -297,7 +300,10 @@ def parse_deals_plan(raw_text, city, outbound_date, return_date, guests):
             if hotel["room_type"] is None:
                 hotel["room_type"] = "房型未確認"
                 hotel["room_confirmed"] = False
-            data["hotels"].append(hotel)
+            wrong_country = is_wrong_country_overseas_hotel(city, hotel)
+            hotel.pop("_raw_booking_url", None)
+            if not wrong_country:
+                data["hotels"].append(hotel)
             i = j
             continue
 
@@ -398,6 +404,111 @@ def clean_booking_url(url):
     return u
 
 
+_TAIWAN_DEST_RE = re.compile(
+    r"\b(taiwan|taipei|new taipei|taichung|tainan|kaohsiung|hualien|taitung|yilan|kenting|penghu|kinmen|matsu|chiayi|nantou|hsinchu|keelung|miaoli|taoyuan)\b"
+    r"|台灣|臺灣|台北|臺北|新北|台中|臺中|台南|臺南|高雄|花蓮|台東|臺東|宜蘭|墾丁",
+    re.I,
+)
+_TAIWAN_HOTEL_RE = re.compile(
+    r"\b(taipei|taiwan|ximen|ximending|wanhua|banqiao|kaohsiung|taichung|tainan|hualien|taitung|yilan|kenting|beitou|tamsui)\b"
+    r"|台北|臺北|台灣|臺灣|西門|萬華|康定館|中和館|板橋|高雄|台中|臺中|台南|臺南|花蓮|台東|宜蘭|墾丁|烏來|北投|士林|淡水",
+    re.I,
+)
+_TAIWAN_TS_RE = re.compile(
+    r"\b(taiwan|taipei|new taipei|wanhua|ximending|datong district|zhongzheng district|zhongshan district|da'?an district|xinyi district|songshan district|banqiao|zhonghe|yonghe|taichung|kaohsiung|tainan|taoyuan|hsinchu|keelung|wulai)\b"
+    r"|台灣|臺灣|台北|臺北|新北|萬華|西門",
+    re.I,
+)
+_BOOKING_CC_RE = re.compile(r"^/hotel/([a-z]{2})/", re.I)
+_JAPAN_CITY_RE = re.compile(
+    r"^(東京|大阪|京都|福岡|名古屋|札幌|沖繩|那霸|神戶|廣島|仙台|鹿兒島|熊本|長崎|函館|金澤|岡山|高松|松山|佐賀|大分|宮崎|新潟|富山|青森|秋田|靜岡|旭川|石垣|宮古島"
+    r"|tokyo|osaka|kyoto|fukuoka|nagoya|sapporo|okinawa|naha|kobe|hiroshima|sendai|kagoshima|kumamoto|nagasaki|hakodate|kanazawa|okayama|takamatsu|matsuyama|saga|oita|miyazaki|niigata|toyama|aomori|akita|shizuoka|asahikawa|ishigaki|miyakojima)$",
+    re.I,
+)
+
+
+def _unwrap_hotel_url(url):
+    if not url or not isinstance(url, str):
+        return None
+    try:
+        parts = urlsplit(url.strip())
+        if "google." in parts.netloc.lower() and "/travel/lodging/clk" in parts.path:
+            q = dict(parse_qsl(parts.query, keep_blank_values=False))
+            target = q.get("pcurl") or q.get("url")
+            if target and target.startswith(("http://", "https://")):
+                parts = urlsplit(target)
+        return parts
+    except ValueError:
+        return None
+
+
+def _decode_google_ts(url):
+    if not url or not isinstance(url, str):
+        return None
+    try:
+        q = dict(parse_qsl(urlsplit(url.strip()).query, keep_blank_values=False))
+        ts = q.get("ts")
+        if not ts:
+            return None
+        padded = ts.replace("-", "+").replace("_", "/")
+        padded += "=" * ((4 - len(padded) % 4) % 4)
+        raw = base64.b64decode(padded).decode("utf-8", errors="ignore")
+        cleaned = re.sub(r"[\x00-\x1f\x7f-\x9f]+", " ", raw)
+        return re.sub(r"\s+", " ", cleaned).strip() or None
+    except Exception:
+        return None
+
+
+def is_wrong_country_overseas_hotel(city, hotel):
+    """Defense-in-depth guard: reject Taiwan/wrong-country hotels in overseas results."""
+    city_s = (city or "").strip()
+    is_tw_dest = bool(_TAIWAN_DEST_RE.search(city_s))
+    is_jp_dest = bool(_JAPAN_CITY_RE.match(city_s))
+    name = (hotel.get("name") or "").strip()
+    area = (hotel.get("area") or "").strip()
+
+    if not is_tw_dest:
+        if _TAIWAN_HOTEL_RE.search(name) or (area and _TAIWAN_DEST_RE.search(area)):
+            return True
+
+    for key in ("_raw_booking_url", "booking_url", "google_url"):
+        url = hotel.get(key)
+        if not url:
+            continue
+        ts_loc = _decode_google_ts(url)
+        if ts_loc and not is_tw_dest and _TAIWAN_TS_RE.search(ts_loc):
+            return True
+        parts = _unwrap_hotel_url(url)
+        if not parts:
+            continue
+        host = parts.netloc.lower()
+        q = dict(parse_qsl(parts.query, keep_blank_values=False))
+        if host.endswith("booking.com"):
+            m = _BOOKING_CC_RE.match(parts.path)
+            if m:
+                cc = m.group(1).lower()
+                if is_jp_dest and cc != "jp":
+                    return True
+                if not is_tw_dest and cc == "tw":
+                    return True
+            xfc = (q.get("xfc") or "").upper()
+            if xfc:
+                if is_jp_dest and xfc != "JPY":
+                    return True
+                if not is_tw_dest and xfc == "TWD":
+                    return True
+        if host.endswith("agoda.com"):
+            cur = (q.get("PartnerCurrency") or "").upper()
+            if cur:
+                if is_jp_dest and cur != "JPY":
+                    return True
+                if not is_tw_dest and cur == "TWD":
+                    return True
+        if not is_tw_dest and host.endswith(".tw") and re.search(r"taipei|taiwan|ximen", parts.path, re.I):
+            return True
+    return False
+
+
 def _baggage_label(status):
     return {
         "included": "已含托運行李",
@@ -431,7 +542,7 @@ def format_overseas_card(parsed, budget=None, top=2, calendar_note=None, show_un
     total_flight = per_flight * guests if per_flight else None
 
     # Prefer hotels with confirmed room types; when show_unconfirmed is False, drop unconfirmed-room hotels
-    hotels = list(parsed["hotels"])
+    hotels = [h for h in parsed["hotels"] if not is_wrong_country_overseas_hotel(city, h)]
     confirmed_hotels = [h for h in hotels if h.get("room_confirmed")]
     if show_unconfirmed:
         ranked = (confirmed_hotels + [h for h in hotels if not h.get("room_confirmed")])[:max(1, top)]
@@ -515,7 +626,7 @@ def format_overseas_card(parsed, budget=None, top=2, calendar_note=None, show_un
                 parts.append(f"合計 {money(h['combined_total'])}")
             if h.get("rating"):
                 parts.append(f"⭐{h['rating']}")
-            if h.get("area") and idx == 0:
+            if h.get("area"):
                 parts.append(h["area"])
             site_lbl = h.get("site_name") or "訂房"
             if h.get("booking_url"):

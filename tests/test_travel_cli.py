@@ -244,6 +244,57 @@ class OverseasTravelTests(unittest.TestCase):
         self.assertNotIn("gclid", cleaned_flight)
         self.assertNotIn("utm_source", cleaned_flight)
 
+    def test_overseas_rejects_wrong_country_taiwan_hotels_and_shows_area(self):
+        """Regression (2026-11-28 live Osaka #11273): Taipei hotels from Google IP fallback must be rejected."""
+        raw = """✈️ [去 泰國獅航 08:55→12:30](https://search.lionairthai.com/SL/Flight.aspx?aid=207)
+[回 台灣虎航 11:15→13:10](https://booking.tigerairtw.com/?type=single)
+來回每人 NT$9,286
+＋托運行李約 NT$2,000（估算）
+分開訂兩張票
+
+1. [Yi Su Hotel](https://www.google.com/travel/search?q=hotels+in+Osaka+Yi+Su+Hotel)
+⭐3.6・雙人房・📍位置未確認
+每晚含稅 NT$1,791
+在 [Booking](https://www.google.com/travel/lodging/clk?pc=x&pcurl=https://www.booking.com/searchresults.en.html?dest_id%3D1688307%26xfc%3DTWD%26selected_currency%3DTWD) 訂
+4晚 NT$7,164
+2人含機票 NT$29,736
+
+2. [Art'otel Ximending TAIPEI](https://www.google.com/travel/search?q=hotels+in+Osaka+Art)
+⭐4.0・雙人房・📍位置未確認
+每晚含稅 NT$1,800
+在 [Booking](https://www.booking.com/hotel/tw/artotel-ximending.html) 訂
+4晚 NT$7,200
+2人含機票 NT$29,772
+
+3. [Y's Hotel Shin-Osaka](https://www.google.com/travel/search?q=hotels+in+Osaka+Ys)
+⭐4.1・雙人房・📍大阪淀川區
+每晚含稅 NT$1,828
+在 [Booking](https://www.google.com/travel/lodging/clk?pc=x&pcurl=https://www.booking.com/searchresults.en.html?dest_id%3D2361401%26xfc%3DJPY%26selected_currency%3DTWD) 訂
+4晚 NT$7,312
+2人含機票 NT$29,884
+
+4. [APA Hotel Osaka Higobashi Ekimae](https://www.google.com/travel/search?q=hotels+in+Osaka+APA)
+⭐4.1・雙人房・📍大阪西區
+每晚含稅 NT$1,954
+在 [Booking](https://www.google.com/travel/lodging/clk?pc=x&pcurl=https://www.booking.com/searchresults.en.html?dest_id%3D359485%26xfc%3DJPY%26selected_currency%3DTWD) 訂
+4晚 NT$7,816
+2人含機票 NT$30,388
+
+[看全部住宿](https://www.google.com/travel/search?q=cheap+3+star+hotels+in+Osaka)
+"""
+        rc, out, err = self.run_overseas(
+            raw, "--guests", "2", "--budget", "45000",
+            city="大阪", out="2027-06-12", ret="2027-06-16",
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("Yi Su Hotel", out)
+        self.assertNotIn("Ximending", out)
+        self.assertIn("Y's Hotel Shin-Osaka", out)
+        self.assertIn("大阪淀川區", out)
+        self.assertIn("APA Hotel Osaka Higobashi Ekimae", out)
+        self.assertIn("大阪西區", out)
+        self.assertIn("總計 NT$29,884（預算剩 NT$15,116）", out)
+
     def test_four_guests_scaling_and_season_weekend_and_subitem_filtering(self):
         travel = load_travel()
         # Per-person ticket scales with 4 guests

@@ -8,7 +8,7 @@ import { addAlert, addObservations, claimWatch, dueAlerts, listWatches, observat
 import { buildExploreUrl, cardsWithoutPrice, isTripLength, pageTripLength, parseExplorePage, TRIP_LENGTHS, type ExploreQuote } from './explore-page';
 import { cheapestCities, DEFAULT_DEAL_RULES, findDeals, type CityHistory } from './detect';
 import { flightPageState, parseBookingOptions, parseFlightLabel, parseFlightLabels, type BookingOption, type FlightOption } from './flight-list';
-import { bestSiteRating, buildHotelNameUrl, buildHotelSearchUrl, classifyRooms, dateInputLabel, parseBelowUsual, parseHotelList, parseLabelRatings, parseRoomOffers, parseSiteOffers, attachSiteLinks, largePhotoUrl, roomPhotos, summarizeHotels,
+import { bestSiteRating, buildHotelNameUrl, buildHotelSearchUrl, classifyRooms, dateInputLabel, isWrongCountryHotel, parseBelowUsual, parseHotelList, parseLabelRatings, parseRoomOffers, parseSiteOffers, attachSiteLinks, largePhotoUrl, roomPhotos, summarizeHotels,
   type HotelListQuote, type HotelSummary, type RoomCheck, type SiteOffer, type HotelPhotos } from './hotel-page';
 import { dealMessage, digestMessage, scanFailingMessage, scanRecoveredMessage, type DealContext } from './message';
 
@@ -220,19 +220,30 @@ export async function captureHotelList(watch: Pick<DealWatch, 'currency' | 'coun
       const shown = parseHotelList(await page.evaluate(() => document.body.innerText));
       const cheapest = await sortByLowestPrice(page, shown);
       if (cheapest !== shown) {
-        const known = new Set(hotels.map(hotel => hotel.name));
-        hotels = [...hotels, ...cheapest.filter(hotel => !known.has(hotel.name))];
         await readLinks();
-        for (let more = 1; more < PRICE_PAGES; more++) if (!await nextPage()) break;
+        const validCheapest = cheapest.filter(hotel => !isWrongCountryHotel(quote.city, { name: hotel.name, link: links.get(hotel.name) }));
+        if (validCheapest.length) {
+          const known = new Set(hotels.map(hotel => hotel.name));
+          hotels = [...hotels, ...validCheapest.filter(hotel => !known.has(hotel.name))];
+          for (let more = 1; more < PRICE_PAGES; more++) if (!await nextPage()) break;
+        } else if (cheapest.length) {
+          console.error(`[deals] hotel list for ${quote.city}: lowest-price sort fell back to wrong country; skipped`);
+        }
       }
     }
     const below = parseBelowUsual(labels);
     const ratings = parseLabelRatings(labels);
-    hotels = hotels.map(hotel => ({ ...hotel, rating: hotel.rating ?? ratings.get(hotel.name) ?? null, belowUsualPct: below.get(hotel.name) ?? null, link: links.get(hotel.name) }));
+    const beforeFilter = hotels.length;
+    hotels = hotels
+      .map(hotel => ({ ...hotel, rating: hotel.rating ?? ratings.get(hotel.name) ?? null, belowUsualPct: below.get(hotel.name) ?? null, link: links.get(hotel.name) }))
+      .filter(hotel => !isWrongCountryHotel(quote.city, { name: hotel.name, link: hotel.link }));
+    if (hotels.length < beforeFilter) {
+      console.error(`[deals] hotel list for ${quote.city}: dropped ${beforeFilter - hotels.length} wrong-country hotels`);
+    }
     // Prices are only meaningful for the requested stay, so confirm the date inputs took it.
     const applied = await stayApplied(page, quote);
     await context.close();
-    return applied ? hotels : null;
+    return applied && (beforeFilter === 0 || hotels.length > 0) ? hotels : null;
   } finally {
     await browser.close().catch(() => undefined);
   }
@@ -614,10 +625,13 @@ export async function checkHotelRooms(watch: Pick<DealWatch, 'currency' | 'count
             for (const wait of [6_000, 12_000]) {
               await page.evaluate(() => ([...document.querySelectorAll('[role=tab], a, button, div')]
                 .find(element => element.textContent?.trim() === 'Overview') as HTMLElement | undefined)?.click());
-              await page.waitForFunction(() => /\d{3}-\d{4},? Japan/.test(document.body.innerText), undefined, { timeout: wait }).catch(() => undefined);
+              await page.waitForFunction(() => /\d{3}-\d{4},? Japan|\bTaiwan\b|台灣|臺灣/.test(document.body.innerText), undefined, { timeout: wait }).catch(() => undefined);
               address = await page.evaluate(() => {
                 const text = document.body.innerText;
-                return /[^\n•]*\d{3}-\d{4},? Japan/.exec(text.slice(text.lastIndexOf('Back to list of all results')))?.[0]?.trim() ?? null;
+                const slice = text.slice(text.lastIndexOf('Back to list of all results'));
+                return /[^\n•]*\d{3}-\d{4},? Japan/.exec(slice)?.[0]?.trim()
+                  ?? /[^\n•]*(?:Taiwan|台灣|臺灣)[^\n•]*/.exec(slice)?.[0]?.trim()
+                  ?? null;
               });
               if (address) break;
             }
