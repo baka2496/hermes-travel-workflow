@@ -410,6 +410,203 @@ export function inTown(city: string, postcode: number | null): boolean {
   return !ranges || postcode === null || ranges.some(([low, high]) => postcode >= low && postcode <= high);
 }
 
+/**
+ * Expected ISO-2 country code for known destinations, used to reject hotels that Google Hotels
+ * returns from the scanner's local IP (Taiwan) when "Sort by: Lowest price" or a small city
+ * silently drops the search location (2026-11-28: Osaka and Saga returned Taipei Ximending hotels).
+ */
+const DESTINATION_COUNTRIES: Record<string, string> = {
+  // Japan (all cities from CITY_NAMES + nearby areas)
+  Tokyo: 'jp', Osaka: 'jp', Nagoya: 'jp', Fukuoka: 'jp', Sapporo: 'jp', Okinawa: 'jp', Naha: 'jp',
+  Kyoto: 'jp', Kobe: 'jp', Hiroshima: 'jp', Sendai: 'jp', Kagoshima: 'jp', Kumamoto: 'jp',
+  Nagasaki: 'jp', Hakodate: 'jp', Aomori: 'jp', Akita: 'jp', Niigata: 'jp', Toyama: 'jp',
+  Okayama: 'jp', Takamatsu: 'jp', Matsuyama: 'jp', Kochi: 'jp', Tokushima: 'jp', Miyazaki: 'jp',
+  Oita: 'jp', Saga: 'jp', Kitakyushu: 'jp', Ishigaki: 'jp', Miyakojima: 'jp', Yakushima: 'jp',
+  Shizuoka: 'jp', Asahikawa: 'jp', Kushiro: 'jp', Obihiro: 'jp', Wakkanai: 'jp', Fukushima: 'jp',
+  Yamagata: 'jp', Tottori: 'jp', Izumo: 'jp', Shirahama: 'jp', Iwakuni: 'jp', Komatsu: 'jp',
+  Kanazawa: 'jp', Hanamaki: 'jp', Yonago: 'jp', Ube: 'jp', Memanbetsu: 'jp', Matsumoto: 'jp',
+  Kawasaki: 'jp', Yokohama: 'jp', Chiba: 'jp', Saitama: 'jp', Amagasaki: 'jp', Sakai: 'jp',
+  // Common East/SE Asia destinations
+  Seoul: 'kr', Busan: 'kr', Jeju: 'kr', Daegu: 'kr', Incheon: 'kr',
+  Bangkok: 'th', 'Chiang Mai': 'th', Phuket: 'th', Pattaya: 'th',
+  Singapore: 'sg', 'Hong Kong': 'hk', Macau: 'mo',
+  Hanoi: 'vn', 'Ho Chi Minh City': 'vn', 'Da Nang': 'vn',
+  'Kuala Lumpur': 'my', Penang: 'my', Manila: 'ph', Cebu: 'ph', Bali: 'id', Jakarta: 'id',
+  // Taiwan (domestic)
+  Taipei: 'tw', Taichung: 'tw', Tainan: 'tw', Kaohsiung: 'tw', Hualien: 'tw', Taitung: 'tw', Yilan: 'tw',
+};
+
+const COUNTRY_CURRENCIES: Record<string, string> = {
+  jp: 'JPY', kr: 'KRW', th: 'THB', sg: 'SGD', hk: 'HKD', mo: 'MOP', vn: 'VND', my: 'MYR', ph: 'PHP', id: 'IDR', tw: 'TWD',
+};
+
+const TAIWAN_DESTINATION = /\b(taiwan|taipei|new taipei|taichung|tainan|kaohsiung|hualien|taitung|yilan|kenting|penghu|kinmen|matsu|chiayi|nantou|hsinchu|keelung|miaoli|taoyuan)\b|台灣|臺灣|台北|臺北|新北|台中|臺中|台南|臺南|高雄|花蓮|台東|臺東|宜蘭|墾丁/i;
+// Exclude CJK place names that overlap with Japanese wards/cities (台東區=Taito, 板橋區=Itabashi, 高雄=Takao).
+const TAIWAN_HOTEL_NAME = /\b(taipei|taiwan|ximen|ximending|wanhua|banqiao|kaohsiung|taichung|tainan|hualien|taitung|yilan|kenting|beitou|tamsui)\b|台北|臺北|台灣|臺灣|西門|萬華|康定館|中和館|花蓮|宜蘭|墾丁|烏來|北投/i;
+const TAIWAN_ADDRESS_COUNTRY = /\b(taiwan|taipei|new taipei)\b|台灣|臺灣|台北市|臺北市|新北市/i;
+const TAIWAN_TS_LOCATION = /\b(taiwan|taipei|new taipei|wanhua|ximending|datong district|zhongzheng district|zhongshan district|da'?an district|xinyi district|songshan district|banqiao|zhonghe|yonghe|taichung|kaohsiung|tainan|taoyuan|hsinchu|keelung|wulai)\b|台灣|臺灣|台北|臺北|新北|萬華|西門/i;
+const NON_JAPAN_COUNTRY = /\b(taiwan|south korea|thailand|vietnam|singapore|hong kong|macau|malaysia|philippines|indonesia|china)\b/i;
+
+/**
+ * Parse a hotel's street address from Google Hotels' Overview tab text.
+ * Matches Japanese postal addresses first, and only matches Taiwan addresses when formatted as a real
+ * street/district address (never bare footer text like "Taiwan" or "New Taiwan Dollar").
+ */
+export function parseOverviewAddress(panelSlice: string): string | null {
+  const jp = /[^\n•]*\d{3}-\d{4},? Japan/.exec(panelSlice)?.[0]?.trim();
+  if (jp) return jp;
+  const tw = /[^\n•]*(?:District|City|County|Taipei|Taichung|Tainan|Kaohsiung|Taoyuan|市|縣|區)[^\n•]*,\s*Taiwan(?:\s+\d{3,6})?\b/i.exec(panelSlice)?.[0]?.trim();
+  return tw ?? null;
+}
+
+/**
+ * Filter a fetched hotel list for a destination city: returns null when Google returned hotels
+ * but every single one was from the wrong country (e.g. local IP fallback), so the caller does not
+ * cache an empty list and can retry cleanly.
+ */
+export function filterHotelsForCity<T extends { name: string; link?: string }>(city: string, hotels: readonly T[]): T[] | null {
+  if (!hotels.length) return [];
+  const valid = hotels.filter(hotel => !isWrongCountryHotel(city, { name: hotel.name, link: hotel.link }));
+  return valid.length > 0 ? valid : null;
+}
+
+/**
+ * Clean cached picks for a destination city: drops any wrong-country picks and signals `needsRefresh`
+ * when a non-empty cache was 100% contaminated by wrong-country fallback hotels.
+ */
+export function sanitizeCachedPicks<T extends { hotel: { name: string; link?: string }; sites: readonly { url?: string | null }[] }>(
+  city: string,
+  picks: readonly T[],
+  profileUrlFor: (name: string) => string | null = () => null,
+): { picks: T[]; needsRefresh: boolean } {
+  const clean = picks.filter(pick => !isWrongCountryHotel(city, {
+    name: pick.hotel.name,
+    link: pick.hotel.link,
+    sites: pick.sites,
+    profileUrl: profileUrlFor(pick.hotel.name),
+  }));
+  return { picks: clean, needsRefresh: picks.length > 0 && clean.length === 0 };
+}
+
+export function expectedCountryCode(city: string): string | null {
+  const trimmed = city.trim();
+  if (DESTINATION_COUNTRIES[trimmed]) return DESTINATION_COUNTRIES[trimmed]!;
+  const lower = trimmed.toLowerCase();
+  for (const [name, code] of Object.entries(DESTINATION_COUNTRIES)) {
+    if (name.toLowerCase() === lower) return code;
+  }
+  return TAIWAN_DESTINATION.test(trimmed) ? 'tw' : null;
+}
+
+/** Decode Google Hotels' base64url `ts=` location token into readable text (e.g. "108, Wanhua District, Taipei City" or "/m/0dqyw: Osaka"). */
+export function decodeGoogleTsLocation(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const ts = new URL(url).searchParams.get('ts');
+    if (!ts) return null;
+    const raw = Buffer.from(ts.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    const cleaned = raw.replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').replace(/\s+/g, ' ').trim();
+    return cleaned || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Unwrap Google Hotels click-redirect URLs (`/travel/lodging/clk?pcurl=...`). */
+function unwrapHotelUrl(url: string): URL | null {
+  try {
+    let parsed = new URL(url);
+    if (/(^|\.)google\./i.test(parsed.hostname) && parsed.pathname.includes('/travel/lodging/clk')) {
+      const target = parsed.searchParams.get('pcurl') ?? parsed.searchParams.get('url');
+      if (target && /^https?:\/\//i.test(target)) parsed = new URL(target);
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/** Booking.com hotel page country code (`/hotel/tw/...` → `'tw'`, `/hotel/jp/...` → `'jp'`), unwrapping Google click wrappers. */
+export function bookingCountryCode(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const parsed = unwrapHotelUrl(url);
+  if (!parsed || !/(^|\.)booking\.com$/i.test(parsed.hostname)) return null;
+  const match = /^\/hotel\/([a-z]{2})\//i.exec(parsed.pathname);
+  return match ? match[1]!.toLowerCase() : null;
+}
+
+/** Hotel's local billing currency embedded in Booking (`xfc=`) or Agoda (`PartnerCurrency=`) partner links. */
+export function siteLocalCurrency(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const parsed = unwrapHotelUrl(url);
+  if (!parsed) return null;
+  const host = parsed.hostname.toLowerCase();
+  if (/(^|\.)booking\.com$/.test(host)) {
+    const xfc = parsed.searchParams.get('xfc')?.trim().toUpperCase();
+    return xfc && /^[A-Z]{3}$/.test(xfc) ? xfc : null;
+  }
+  if (/(^|\.)agoda\.com$/.test(host)) {
+    const cur = parsed.searchParams.get('PartnerCurrency')?.trim().toUpperCase();
+    return cur && /^[A-Z]{3}$/.test(cur) ? cur : null;
+  }
+  return null;
+}
+
+export interface HotelCountryHints {
+  name?: string | null;
+  address?: string | null;
+  link?: string | null;
+  sites?: readonly { url?: string | null }[];
+  profileUrl?: string | null;
+}
+
+/**
+ * Whether a hotel clearly belongs to a different country than the requested destination city.
+ * Checks Booking `/hotel/<cc>/`, Booking/Agoda local hotel currency (`xfc` / `PartnerCurrency`),
+ * Google `ts=` decoded search location, Overview address, and unmistakable Taiwan hotel-name markers.
+ */
+export function isWrongCountryHotel(city: string, hints: HotelCountryHints): boolean {
+  const expected = expectedCountryCode(city);
+  const isTaiwanDest = expected === 'tw' || TAIWAN_DESTINATION.test(city);
+  const expectedCurrency = expected ? COUNTRY_CURRENCIES[expected] ?? null : null;
+
+  const urls = [hints.profileUrl, hints.link, ...(hints.sites ?? []).map(site => site.url)];
+  for (const url of urls) {
+    if (!url) continue;
+    const cc = bookingCountryCode(url);
+    if (cc) {
+      if (expected && cc !== expected) return true;
+      if (!isTaiwanDest && cc === 'tw') return true;
+    }
+    const localCurrency = siteLocalCurrency(url);
+    if (localCurrency) {
+      if (expectedCurrency && localCurrency !== expectedCurrency) return true;
+      if (!isTaiwanDest && localCurrency === 'TWD') return true;
+    }
+    const unwrapped = unwrapHotelUrl(url);
+    if (!isTaiwanDest && unwrapped && /\.tw$/i.test(unwrapped.hostname) && /taipei|taiwan|ximen/i.test(unwrapped.pathname)) {
+      return true;
+    }
+  }
+
+  const tsLoc = decodeGoogleTsLocation(hints.link);
+  if (tsLoc) {
+    if (!isTaiwanDest && TAIWAN_TS_LOCATION.test(tsLoc)) return true;
+    if (expected === 'jp' && NON_JAPAN_COUNTRY.test(tsLoc)) return true;
+  }
+
+  if (hints.address) {
+    if (!isTaiwanDest && TAIWAN_ADDRESS_COUNTRY.test(hints.address)) return true;
+    if (expected === 'jp' && NON_JAPAN_COUNTRY.test(hints.address)) return true;
+  }
+
+  if (hints.name && !isTaiwanDest && TAIWAN_HOTEL_NAME.test(hints.name)) {
+    return true;
+  }
+
+  return false;
+}
+
 export function nearbyAreas(city: string): NearbyArea[] {
   return NEARBY_AREAS[city] ?? [];
 }

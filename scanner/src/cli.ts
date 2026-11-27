@@ -14,7 +14,7 @@
 // This portable build prints locally; Hermes owns account setup and delivery.
 import { CITY_NAMES, cityLabel } from './deals/message';
 import { TRIP_LENGTHS, buildCardSearchUrl, isTripLength, type TripLength } from './deals/explore-page';
-import { buildHotelNameUrl, hotelArea, inTown, isNonSmokingRoom, isPrivateHotel, isSmokingRoom, nearbyAreas, parseGoogleRoomRow, roomKey, type HotelListQuote, type SiteOffer, type HotelPhotos } from './deals/hotel-page';
+import { buildHotelNameUrl, hotelArea, inTown, isNonSmokingRoom, isPrivateHotel, isSmokingRoom, isWrongCountryHotel, nearbyAreas, parseGoogleRoomRow, roomKey, sanitizeCachedPicks, type HotelListQuote, type SiteOffer, type HotelPhotos } from './deals/hotel-page';
 import { bookFlight, captureHotelList, checkHotelRooms, deliverDealAlerts, NoFittingFlight, retryIfEmpty, runDueDealWatches, searchFlights } from './deals/runner';
 import type { FlightOption } from './deals/flight-list';
 import { SHORT_TRIP_NIGHTS, chooseBookingOption, chooseFlight, chooseReturn, hotelTimes, readPrefs, type Prefs } from './prefs';
@@ -227,8 +227,29 @@ async function cached<T>(kind: string, key: readonly unknown[], compute: () => P
   return value;
 }
 
-const cachedStays = (watch: { currency: string; country: string }, stay: Stay, candidatesWanted: number, limit: number, fresh = false) =>
-  cached('stays', [stay, watch.currency, watch.country, candidatesWanted, limit, readUserPrefs().nonSmoking], () => verifiedStays(watch, stay, candidatesWanted, limit), fresh);
+// Do NOT pass pick.area as address: hotelArea() outputs Chinese ward labels like "台東區" (Tokyo Taito-ku).
+const isWrongCountryPick = (city: string, pick: Pick): boolean =>
+  isWrongCountryHotel(city, {
+    name: pick.hotel.name,
+    link: pick.hotel.link,
+    sites: pick.sites,
+    profileUrl: freshProfile(pick.hotel.name)?.hotelUrl ?? null,
+  });
+
+async function cachedStays(watch: { currency: string; country: string }, stay: Stay, candidatesWanted: number, limit: number, fresh = false) {
+  const key = [stay, watch.currency, watch.country, candidatesWanted, limit, readUserPrefs().nonSmoking] as const;
+  const result = await cached('stays', key, () => verifiedStays(watch, stay, candidatesWanted, limit), fresh);
+  if (!result) return null;
+  const profileUrlFor = (name: string) => freshProfile(name)?.hotelUrl ?? null;
+  const cleaned = sanitizeCachedPicks(stay.city, result.picks, profileUrlFor);
+  if (!fresh && cleaned.needsRefresh) {
+    // Cache was 100% contaminated by wrong-country fallback hotels (e.g. Taipei for Saga); refetch cleanly.
+    const refreshed = await cached('stays', key, () => verifiedStays(watch, stay, candidatesWanted, limit), true);
+    if (!refreshed) return null;
+    return { ...refreshed, picks: sanitizeCachedPicks(stay.city, refreshed.picks, profileUrlFor).picks };
+  }
+  return cleaned.picks.length === result.picks.length ? result : { ...result, picks: cleaned.picks };
+}
 
 // A flight page without a verdict or flights is a failed load, not worth keeping.
 const cachedFlights = (origin: string, stay: Stay, currency: string, country: string, fresh = false) =>
@@ -244,7 +265,8 @@ async function verifiedStays(watch: { currency: string; country: string }, stay:
   const { nonSmoking } = prefs;
   // The checks go to the cheapest hotels the user's bars allow (class, rating), the value candidates;
   // others only when too few pass.
-  const rooms = hotels.filter(isPrivateHotel);
+  const rooms = hotels.filter(hotel => isPrivateHotel(hotel)
+    && !isWrongCountryHotel(stay.city, { name: hotel.name, link: hotel.link, profileUrl: freshProfile(hotel.name)?.hotelUrl ?? null }));
   const eligible = rooms.filter(hotel => (hotel.stars ?? 0) >= prefs.minStars && hotel.rating !== null && hotel.rating >= prefs.minRating)
     .sort((a, b) => a.nightly - b.nightly);
   const rest = rooms.filter(hotel => !eligible.includes(hotel)).sort((a, b) => a.nightly - b.nightly);
@@ -257,7 +279,15 @@ async function verifiedStays(watch: { currency: string; country: string }, stay:
       ratingSource: hotel.rating !== null ? 'Google' : found?.source ?? null };
   });
   const shared = rated.filter(hotel => checks.get(hotel.name)?.status === 'shared');
+  const inRightCountry = (hotel: HotelListQuote) => !isWrongCountryHotel(stay.city, {
+    name: hotel.name,
+    address: addresses.get(hotel.name) ?? null,
+    link: hotel.link,
+    sites: sites.get(hotel.name) ?? [],
+    profileUrl: freshProfile(hotel.name)?.hotelUrl ?? null,
+  });
   const verified = rated.flatMap(hotel => {
+    if (!inRightCountry(hotel)) return [];
     const check = checks.get(hotel.name);
     // Rank and quote by the recommended site's price (oddly cheap offers such as dorm beds are skipped
     // there), else Google's "from" price; a hotel known to sell dorm beds too is priced no lower than
@@ -274,7 +304,7 @@ async function verifiedStays(watch: { currency: string; country: string }, stay:
     return chosen ? [{ hotel, ...chosen }] : [];
   });
   const areaOf = (name: string) => { const address = addresses.get(name); return address ? hotelArea(address).label : '位置未確認'; };
-  const unconfirmed = rated.filter(hotel => checks.get(hotel.name)?.status === 'unknown');
+  const unconfirmed = rated.filter(hotel => checks.get(hotel.name)?.status === 'unknown' && inRightCountry(hotel));
   const picks: Pick[] = [
     ...verified.map(({ hotel, room, nightly, bedsUnconfirmed }) => ({ hotel, nightly, note: `${bedsUnconfirmed ? '❔' : '✅'} ${roomType(room.name)}${bedsUnconfirmed ? BEDS_UNCONFIRMED : ''}`, sites: sites.get(hotel.name) ?? [], photos: photos.get(hotel.name), area: areaOf(hotel.name) })),
     ...unconfirmed.filter(hotel => { const address = addresses.get(hotel.name); return !address || inTown(stay.city, hotelArea(address).postcode); })
@@ -492,6 +522,7 @@ async function profileHotels(limit = PROFILES_PER_RUN): Promise<number> {
     const [stay, currency] = saved.key;
     for (const pick of saved.value?.picks ?? []) {
       if (fetched >= limit) return fetched;
+      if (isWrongCountryPick(stay.city, pick)) continue;
       if (freshProfile(pick.hotel.name)) continue;
       await bookingRoomsFor(pick, stay, currency);
       fetched++;
@@ -514,6 +545,7 @@ async function ownBathrooms(picks: readonly Pick[], stay: Stay, currency: string
   const result: Pick[] = [];
   for (let i = 0; i < picks.length; i++) {
     let pick = picks[i]!;
+    if (isWrongCountryPick(stay.city, pick)) continue;
     const rooms = roomLists[i]!;
     // Google's room names hide bunk beds and shared bathrooms (Minn Kamata's "Quadruple Room" is bunks,
     // DOYANEN BAKURO's twin a bunk with a shared bathroom): a hotel whose rooms for the party on Booking

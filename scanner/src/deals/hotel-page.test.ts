@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hotelArea, inTown, isDormBed, isNonSmokingRoom, isSmokingRoom, parseGoogleRoomRow, roomKey, buildHotelNameUrl, buildHotelSearchUrl, classifyRooms, dateInputLabel, isPrivateHotel, nearbyAreas, parseBelowUsual, parseHotelList, parseLabelRatings, parseRoomOffers, parseSiteOffers, attachSiteLinks, largePhotoUrl, roomPhotos, summarizeHotels, bestSiteRating } from './hotel-page';
+import { bookingCountryCode, decodeGoogleTsLocation, expectedCountryCode, filterHotelsForCity, hotelArea, inTown, isDormBed, isNonSmokingRoom, isSmokingRoom, isWrongCountryHotel, parseGoogleRoomRow, parseOverviewAddress, roomKey, sanitizeCachedPicks, siteLocalCurrency, buildHotelNameUrl, buildHotelSearchUrl, classifyRooms, dateInputLabel, isPrivateHotel, nearbyAreas, parseBelowUsual, parseHotelList, parseLabelRatings, parseRoomOffers, parseSiteOffers, attachSiteLinks, largePhotoUrl, roomPhotos, summarizeHotels, bestSiteRating } from './hotel-page';
 
 // Excerpt captured from a live Google Hotels search (Okinawa, Nov 1-7 2026, hl=en, curr=TWD).
 const LIVE = `Skip to main content
@@ -447,5 +447,131 @@ describe('dorm beds', () => {
     expect(hotelArea('2 Chome-14-1 Fujimi, Chuo Ward, Chiba, 260-0015, Japan').label).toBe('千葉中央區');
     expect(hotelArea('1 Chome-1 Sakuragicho, Omiya Ward, Saitama, 330-0854, Japan').label).toBe('埼玉大宮區');
     expect(hotelArea('3 Chome-7-11 Kotobuki, Taito City, Tokyo 111-0042, Japan').label).toBe('台東區');
+  });
+
+  // 2026-11-28: Google Hotels fell back to Taipei Wanhua on "Sort by: Lowest price" for Osaka and Saga,
+  // leaking Yi Su Hotel, Art'otel Ximending TAIPEI, Finders Hotel, and 綺樂文旅 康定館 into Japan results.
+  it('rejects wrong-country hotels (Taipei/Taiwan IP fallback) in overseas city searches', () => {
+    const taipeiTs = Buffer.from('\x08\x01\x12#108, Wanhua District, Taipei City', 'utf8').toString('base64url');
+    const osakaTs = Buffer.from('\x08\x01\x12\x0f/m/0dqyw: Osaka', 'utf8').toString('base64url');
+    const yiSuGoogleLink = `https://www.google.com/travel/search?q=cheap+3+star+hotels+in+Osaka&ts=${taipeiTs}`;
+    const osakaGoogleLink = `https://www.google.com/travel/search?q=cheap+3+star+hotels+in+Osaka&ts=${osakaTs}`;
+    const bookingTwClick = 'https://www.google.com/travel/lodging/clk?pc=x&pcurl='
+      + encodeURIComponent('https://www.booking.com/searchresults.en.html?dest_id=1303201&xfc=TWD&selected_currency=TWD');
+    const bookingJpClick = 'https://www.google.com/travel/lodging/clk?pc=x&pcurl='
+      + encodeURIComponent('https://www.booking.com/searchresults.en.html?dest_id=359485&xfc=JPY&selected_currency=TWD');
+    const agodaTwClick = 'https://www.google.com/travel/lodging/clk?pc=x&pcurl='
+      + encodeURIComponent('https://www.agoda.com/partners/partnersearch.aspx?PartnerCurrency=TWD&Currency=TWD');
+    const agodaJpClick = 'https://www.google.com/travel/lodging/clk?pc=x&pcurl='
+      + encodeURIComponent('https://www.agoda.com/partners/partnersearch.aspx?PartnerCurrency=JPY&Currency=TWD');
+
+    expect(expectedCountryCode('Osaka')).toBe('jp');
+    expect(expectedCountryCode('Saga')).toBe('jp');
+    expect(expectedCountryCode('Seoul')).toBe('kr');
+    expect(expectedCountryCode('Taipei')).toBe('tw');
+    expect(decodeGoogleTsLocation(yiSuGoogleLink)).toContain('Wanhua District, Taipei City');
+    expect(bookingCountryCode('https://www.booking.com/hotel/tw/yi-su-taipei-taipei5.en-gb.html')).toBe('tw');
+    expect(bookingCountryCode('https://www.booking.com/hotel/jp/apa-osaka-higobashi-ekimae.en-gb.html')).toBe('jp');
+    expect(siteLocalCurrency(bookingTwClick)).toBe('TWD');
+    expect(siteLocalCurrency(bookingJpClick)).toBe('JPY');
+    expect(siteLocalCurrency(agodaTwClick)).toBe('TWD');
+    expect(siteLocalCurrency(agodaJpClick)).toBe('JPY');
+
+    // Every signal independently catches Taipei contamination in Osaka / Saga
+    expect(isWrongCountryHotel('Osaka', { name: 'Yi Su Hotel', link: yiSuGoogleLink })).toBe(true);
+    expect(isWrongCountryHotel('Osaka', { name: 'Yi Su Hotel', profileUrl: 'https://www.booking.com/hotel/tw/yi-su-taipei-taipei5.en-gb.html' })).toBe(true);
+    expect(isWrongCountryHotel('Osaka', { name: 'Finders Hotel', sites: [{ url: bookingTwClick }] })).toBe(true);
+    expect(isWrongCountryHotel('Saga', { name: 'Honey Prince', sites: [{ url: agodaTwClick }] })).toBe(true);
+    expect(isWrongCountryHotel('Osaka', { name: "Art'otel Ximending TAIPEI" })).toBe(true);
+    expect(isWrongCountryHotel('Osaka', { name: '綺樂文旅 康定館' })).toBe(true);
+    expect(isWrongCountryHotel('Saga', { name: '探索汽車旅館-中和館' })).toBe(true);
+    expect(isWrongCountryHotel('Osaka', { name: 'Yi Su Hotel', address: 'No. 123, Wanhua District, Taipei City, Taiwan 108' })).toBe(true);
+    expect(isWrongCountryHotel('Osaka', { name: 'Yi Su Hotel', sites: [{ url: 'https://www.google.com/travel/lodging/clk?pc=x&pcurl=https://redirect.hexa.tw/google-delegate/navigate-pms/YISUTAIPEI' }] })).toBe(true);
+
+    // Real Osaka hotels (even with missing Overview address) must NEVER be false-positived
+    expect(isWrongCountryHotel('Osaka', {
+      name: 'APA Hotel Osaka Higobashi Ekimae',
+      address: '1 Chome-2-1 Tosabori, Nishi Ward, Osaka, 550-0001, Japan',
+      link: osakaGoogleLink,
+      sites: [{ url: bookingJpClick }],
+      profileUrl: 'https://www.booking.com/hotel/jp/apa-osaka-higobashi-ekimae.en-gb.html',
+    })).toBe(false);
+    expect(isWrongCountryHotel('Osaka', {
+      name: 'APA Hotel & Resort Midosuji Hommachi-Ekimae Tower',
+      link: osakaGoogleLink,
+      sites: [{ url: agodaJpClick }],
+    })).toBe(false);
+    expect(isWrongCountryHotel('Osaka', {
+      name: 'イビスバジェット大阪梅田',
+      address: null,
+      link: osakaGoogleLink,
+    })).toBe(false);
+
+    // Domestic Taiwan search allows Taiwan hotels
+    expect(isWrongCountryHotel('Taipei', {
+      name: 'Yi Su Hotel',
+      link: yiSuGoogleLink,
+      sites: [{ url: bookingTwClick }],
+      profileUrl: 'https://www.booking.com/hotel/tw/yi-su-taipei-taipei5.en-gb.html',
+    })).toBe(false);
+
+    // Regression: Japanese wards/cities sharing kanji with Taiwan (台東區=Taito, 板橋=Itabashi, 高雄=Takao)
+    // must NEVER be rejected as Taiwan hotels.
+    expect(isWrongCountryHotel('Tokyo', { name: 'APA Hotel Asakusa', address: '台東區' })).toBe(false);
+    expect(isWrongCountryHotel('Tokyo', { name: '東横INN板橋駅前', address: '1-1-1 Itabashi, Itabashi City, Tokyo 173-0004, Japan' })).toBe(false);
+    expect(isWrongCountryHotel('Kyoto', { name: '高雄観光ホテル' })).toBe(false);
+  });
+
+  it('parses Overview addresses without mistaking Google Taiwan footer text for a hotel address', () => {
+    const footerOnly = 'Back to list of all results\nAPA Hotel Asakusa\nLoading details...\nLocation: Taiwan · Currency: New Taiwan Dollar (TWD)';
+    expect(parseOverviewAddress(footerOnly)).toBeNull();
+
+    const jpWithTaiwanFooter = 'Back to list of all results\nAPA Hotel Asakusa\n3 Chome-7-11 Kotobuki, Taito City, Tokyo 111-0042, Japan\nLocation: Taiwan · Currency: New Taiwan Dollar';
+    expect(parseOverviewAddress(jpWithTaiwanFooter)).toBe('3 Chome-7-11 Kotobuki, Taito City, Tokyo 111-0042, Japan');
+
+    const twAddress = 'Back to list of all results\nYi Su Hotel\nNo. 42, Kangding Rd, Wanhua District, Taipei City, Taiwan 108\nLocation: Taiwan';
+    expect(parseOverviewAddress(twAddress)).toBe('No. 42, Kangding Rd, Wanhua District, Taipei City, Taiwan 108');
+  });
+
+  it('filters hotel lists and cached stays (keeping real hotels and flagging 100% wrong-country caches for refresh)', () => {
+    const taipeiTs = Buffer.from('\x08\x01\x12#108, Wanhua District, Taipei City', 'utf8').toString('base64url');
+    const osakaTs = Buffer.from('\x08\x01\x12\x0f/m/0dqyw: Osaka', 'utf8').toString('base64url');
+    const taipeiLink = `https://www.google.com/travel/search?q=hotels&ts=${taipeiTs}`;
+    const osakaLink = `https://www.google.com/travel/search?q=hotels&ts=${osakaTs}`;
+
+    // captureHotelList helper: partial contamination keeps real Osaka hotels
+    const partial = filterHotelsForCity('Osaka', [
+      { name: 'Yi Su Hotel', link: taipeiLink },
+      { name: 'APA Hotel Osaka Higobashi Ekimae', link: osakaLink },
+    ]);
+    expect(partial?.map(h => h.name)).toEqual(['APA Hotel Osaka Higobashi Ekimae']);
+
+    // captureHotelList helper: 100% contamination returns null so caller retries instead of caching empty
+    expect(filterHotelsForCity('Saga', [
+      { name: 'Funny Ximen Hotel', link: taipeiLink },
+      { name: 'MEANDER Taipei', link: taipeiLink },
+    ])).toBeNull();
+    expect(filterHotelsForCity('Osaka', [])).toEqual([]);
+
+    // cachedStays helper: partial contamination strips Taipei without refetch; 100% contamination triggers refresh
+    const partialCache = sanitizeCachedPicks('Osaka', [
+      { hotel: { name: 'Yi Su Hotel', link: taipeiLink }, sites: [], area: '位置未確認' },
+      { hotel: { name: 'APA Hotel Osaka Higobashi Ekimae', link: osakaLink }, sites: [], area: '大阪西區' },
+    ], name => name === 'Yi Su Hotel' ? 'https://www.booking.com/hotel/tw/yi-su-taipei-taipei5.en-gb.html' : null);
+    expect(partialCache.needsRefresh).toBe(false);
+    expect(partialCache.picks.map(p => p.hotel.name)).toEqual(['APA Hotel Osaka Higobashi Ekimae']);
+
+    const fullPoisonCache = sanitizeCachedPicks('Saga', [
+      { hotel: { name: 'Funny Ximen Hotel', link: taipeiLink }, sites: [], area: '位置未確認' },
+    ]);
+    expect(fullPoisonCache).toEqual({ picks: [], needsRefresh: true });
+
+    // Tokyo Taito-ku (台東區) and Itabashi (板橋) picks stay intact in cache
+    const tokyoCache = sanitizeCachedPicks('Tokyo', [
+      { hotel: { name: 'APA Hotel Asakusa' }, sites: [], area: '台東區' },
+      { hotel: { name: '東横INN板橋駅前' }, sites: [], area: '板橋區' },
+    ]);
+    expect(tokyoCache.needsRefresh).toBe(false);
+    expect(tokyoCache.picks.map(p => p.hotel.name)).toEqual(['APA Hotel Asakusa', '東横INN板橋駅前']);
   });
 });
