@@ -139,8 +139,15 @@ def latest_cost_output(session_id, home):
 
 
 def tool_outputs(session_id, home, tool):
-    """Outputs of every run of `tool` (str or tuple of str) in this conversation, oldest first
-    (empty if none), or UNKNOWN if the conversation cannot be found."""
+    """Outputs of every terminal run of `tool` (str or tuple of str) in this conversation, oldest first
+    (empty if none), or UNKNOWN if the conversation cannot be found.
+
+    2026-11-27 (live Osaka test 11233): two bugs caused every confirmed price to be stripped:
+    1. Non-terminal tool calls (e.g. agent_preferences review drafts) mentioning 'travel.py overseas'
+       were matched and shadowed the real terminal output.
+    2. Hermes proactive pruning appends a short stub ('... — full result: .../cache/pruned/...')
+       with the same tool_call_id; reading ORDER BY id DESC grabbed the stub instead of the
+       original unpruned terminal output stored earlier in messages."""
     names = (tool,) if isinstance(tool, str) else tuple(tool)
     where = " OR ".join("tool_calls LIKE ?" for _ in names)
     params = (session_id, *(f"%{name}%" for name in names))
@@ -149,19 +156,35 @@ def tool_outputs(session_id, home, tool):
             with sessions.read_only(path) as db:
                 if not db.execute("SELECT 1 FROM messages WHERE session_id = ? LIMIT 1", (session_id,)).fetchone():
                     continue
-                ids = [call_id for (value,) in db.execute(
-                           f"SELECT tool_calls FROM messages WHERE session_id = ? AND ({where}) ORDER BY id",
-                           params)
-                       for call_id, _, arguments in sessions.calls(value)
-                       if any((TRAVEL_PLAN_SUBCMD.search(arguments) if name == "travel.py" else name in arguments)
-                              for name in names)]
+                ids, seen_ids = [], set()
+                for (value,) in db.execute(
+                        f"SELECT tool_calls FROM messages WHERE session_id = ? AND ({where}) ORDER BY id",
+                        params):
+                    for call_id, fn_name, arguments in sessions.calls(value):
+                        if fn_name and fn_name != "terminal":
+                            continue
+                        if call_id in seen_ids:
+                            continue
+                        if any((TRAVEL_PLAN_SUBCMD.search(arguments) if name == "travel.py" else name in arguments)
+                               for name in names):
+                            seen_ids.add(call_id)
+                            ids.append(call_id)
                 outputs = []
                 for call_id in ids:
-                    row = db.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'tool' "
-                                     "AND tool_call_id = ? ORDER BY id DESC LIMIT 1", (session_id, call_id)).fetchone()
-                    output = sessions.result_text(row[0]) if row else ""
-                    if output:
-                        outputs.append(output)
+                    rows = db.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'tool' "
+                                      "AND tool_call_id = ? ORDER BY id ASC", (session_id, call_id)).fetchall()
+                    chosen = ""
+                    for (raw_content,) in rows:
+                        text = sessions.result_text(raw_content)
+                        if not text:
+                            continue
+                        if " — full result: " not in text:
+                            chosen = text
+                            break
+                        if not chosen:
+                            chosen = text
+                    if chosen:
+                        outputs.append(chosen)
                 return outputs
         except sqlite3.Error:  # busy, or a layout `setup.py check` reports: no evidence either way
             continue
@@ -1029,8 +1052,8 @@ def corrected_costs(text, outputs):
         total = TOTAL_AMOUNT.search(line)
         if items is not None:
             # The cost lines right under a total are the tool's own item lines (2026-11-19: 「捷運及公車
-            # NT$240」 merged a confirmed NT$180 with an unconfirmed NT$60).
-            if "NT$" in line and not total:
+            # NT$240」 merged a confirmed NT$180 with an unconfirmed NT$60). Never drop overseas ✈️/🏨 lines.
+            if "NT$" in line and not total and not line.lstrip().startswith(("✈", "🏨")):
                 continue
             lines.extend(items)
             items, placed = None, True
@@ -1038,7 +1061,9 @@ def corrected_costs(text, outputs):
             if total.group(1) in runs:
                 run = runs[total.group(1)].splitlines()
                 line = line[:total.start()] + run[0].strip()
-                items = [item.strip() for item in run[1:] if item.strip().startswith("•")]
+                found_items = [item.strip() for item in run[1:] if item.strip().startswith("•")]
+                if found_items:
+                    items = found_items
         elif item_key(line) in tool_items:
             if placed:
                 continue  # the tool's line is already under 總計
@@ -1308,14 +1333,14 @@ def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
         hide = confirmed_only(home)
         if hide or TOTAL_AMOUNT.search(fixed):
             outputs = tool_outputs(session_id, home, COST_TOOLS)
-            runs = [] if outputs is UNKNOWN else [blocks for o in outputs if (blocks := cost_blocks(o))]
+            last_out = outputs[-1] if (outputs and outputs is not UNKNOWN) else ""
+            is_overseas = any(ln.strip().startswith(("✈", "🏨", "機票與住宿：")) for ln in last_out.splitlines())
+            runs = [] if (outputs is UNKNOWN or is_overseas) else [blocks for o in outputs if (blocks := cost_blocks(o))]
             blocks = [b for run in runs for b in run]  # one per package of a format-plan.py --package run
             fixed = corrected_costs(fixed, blocks) if blocks else fixed
             if hide:  # trust the single most recent plan/cost output chronologically
-                if outputs and outputs is not UNKNOWN:
-                    last_out = outputs[-1]
+                if last_out:
                     last_blocks = cost_blocks(last_out)
-                    is_overseas = any(ln.strip().startswith(("✈️", "🏨", "機票與住宿：")) for ln in last_out.splitlines())
                     latest = [last_out] if (is_overseas or not last_blocks) else ["\n".join(last_blocks)]
                 else:
                     latest = []
