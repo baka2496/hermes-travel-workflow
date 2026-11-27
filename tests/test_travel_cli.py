@@ -217,6 +217,31 @@ class OverseasTravelTests(unittest.TestCase):
         self.assertNotIn("MIYUKIHOUSE", res.stdout)
         self.assertNotIn("預算", res.stdout)  # JPY budget must not be treated as TWD
 
+    def test_clean_booking_url_unwraps_google_clk_and_strips_tracking_bloat(self):
+        travel = load_travel()
+        google_clk = (
+            "https://www.google.com/travel/lodging/clk?pc=" + "A" * 220
+            + "&pcurl=https%3A%2F%2Fwww.booking.com%2Fsearchresults.en.html%3Fdest_id%3D1688307"
+            + "%26highlighted_hotels%3D1688307%26checkin%3D2027-06-12%26checkout%3D2027-06-16"
+            + "%26group_adults%3D2%26selected_currency%3DTWD%26ext_price_total%3D7162.75%26xfc%3DTWD"
+        )
+        cleaned_hotel = travel.clean_booking_url(google_clk)
+        self.assertTrue(cleaned_hotel.startswith("https://www.booking.com/searchresults.en.html?"))
+        self.assertIn("highlighted_hotels=1688307", cleaned_hotel)
+        self.assertIn("checkin=2027-06-12", cleaned_hotel)
+        self.assertNotIn("ext_price_total", cleaned_hotel)
+        self.assertLess(len(cleaned_hotel), 180)
+
+        airline_url = (
+            "https://booking.tigerairtw.com/?type=single&outbound=KIX-TPE&departureDate=2027-06-16"
+            "&adult=2&utm_source=GoogleFlights&gclid=" + "B" * 160 + "&gclsrc=gf"
+        )
+        cleaned_flight = travel.clean_booking_url(airline_url)
+        self.assertIn("outbound=KIX-TPE", cleaned_flight)
+        self.assertIn("departureDate=2027-06-16", cleaned_flight)
+        self.assertNotIn("gclid", cleaned_flight)
+        self.assertNotIn("utm_source", cleaned_flight)
+
     def test_four_guests_scaling_and_season_weekend_and_subitem_filtering(self):
         travel = load_travel()
         # Per-person ticket scales with 4 guests
@@ -545,6 +570,36 @@ class ReplyCheckTravelIntegrationTests(unittest.TestCase):
             final_text = local_reply if after is None else after
             self.assertIn("總計 NT$300", final_text)
             self.assertIn("預算剩 NT$1,700", final_text)
+
+            # Regression (2026-11-27 live Osaka 11233): pruned stub with same tool_call_id & non-terminal tool_call
+            # mentioning 'travel.py overseas' must NEVER shadow the original unpruned terminal output.
+            con = sqlite3.connect(db_path)
+            ov_args = json.dumps({"command": '"C:/py/python.exe" "C:/h/shared/travel-workflow/travel.py" overseas 大阪 2027-06-12 2027-06-16 --guests 2 --budget 45000'})
+            ov_tc = json.dumps([{"id": "c_ov", "function": {"name": "terminal", "arguments": ov_args}}])
+            ov_card = (
+                "06/12–06/16 大阪 5天4夜（2人）\n"
+                "總計 NT$29,736（預算剩 NT$15,264）\n"
+                "✈️ 泰國獅航／台灣虎航 2人 NT$22,572（含估算托運行李）\n"
+                "🏨 ① Yi Su Hotel（雙人房）\n"
+                "• 4晚 NT$7,164｜⭐3.6｜[Booking](https://www.booking.com/hotel/jp/yi-su-hotel.html)"
+            )
+            pruned_stub = '[terminal] ran "travel.py overseas..." -> exit 0, 13 lines output — full result: ~/cache/pruned/x.txt'
+            review_tc = json.dumps([{"id": "c_rev", "function": {"name": "tool_call", "arguments": json.dumps({"calls": [{"name": "agent_preferences", "arguments": {"action": "review", "note": "travel.py overseas"}}]})}}])
+            con.execute("INSERT INTO messages VALUES (8, 's3', 'user', '查大阪 預算45000', NULL, NULL, NULL, 8)")
+            con.execute("INSERT INTO messages VALUES (9, 's3', 'assistant', '', NULL, ?, NULL, 9)", (ov_tc,))
+            con.execute("INSERT INTO messages VALUES (10, 's3', 'tool', ?, 'c_ov', NULL, 'terminal', 10)", (json.dumps({"output": ov_card}),))
+            # Proactive pruning appends a short stub with the same tool_call_id
+            con.execute("INSERT INTO messages VALUES (11, 's3', 'tool', ?, 'c_ov', NULL, 'terminal', 11)", (pruned_stub,))
+            # Non-terminal review tool mentions 'travel.py overseas' in its args
+            con.execute("INSERT INTO messages VALUES (12, 's3', 'assistant', '', NULL, ?, NULL, 12)", (review_tc,))
+            con.execute("INSERT INTO messages VALUES (13, 's3', 'tool', '{\"accepted\": true}', 'c_rev', NULL, 'agent_preferences', 13)")
+            con.commit()
+            con.close()
+            after_ov = plugin.transform_llm_output(response_text=ov_card, session_id="s3", turn_id="t_ov")
+            final_ov = ov_card if after_ov is None else after_ov
+            self.assertIn("總計 NT$29,736", final_ov)
+            self.assertIn("NT$22,572", final_ov)
+            self.assertIn("NT$7,164", final_ov)
 
             # Hard cap on web_search per turn prevents 108-search spirals; resets across turns & ignores empty turn_id
             for i in range(plugin.MAX_SEARCHES_PER_TURN):

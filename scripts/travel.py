@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 from types import SimpleNamespace
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent
@@ -281,7 +282,7 @@ def parse_deals_plan(raw_text, city, outbound_date, return_date, guests):
                     lm = MD_LINK_RE.search(sub)
                     if lm:
                         hotel["site_name"] = lm.group(1).strip()
-                        hotel["booking_url"] = lm.group(2).strip()
+                        hotel["booking_url"] = clean_booking_url(lm.group(2).strip())
                 elif re.match(r"^\d+晚", sub):
                     hotel["stay_total"] = parse_amount(sub)
                     if "含機票" in sub:
@@ -306,7 +307,7 @@ def parse_deals_plan(raw_text, city, outbound_date, return_date, guests):
         elif ln.startswith("✈️ "):
             lm = MD_LINK_RE.search(ln)
             if lm:
-                label, url = lm.group(1).strip(), lm.group(2).strip()
+                label, url = lm.group(1).strip(), clean_booking_url(lm.group(2).strip())
                 if label.startswith("去 "):
                     fl["outbound_text"] = label[2:].strip()
                     fl["outbound_url"] = url
@@ -317,7 +318,7 @@ def parse_deals_plan(raw_text, city, outbound_date, return_date, guests):
             lm = MD_LINK_RE.search(ln)
             if lm:
                 fl["inbound_text"] = lm.group(1).strip()[2:].strip()
-                fl["inbound_url"] = lm.group(2).strip()
+                fl["inbound_url"] = clean_booking_url(lm.group(2).strip())
                 fl["separate_tickets"] = True
         elif ln.startswith("回 "):
             fl["inbound_text"] = ln[2:].strip()
@@ -330,11 +331,11 @@ def parse_deals_plan(raw_text, city, outbound_date, return_date, guests):
         elif ln.startswith("[在 Google Flights 看全部航班]"):
             lm = MD_LINK_RE.search(ln)
             if lm:
-                fl["all_flights_url"] = lm.group(2).strip()
+                fl["all_flights_url"] = clean_booking_url(lm.group(2).strip())
         elif ln.startswith("[看全部住宿]"):
             lm = MD_LINK_RE.search(ln)
             if lm:
-                data["all_hotels_url"] = lm.group(2).strip()
+                data["all_hotels_url"] = clean_booking_url(lm.group(2).strip())
         i += 1
 
     # Determine baggage status (exact 3-case rule)
@@ -352,6 +353,48 @@ def parse_deals_plan(raw_text, city, outbound_date, return_date, guests):
         data["reason"] = "未讀到有效航班或住宿價格"
 
     return data
+
+
+TRACKING_QUERY_KEYS = {
+    "gclid", "gclsrc", "fbclid", "msclkid",
+    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+    "affiliatechannel",
+}
+BOOKING_KEEP_KEYS = {
+    "dest_id", "highlighted_hotels", "dest_type",
+    "checkin", "checkout", "group_adults", "no_rooms", "lang", "selected_currency",
+}
+
+
+def clean_booking_url(url):
+    """Unwrap Google lodging/clk click trackers and strip ad tracking params so Markdown cards stay concise."""
+    if not url or not isinstance(url, str):
+        return url
+    u = url.strip()
+    try:
+        parts = urlsplit(u)
+        # 1. Unwrap Google Hotels click-redirect wrappers (?pc=...&pcurl=https://...)
+        if "google." in parts.netloc.lower() and "/travel/lodging/clk" in parts.path:
+            q = dict(parse_qsl(parts.query, keep_blank_values=False))
+            target = q.get("pcurl") or q.get("url")
+            if target and target.startswith(("http://", "https://")):
+                u = target
+                parts = urlsplit(u)
+        # 2. Strip tracking bloat while keeping all functional flight/hotel booking params
+        q_pairs = parse_qsl(parts.query, keep_blank_values=False)
+        if not q_pairs:
+            return u
+        netloc_low = parts.netloc.lower()
+        if "booking.com" in netloc_low and "searchresults" in parts.path.lower():
+            filtered = [(k, v) for k, v in q_pairs if k in BOOKING_KEEP_KEYS]
+            if filtered:
+                return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(filtered), ""))
+        filtered = [(k, v) for k, v in q_pairs if k.lower() not in TRACKING_QUERY_KEYS]
+        if len(filtered) != len(q_pairs):
+            return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(filtered), parts.fragment))
+    except ValueError:
+        return u
+    return u
 
 
 def _baggage_label(status):
@@ -542,8 +585,9 @@ def cmd_overseas(args):
     phone_check = load_module("phone_check", "phone-check.py")
     message = format_overseas_card(parsed, budget=budget, top=args.top, calendar_note=cal_note, show_unconfirmed=show_unconfirmed)
     report = phone_check.check(message)
-    # Auto-trim to 1 hotel if 2 hotels pushed past the 14-line phone limit
-    if report["problems"] and args.top > 1 and any(p.get("kind") == "too_long" for p in report["problems"]):
+    # Auto-trim to 1 hotel if 2 hotels pushed past the 14-line phone limit or 1150-char raw Markdown budget
+    if (report["problems"] and args.top > 1 and any(p.get("kind") == "too_long" for p in report["problems"])) \
+            or (len(message) > 1150 and args.top > 1):
         shorter = format_overseas_card(parsed, budget=budget, top=1, calendar_note=cal_note, show_unconfirmed=show_unconfirmed)
         shorter_report = phone_check.check(shorter)
         if not shorter_report["problems"]:
