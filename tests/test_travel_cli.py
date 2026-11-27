@@ -273,6 +273,18 @@ class OverseasTravelTests(unittest.TestCase):
         ]
         label, unit, qty = travel.select_best_price_line(spring_spa_lines, nights=0, guests=2, is_weekend=True)
         self.assertEqual((label, unit, qty), ("山景溫泉湯屋", 2000, 1))
+        # Spaced '平 日' / '假 日' (WaterHouse) must pick 假日 on weekends, and 加收 surcharges must be skipped
+        waterhouse_lines = ["定 價 $2500", "平 日 $ 1980", "假 日 $ 2280", "*加人400元/人。", "兒童每位加收NT$300元"]
+        self.assertEqual(travel.select_best_price_line(waterhouse_lines, nights=0, guests=2, is_weekend=True)[1], 2280)
+        self.assertEqual(travel.select_best_price_line(waterhouse_lines, nights=0, guests=2, is_weekend=False)[1], 1980)
+        # Overnight stay (nights=1) must NEVER quote a day-trip bathhouse or generic price line
+        self.assertIsNone(travel.select_best_price_line(["雙人湯屋：NT$400 / 60分鐘", "預約政策｜價格：假日NT$1,800"], nights=1, guests=2))
+        # Public bath / ticket without '/人' still multiplies by guests; full-width '～' month range works
+        self.assertEqual(travel.select_best_price_line(["大眾池 NT$300"], nights=0, guests=4)[1:], (300, 4))
+        self.assertEqual(
+            travel.select_best_price_line(["夏季 5月～9月：599元 / 60分鐘", "冬季 10月～4月：699元 / 60分鐘"], nights=0, guests=2, month=7)[1],
+            599,
+        )
         # Legacy owner_quoted_budget without currency/scope still works for TWD; JPY (even without currency) is rejected
         self.assertEqual(travel.owner_quoted_budget({"budget": {"amount": 2000, "quote": "預算2000"}}), 2000)
         self.assertIsNone(travel.owner_quoted_budget({"budget": {"amount": 50000, "quote": "預算5萬日圓"}}))

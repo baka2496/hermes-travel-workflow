@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "note": "HTTPS-verified official venue pages checked live by places.py harvest. Every URL is fetched live through page-prices.py before entering places.json.",
+  "places": [
+    {
+      "name": "北投享溫泉（湯屋）",
+      "area": "北投",
+      "kind": "溫泉",
+      "official": "https://www.waterhouse.com.tw/",
+      "price_page": "https://www.waterhouse.com.tw/Facilities.aspx?id=2"
+    },
+    {
+      "name": "北投麗禧溫泉酒店",
+      "area": "北投",
+      "kind": "溫泉",
+      "official": "https://www.gvrb.com.tw/",
+      "price_page": "https://www.gvrb.com.tw/service/%e6%b9%af%e5%b1%8b-2/"
+    },
+    {
+      "name": "北投亞太飯店",
+      "area": "北投",
+      "kind": "溫泉",
+      "official": "https://www.apresort.com.tw/",
+      "price_page": "https://www.apresort.com.tw/hot-spring-suite.php"
+    },
+    {
+      "name": "中冠礁溪大飯店",
+      "area": "礁溪",
+      "kind": "溫泉",
+      "official": "https://www.art-spa-hotel.com.tw/",
+      "price_page": "https://www.art-spa-hotel.com.tw/service?.s"
+    },
+    {
+      "name": "北投春天酒店",
+      "area": "北投",
+      "kind": "住宿",
+      "official": "https://www.springresort.com.tw/room/",
+      "price_page": "https://www.springresort.com.tw/room/price.php",
+      "note": "官網載明房內觀音石浴池白磺原湯"
+    },
+    {
+      "name": "金山海灣溫泉會館",
+      "area": "金山",
+      "kind": "住宿",
+      "official": "https://www.sakurabay-hotel.com.tw/",
+      "price_page": "https://www.sakurabay-hotel.com.tw/",
+      "note": "官網載明房內溫泉套房"
+    },
+    {
+      "name": "中冠礁溪大飯店（溫泉客房）",
+      "area": "礁溪",
+      "kind": "住宿",
+      "official": "https://www.art-spa-hotel.com.tw/housesdetail3?.c",
+      "price_page": "https://www.art-spa-hotel.com.tw/housesdetail3?.dd",
+      "phone": "03-988-2011",
+      "note": "官網載明房內獨立泡湯池"
+    },
+    {
+      "name": "新北市立黃金博物館",
+      "area": "瑞芳",
+      "kind": "自然步道、看風景",
+      "official": "https://www.gep.ntpc.gov.tw/",
+      "price_page": "https://www.gep.ntpc.gov.tw/xmdoc/cont?xsmsid=0G246368552167800609"
+    },
+    {
+      "name": "十分瀑布",
+      "area": "平溪",
+      "kind": "自然步道、看風景",
+      "official": "https://www.taiwan.net.tw/m1.aspx?sNo=0001091&id=2188",
+      "price_page": "https://www.taiwan.net.tw/m1.aspx?sNo=0001091&id=2188",
+      "no_fee_listed": true
+    },
+    {
+      "name": "基隆廟口夜市",
+      "area": "基隆",
+      "kind": "老街、小吃、夜市",
+      "official": "https://www.taiwan.net.tw/m1.aspx?sNo=0001016&id=298",
+      "price_page": "https://www.taiwan.net.tw/m1.aspx?sNo=0001016&id=298",
+      "no_fee_listed": true
+    }
+  ]
+}

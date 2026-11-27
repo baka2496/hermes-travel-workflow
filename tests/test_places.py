@@ -132,6 +132,40 @@ class PlacesTests(unittest.TestCase):
         self.assertIn("重查：甲湯屋", out)
         self.assertEqual(self.saved()[0]["status"], "ok")
 
+    def test_harvest_catalog_enforces_https_and_deduplicates_distinct_taiwan_ids(self):
+        catalog = self.root / "catalog.json"
+        catalog.write_text(json.dumps({
+            "schema_version": 1,
+            "places": [
+                {"name": "甲湯屋", "area": "北投", "kind": "溫泉",
+                 "official": "https://a.example/", "price_page": "https://a.example/spa"},
+                {"name": "不安全http", "area": "金山", "kind": "溫泉",
+                 "official": "http://bad.example/", "price_page": "http://bad.example/spa"},
+                {"name": "夜市一", "area": "士林", "kind": "老街、小吃、夜市",
+                 "official": "https://www.taiwan.net.tw/m1.aspx?sNo=0001090&id=154",
+                 "price_page": "https://www.taiwan.net.tw/m1.aspx?sNo=0001090&id=154", "no_fee_listed": True},
+                {"name": "夜市二", "area": "台北萬華", "kind": "老街、小吃、夜市",
+                 "official": "https://www.taiwan.net.tw/m1.aspx?sNo=0001090&id=18",
+                 "price_page": "https://www.taiwan.net.tw/m1.aspx?sNo=0001090&id=18", "no_fee_listed": True},
+            ],
+        }, ensure_ascii=False), encoding="utf-8")
+        # Both night markets share the Tourism Bureau phone; distinct id= must keep both!
+        html = page("測試頁", "<p>雙人湯屋 NT$800 / 60分鐘</p><p>電話 (02)2349-1500</p>")
+        rc, out, err = self.run_places(
+            "harvest", "--counties", "none", "--catalog", str(catalog), "--dry-run", html=html
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertIn("預覽模式", out)
+        self.assertFalse(self.places.exists())
+
+        rc, out, err = self.run_places(
+            "harvest", "--counties", "none", "--catalog", str(catalog), html=html
+        )
+        self.assertEqual(rc, 0, err)
+        names = [p["name"] for p in self.saved()]
+        self.assertEqual(names, ["甲湯屋", "夜市一", "夜市二"])
+        self.assertNotIn("不安全http", names)
+
 
 class StrftimeTests(unittest.TestCase):
     def test_no_strftime_format_holds_chinese(self):

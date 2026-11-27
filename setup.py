@@ -106,6 +106,8 @@ PACKAGE_SCRIPTS = (
     ("scripts/place-photo.py", "shared/travel-workflow/place-photo.py"),
     ("scripts/page-prices.py", "shared/travel-workflow/page-prices.py"),
     ("scripts/places.py", "shared/travel-workflow/places.py"),
+    ("scripts/places-catalog.json", "shared/travel-workflow/places-catalog.json"),
+    ("scripts/db-maintain.py", "shared/travel-workflow/db-maintain.py"),
     ("skills/travel-planning/SKILL.md", "profiles/travel-commander/skills/travel-planning/SKILL.md"),
 )
 

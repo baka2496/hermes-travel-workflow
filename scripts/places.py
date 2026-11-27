@@ -15,6 +15,7 @@ Only this script writes places.json (the plugin refuses a hand edit): the file s
 keeps where its prices came from and when they were read.
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import importlib.util
 import json
@@ -22,6 +23,7 @@ from pathlib import Path
 import re
 import sys
 import time
+import urllib.request
 
 HERE = Path(__file__).resolve().parent
 KINDS = ("溫泉", "住宿", "自然步道、看風景", "海邊", "老街、小吃、夜市", "其他")
@@ -184,6 +186,220 @@ def recheck(args):
     print("\n".join(changed) or "都在期限內，不用重查")
 
 
+TAIWAN_COUNTIES = {
+    "台北": "0001090", "臺北": "0001090",
+    "新北": "0001091",
+    "基隆": "0001105",
+    "桃園": "0001107",
+    "宜蘭": "0001106",
+    "新竹": "0001108",
+    "台中": "0001112", "臺中": "0001112",
+    "台南": "0001119", "臺南": "0001119",
+    "高雄": "0001121",
+    "花蓮": "0001124",
+    "台東": "0001123", "臺東": "0001123",
+}
+DEFAULT_HARVEST_COUNTIES = ("台北", "新北", "基隆", "桃園", "宜蘭")
+OLD_STREET_HINTS = ("老街", "夜市", "廟口", "九份", "平溪", "烏來", "金山", "淡水", "深坑", "三峽", "鶯歌", "大溪老街")
+BEACH_HINTS = ("海水浴場", "海濱", "漁港", "漁人碼頭", "燈塔", "左岸", "蜜月灣", "沙灘", "海岸", "潮境", "野柳", "和平島", "富貴角", "淺水灣", "白沙灣", "金色水岸")
+TRAIL_HINTS = ("步道", "瀑布", "國家公園", "森林遊樂區", "茶園", "風景特定區", "風景區", "擎天崗", "冷水坑", "象山", "自然保留區", "運動公園", "官邸")
+SKIP_TITLES = ("遊客中心", "水上運動中心", "溫泉", "博物館", "美術館", "紀念館", "文化館")
+AREA_TOKENS = (
+    "北投", "士林", "淡水", "九份", "瑞芳", "烏來", "金山", "萬里", "石門", "三芝", "平溪", "十分",
+    "深坑", "三峽", "鶯歌", "八里", "福隆", "貢寮", "鼻頭", "基隆", "大溪", "桃園", "礁溪", "羅東",
+    "宜蘭", "陽明山", "貓空", "華西街", "饒河", "寧夏", "野柳", "富貴角", "淡水",
+)
+
+
+def classify_taiwan_attraction(title, county):
+    """Classify an official taiwan.net.tw attraction title into (kind, area) or None if outside scope."""
+    t = (title or "").strip()
+    if not t or t.startswith("#") or any(s in t for s in SKIP_TITLES):
+        return None
+    if any(k in t for k in ("老街", "夜市", "廟口")) or t in ("九份", "平溪", "烏來", "金山"):
+        kind = "老街、小吃、夜市"
+    elif any(k in t for k in BEACH_HINTS):
+        kind = "海邊"
+    elif any(k in t for k in TRAIL_HINTS):
+        kind = "自然步道、看風景"
+    else:
+        return None
+    area = next((tok for tok in AREA_TOKENS if tok in t), county)
+    if area in ("九份", "鼻頭"):
+        area = "瑞芳"
+    elif area == "十分":
+        area = "平溪"
+    elif area == "野柳":
+        area = "萬里"
+    elif area == "富貴角":
+        area = "石門"
+    elif area == "華西街":
+        area = "台北萬華"
+    elif area == "貓空":
+        area = "台北文山"
+    elif area == "陽明山":
+        area = "台北士林"
+    elif county == "宜蘭" and area == "大溪":
+        area = "宜蘭頭城"
+    return kind, area
+
+
+def crawl_taiwan_county(county, timeout=12, max_items=12, html_text=None):
+    """Fetch official taiwan.net.tw county attraction list and return candidate dicts."""
+    sno = TAIWAN_COUNTIES.get(county)
+    if not sno:
+        return []
+    url = f"https://www.taiwan.net.tw/m1.aspx?sNo={sno}"
+    if html_text is None:
+        prices = load("page_prices", "page-prices.py")
+        try:
+            html_text, _ = prices.fetch(url, timeout=timeout)
+        except Exception:
+            return []
+    matches = re.findall(r'href="(m1\.aspx\?sNo=0001\d+&amp;id=\d+)"[^>]*title="([^"]+)"', html_text)
+    if not matches:
+        matches = re.findall(r'href="(m1\.aspx\?sNo=0001\d+&id=\d+)"[^>]*title="([^"]+)"', html_text)
+    found, seen = [], set()
+    for href, title in matches:
+        full_url = "https://www.taiwan.net.tw/" + href.replace("&amp;", "&")
+        if full_url in seen:
+            continue
+        cls = classify_taiwan_attraction(title, county)
+        if not cls:
+            continue
+        kind, area = cls
+        seen.add(full_url)
+        display_name = title.strip()
+        if display_name in ("九份", "平溪", "烏來", "金山"):
+            display_name = display_name + "老街"
+        found.append({
+            "name": display_name,
+            "area": area,
+            "kind": kind,
+            "official": full_url,
+            "price_page": full_url,
+            "no_fee_listed": True,
+        })
+        if len(found) >= max_items:
+            break
+    return found
+
+
+def harvest(args):
+    """Automatically expand & refresh places.json from official gov tourism indexes + curated catalog."""
+    raw_counties = (args.counties or "").strip()
+    counties = [] if raw_counties.lower() in ("none", "") else [c.strip() for c in raw_counties.split(",") if c.strip()]
+    unknown = [c for c in counties if c not in TAIWAN_COUNTIES]
+    if unknown:
+        return f"不支援的縣市：{'、'.join(unknown)}（支援：{'、'.join(sorted(set(TAIWAN_COUNTIES)))}）"
+
+    candidates_list = []
+    seen_urls = set()
+
+    # 1. Load curated official venue catalog (hot springs, verified in-room-tub stays, ticketed parks)
+    catalog_path = Path(args.catalog) if args.catalog else (HERE / "places-catalog.json")
+    if catalog_path.is_file():
+        try:
+            cat = json.loads(catalog_path.read_text(encoding="utf-8-sig"))
+            for item in (cat.get("places") or []):
+                if isinstance(item, dict) and item.get("name") and item.get("price_page"):
+                    candidates_list.append(item)
+                    seen_urls.add(item["price_page"])
+        except (OSError, ValueError) as exc:
+            return f"讀取目錄檔 {catalog_path} 失敗：{exc}"
+
+    # 2. Crawl official taiwan.net.tw regional attraction indexes in parallel
+    if counties:
+        with ThreadPoolExecutor(max_workers=min(5, len(counties))) as pool:
+            crawled_groups = list(pool.map(
+                lambda c: crawl_taiwan_county(c, timeout=args.timeout, max_items=args.max_per_county),
+                counties,
+            ))
+        for group in crawled_groups:
+            for item in group:
+                if item["price_page"] not in seen_urls:
+                    seen_urls.add(item["price_page"])
+                    candidates_list.append(item)
+
+    if not candidates_list:
+        return "沒有可抓的候選來源（請指定 --counties 或 --catalog）"
+
+    # 3. Verify every candidate live in parallel through page-prices.py
+    def verify_one(item):
+        found, err = read_page(item["price_page"], args)
+        return item, found, err
+
+    with ThreadPoolExecutor(max_workers=min(6, len(candidates_list))) as pool:
+        results = list(pool.map(verify_one, candidates_list))
+
+    places = read_places(args.places)
+    plan = load("format_plan", "format-plan.py")
+    added, updated, skipped = [], [], []
+
+    for item, found, err in results:
+        official_url = item.get("official") or item["price_page"]
+        if not official_url.startswith("https://") or not item["price_page"].startswith("https://"):
+            skipped.append(f"{item['name']}（非 https 網址，booking-links.py 不接受）")
+            continue
+        if found is None:
+            skipped.append(f"{item['name']}（{err}）")
+            continue
+        _title, lines, phones, free = found
+        if not lines and not free and item.get("no_fee_listed"):
+            free = "unlisted"
+        if not lines and not free:
+            skipped.append(f"{item['name']}（官網讀不到價格）")
+            continue
+        place = {
+            "name": item["name"].strip(),
+            "area": item["area"].strip(),
+            "kind": item["kind"],
+            "official": item.get("official") or item["price_page"],
+            "price_page": item["price_page"],
+            "phone": item.get("phone") or (phones[0].split()[-1] if phones else ""),
+            "prices": lines[:6],
+            "free": free,
+            "checked_at": today(args.now),
+            "status": "ok",
+        }
+        matched_idx = None
+        new_tw_id = re.search(r"[?&]id=(\d+)", place["price_page"])
+        for i, old in enumerate(places):
+            # Match by exact name first
+            if old.get("name") == place["name"]:
+                matched_idx = i
+                break
+            # Distinct taiwan.net.tw attraction IDs are different places even if sharing the Tourism Bureau hotline
+            old_tw_id = re.search(r"[?&]id=(\d+)", old.get("price_page") or "")
+            if ("taiwan.net.tw" in place["price_page"] and "taiwan.net.tw" in (old.get("price_page") or "")
+                    and new_tw_id and old_tw_id and new_tw_id.group(1) != old_tw_id.group(1)):
+                continue
+            if old.get("kind") == place["kind"] and plan.same_place(identity(old), identity(place)):
+                matched_idx = i
+                break
+        if matched_idx is not None:
+            places[matched_idx] = {**places[matched_idx], **place,
+                                   "added_at": places[matched_idx].get("added_at", today(args.now))}
+            updated.append(place["name"])
+        else:
+            places.append({**place, "added_at": today(args.now)})
+            added.append(place["name"])
+
+    if not args.dry_run and (added or updated):
+        write_places(args.places, places)
+
+    by_kind = {}
+    for p in places:
+        if p.get("status") == "ok":
+            by_kind[p.get("kind", "?")] = by_kind.get(p.get("kind", "?"), 0) + 1
+    mode = "（預覽模式，未寫入）" if args.dry_run else ""
+    print(f"地點庫自動擴充完成{mode}：新增 {len(added)} 筆、更新 {len(updated)} 筆、略過 {len(skipped)} 筆；有效總數 {sum(by_kind.values())} 筆。")
+    print("各類分布：" + "、".join(f"{k} {v}" for k, v in sorted(by_kind.items(), key=lambda kv: -kv[1])))
+    if skipped:
+        print("略過原因：" + "；".join(skipped[:8]))
+    return None
+
+
 def main():
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8")
@@ -210,6 +426,12 @@ def main():
     some.add_argument("--limit", type=int, default=6)
     again = sub.add_parser("recheck")
     again.add_argument("--days", type=int, default=7)
+    harv = sub.add_parser("harvest", help="從官方觀光網與精選官網目錄自動抓點、即時驗價並收進地點庫")
+    harv.add_argument("--counties", default=",".join(DEFAULT_HARVEST_COUNTIES),
+                      help="要抓的縣市，逗號分隔（例如 台北,新北,基隆,桃園,宜蘭，或 none 只跑目錄）")
+    harv.add_argument("--catalog", help="精選官網 JSON 目錄（預設 scripts/places-catalog.json）")
+    harv.add_argument("--max-per-county", type=int, default=12)
+    harv.add_argument("--dry-run", action="store_true", help="只預覽結果，不改寫 places.json")
     sub.add_parser("list")
     args = parser.parse_args()
     if args.command == "add":
@@ -220,6 +442,8 @@ def main():
             print(text)
     elif args.command == "recheck":
         problem = recheck(args)
+    elif args.command == "harvest":
+        problem = harvest(args)
     else:
         for place in read_places(args.places):
             print(f"{place.get('status', '?'):6} {place.get('checked_at', '?')} {place.get('area', '')}・"

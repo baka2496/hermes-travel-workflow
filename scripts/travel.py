@@ -565,9 +565,9 @@ def cmd_overseas(args):
 # Local: auto-pick from places.json + parallel live price fetch + format-plan
 # ---------------------------------------------------------------------------
 
-OVERNIGHT_HINTS = ("住宿", "雙人房", "兩人房", "標準房", "精緻", "雅緻", "和室", "客房", "一晚", "套房", "每晚")
-DAY_HINTS = ("湯屋", "泡湯", "大眾池", "裸湯", "小時", "分鐘", "門票", "入場", "入園", "全票", "雙人池")
-BAD_ITEM_HEADS = ("價位資訊", "收費標準", "價格表", "價目表", "費用說明", "房價表", "平假日定義", "溫泉房型", "營運時間及收費", "時間及票價")
+OVERNIGHT_HINTS = ("住宿", "雙人房", "兩人房", "二人房", "三人房", "四人房", "家庭房", "單人房", "雙床房", "標準房", "精緻", "雅緻", "和室", "客房", "一晚", "套房", "每晚", "房型", "一大床", "兩小床")
+DAY_HINTS = ("湯屋", "泡湯", "大眾池", "裸湯", "小時", "分鐘", "門票", "入場", "入園", "全票", "雙人池", "風呂")
+BAD_ITEM_HEADS = ("價位資訊", "收費標準", "價格表", "價目表", "費用說明", "房價表", "平假日定義", "溫泉房型", "營運時間及收費", "時間及票價", "預約政策", "溫泉介紹", "飯店服務")
 
 
 def _extract_prices_from_line(line):
@@ -602,21 +602,29 @@ def _clean_room_label(line, fallback):
 
 
 PURE_NOISE_HINTS = (
-    "加價", "加購", "加人", "加床", "加時", "逾時", "延時", "每加",
+    "加價", "加購", "加人", "加床", "加時", "加收", "酌收", "逾時", "延時", "每加", "另加", "另計",
     "毛巾", "礦泉水", "沐浴品", "清潔費", "押金", "折抵", "憑券",
     "車資", "單程", "退款", "退訂", "處理費", "熱水", "冷水", "其他收費",
-    "優待票", "敬老", "孩童", "兒童票", "愛心票",
+    "優待票", "敬老", "孩童", "兒童票", "愛心票", "罰鍰", "停車",
 )
 MEAL_SUBITEM_HINTS = ("享用", "套餐", "贈送")
-MONTH_RANGE_RE = re.compile(r"(?P<a>1[0-2]|0?[1-9])\s*月?\s*[-–~至到]\s*(?P<b>1[0-2]|0?[1-9])\s*月")
+MONTH_RANGE_RE = re.compile(r"(?P<a>1[0-2]|0?[1-9])\s*月?\s*[-–~～－〜至到]\s*(?P<b>1[0-2]|0?[1-9])\s*月")
 DATE_RANGE_RE = re.compile(
-    r"(?:(?P<y1>\d{4})[/-])?(?P<m1>1[0-2]|0?[1-9])/(?P<d1>\d{1,2})\s*[-–~至到]\s*"
+    r"(?:(?P<y1>\d{4})[/-])?(?P<m1>1[0-2]|0?[1-9])/(?P<d1>\d{1,2})\s*[-–~～－〜至到]\s*"
     r"(?:(?P<y2>\d{4})[/-])?(?P<m2>1[0-2]|0?[1-9])/(?P<d2>\d{1,2})"
 )
 
 
+def _normalize_day_words(text):
+    t = re.sub(r"平\s+日", "平日", text or "")
+    t = re.sub(r"假\s+日", "假日", t)
+    t = re.sub(r"定\s+價", "定價", t)
+    return t.replace("非假日", "平日")
+
+
 def _is_subitem_or_noise(line):
-    if any(k in line for k in PURE_NOISE_HINTS):
+    body = (line or "").split("｜")[-1]
+    if any(k in body for k in PURE_NOISE_HINTS) or any(k in (line or "") for k in ("罰鍰", "車資", "退款", "退訂", "其他收費")):
         return True
     if any(k in line for k in MEAL_SUBITEM_HINTS):
         if not any(k in line for k in OVERNIGHT_HINTS) and not any(k in line for k in DAY_HINTS):
@@ -652,7 +660,7 @@ def _is_expired_promo(line, trip_date):
 def _price_for_day_type(line, is_weekend):
     """Extract the right price from a line like '旺季平日$2,600元、假日$3,000元' (ignoring section heading before ｜)."""
     body = (line or "").split("｜")[-1]
-    norm = body.replace("非假日", "平日")
+    norm = _normalize_day_words(body)
     if is_weekend and "假日" in norm:
         after = norm.split("假日", 1)[1]
         found = _extract_prices_from_line(after)
@@ -713,19 +721,22 @@ def select_best_price_line(lines, *, nights=0, guests=2, is_weekend=True, month=
 
         # Day-of-week check on the price body (after ｜) so a heading like '平假日定義' doesn't mask '/ 平日'
         body = ln.split("｜")[-1]
-        norm = body.replace("非假日", "平日")
+        norm = _normalize_day_words(body)
         weekend_pen = 0
         if is_weekend and "平日" in norm and "假日" not in norm and "平假日" not in norm:
             weekend_pen = 2
         elif (not is_weekend) and "假日" in norm and "平日" not in norm and "平假日" not in norm:
             weekend_pen = 2
+        # Prefer actual 平日/假日 rates over rack rate 定價 when day-specific rates exist
+        if "定價" in norm and "平日" not in norm and "假日" not in norm:
+            weekend_pen += 1
 
         mode_score = 0
         if nights > 0:
-            if any(k in ln for k in OVERNIGHT_HINTS):
-                mode_score = -2
-            elif any(k in ln for k in ("湯屋", "分鐘", "小時", "大眾池")):
-                mode_score = 3
+            has_overnight = any(k in ln for k in OVERNIGHT_HINTS)
+            if not has_overnight:
+                continue  # overnight stays must match an explicit room/stay line, never a bathhouse or generic price
+            mode_score = -2
         else:
             if any(k in ln for k in DAY_HINTS):
                 mode_score = -2
@@ -733,8 +744,8 @@ def select_best_price_line(lines, *, nights=0, guests=2, is_weekend=True, month=
                 mode_score = 2
 
         per_person = (
-            any(k in ln for k in ("/人", "每人", "一位", "成人", "全票", "每張", "單人"))
-            and not any(k in ln for k in ("雙人", "2人", "兩人", "四人", "4人", "三人", "3人", "家庭"))
+            any(k in ln for k in ("/人", "每人", "一位", "成人", "全票", "每張", "單人", "大眾池", "裸湯", "門票", "入場", "入園"))
+            and not any(k in ln for k in ("雙人", "2人", "兩人", "四人", "4人", "三人", "3人", "家庭", "湯屋"))
         )
         if per_person:
             qty = max(1, guests) * (nights if nights > 0 else 1)
@@ -1040,7 +1051,9 @@ def cmd_local(args):
 PASSTHROUGH = {
     "detail": ("format-plan.py", []),
     "add-place": ("places.py", ["add"]),
+    "harvest": ("places.py", ["harvest"]),
     "places": ("places.py", []),
+    "maintain": ("db-maintain.py", []),
     "photo": ("place-photo.py", []),
     "prices": ("page-prices.py", []),
     "schedule": ("calendar-check.py", []),
