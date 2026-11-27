@@ -161,7 +161,7 @@ def pick(args):
                                                   else "免費" if place.get("free") else "未確認")
         lines.append(f"• {place['name']}｜{place['area']}・{place['kind']}｜{said}｜{price}"
                      f"｜價格頁 {place['price_page']}" + (f"｜📞 {place['phone']}" if place.get("phone") else ""))
-    lines.append("用之前先對這幾頁跑 page-prices.py（價格以今天讀到的為準），再用 format-plan.py --package 組方案。")
+    lines.append("建議直接用 travel.py local 一次完成查價與組方案；手動重查則先跑 page-prices.py 再用 format-plan.py --package。")
     return "\n".join(lines), None
 
 

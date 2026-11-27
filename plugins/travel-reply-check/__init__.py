@@ -838,8 +838,31 @@ def stale_patch_problem(tool_name, args):
     return None if squash(old) in squash(text) else STALE_PATCH
 
 
+# 2026-11-27 (live Telegram test): searching Beitou hot springs spiraled into 108 web_search calls
+# and 21 minutes when places.json had only 2 entries. Cap searches per turn so the bot always wraps up.
+MAX_SEARCHES_PER_TURN = 6
+SEARCH_COUNTS = sessions.Recent()  # (session_id, turn_id) -> web_search count
+SEARCH_CAP_PROBLEM = ("這輪已經搜尋很多次了，不要再繼續 web_search。"
+                      "直接用目前查到的官網跑 travel.py local 或 format-plan.py（不足 3 家就照實說明）回覆使用者。")
+
+
+def search_loop_problem(tool_name, session_id, turn_id):
+    if tool_name != "web_search" or not session_id:
+        return None
+    key = (session_id, turn_id or "")
+    count = SEARCH_COUNTS.get(key, 0) + 1
+    SEARCH_COUNTS[key] = count
+    return SEARCH_CAP_PROBLEM if count > MAX_SEARCHES_PER_TURN else None
+
+
 def pre_tool_call(tool_name, args, task_id="", session_id="", turn_id="", **kwargs):
     if isinstance(args, dict):
+        try:
+            why = search_loop_problem(tool_name, session_id, turn_id)
+        except Exception:
+            why = None
+        if why:
+            return {"action": "block", "message": why}
         try:
             why = tamper_problem(tool_name, args) or kanban_problem(tool_name, args)
         except Exception:

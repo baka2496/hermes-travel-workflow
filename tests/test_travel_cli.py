@@ -76,6 +76,12 @@ SAMPLE_LCC_SEPARATE = """🏨 *大阪 住宿*
 4晚 NT$5,684
 2人含機票 NT$27,298
 每人 NT$13,649
+
+「含機票」總價＝住宿＋每人機票
+有「＋托運行李」那行：廉航行李費已加進去，不要再加
+有去回航班、沒有那行：一般航空，票價已含托運行李
+寫「這次沒讀到訂票頁」或「沒有符合時段的航班」：
+總價沒含托運行李，回報要寫「未含托運行李」
 """
 
 
@@ -134,12 +140,16 @@ class OverseasTravelTests(unittest.TestCase):
         self.assertIn("超出預算 NT$5,468", out)
 
     def test_lcc_separate_tickets_links_both_legs_and_marks_baggage_estimated(self):
+        # Includes real PLAN_TOTAL_NOTE footer: must NOT trigger 未含托運行李 or drop bag estimate!
         rc, out, err = self.run_overseas(
             SAMPLE_LCC_SEPARATE, "--guests", "2", "--budget", "45000",
             city="大阪", out="2027-05-15", ret="2027-05-19",
         )
         self.assertEqual(rc, 0, err)
         self.assertIn("含估算托運行李", out)
+        self.assertNotIn("未含托運行李", out)
+        # 2 * (9007 + 1800) = 21,614; 21,614 + 5,684 = 27,298
+        self.assertIn("2人 NT$21,614", out)
         self.assertIn("[去程機票](https://www.tigerairtw.com/out)", out)
         self.assertIn("[回程機票](https://www.tigerairtw.com/back)", out)
         self.assertIn("FAWN HOTEL（雙人房）", out)
@@ -207,14 +217,46 @@ class OverseasTravelTests(unittest.TestCase):
         self.assertNotIn("MIYUKIHOUSE", res.stdout)
         self.assertNotIn("預算", res.stdout)  # JPY budget must not be treated as TWD
 
-    def test_four_guests_scaling_for_local_prices(self):
+    def test_four_guests_scaling_and_season_weekend_and_subitem_filtering(self):
         travel = load_travel()
         # Per-person ticket scales with 4 guests
         label, unit, qty = travel.select_best_price_line(["全票：200元 / 每人"], nights=0, guests=4)
         self.assertEqual((unit, qty), (200, 4))
-        # Overnight 2 nights for 4 guests needs 2 rooms x 2 nights = 4 room-nights
+        # Overnight 2 nights for 4 guests in a 2-person room needs 2 rooms x 2 nights = 4 room-nights
         label, unit, qty = travel.select_best_price_line(["標準雙人房：3000元"], nights=2, guests=4)
         self.assertEqual((unit, qty), (3000, 4))
+        # 4 guests in a 4-person family room needs only 1 room x 2 nights = 2 room-nights
+        label, unit, qty = travel.select_best_price_line(["溫馨四人房：4800元"], nights=2, guests=4)
+        self.assertEqual((unit, qty), (4800, 2))
+        # Day-trip bathhouse (湯屋) is 1 room/session, not multiplied by room count
+        label, unit, qty = travel.select_best_price_line(["家庭湯屋：800元 / 60分鐘"], nights=0, guests=4)
+        self.assertEqual((unit, qty), (800, 1))
+        # Real sweetme.com.tw lines on a winter Sunday (11/29): must skip meal sub-item ($980),
+        # skip off-season ($2,400/$1,200), and pick weekend price (假日 $3,000 / $1,500), NOT weekday!
+        sweetme_lines = [
+            "饗湯專案｜淡季平假日$2,400元",
+            "饗湯專案｜旺季平日$2,600元、假日$3,000元",
+            "饗湯專案｜1.享用經典套餐$980元2客",
+        ]
+        label, unit, qty = travel.select_best_price_line(sweetme_lines, nights=0, guests=2, is_weekend=True, month=11)
+        self.assertEqual((unit, qty), (3000, 1))
+        # Legacy owner_quoted_budget without currency/scope still works; JPY is rejected
+        self.assertEqual(travel.owner_quoted_budget({"budget": {"amount": 2000, "quote": "預算2000"}}), 2000)
+        self.assertIsNone(travel.owner_quoted_budget({"budget": {"amount": 50000, "currency": "JPY", "quote": "5萬日圓"}}))
+
+    def test_profile_hermes_home_resolves_shared_root(self):
+        travel = load_travel()
+        import os
+        old = os.environ.get("HERMES_HOME")
+        try:
+            fake_profile = Path("fake") / "hermes" / "profiles" / "project-manager"
+            os.environ["HERMES_HOME"] = str(fake_profile)
+            self.assertEqual(travel.default_hermes_root(), Path("fake") / "hermes")
+        finally:
+            if old is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = old
 
 
 class LocalTravelTests(unittest.TestCase):
@@ -274,19 +316,6 @@ class LocalTravelTests(unittest.TestCase):
         self.assertIn("開車／騎車前往礁溪", res.stdout)
         self.assertNotIn("大眾運輸", res.stdout)
         self.assertIn("總計 NT$600，預算剩 NT$1,400", res.stdout)
-
-    def test_profile_hermes_home_resolves_shared_root(self):
-        travel = load_travel()
-        import os
-        old = os.environ.get("HERMES_HOME")
-        try:
-            os.environ["HERMES_HOME"] = r"C:\fake\hermes\profiles\project-manager"
-            self.assertEqual(travel.default_hermes_root(), Path(r"C:\fake\hermes"))
-        finally:
-            if old is None:
-                os.environ.pop("HERMES_HOME", None)
-            else:
-                os.environ["HERMES_HOME"] = old
 
 
 class SyncLiveTests(unittest.TestCase):
@@ -393,6 +422,14 @@ class ReplyCheckTravelIntegrationTests(unittest.TestCase):
             after = plugin.transform_llm_output(response_text=local_reply, session_id="s1", turn_id="t3")
             final_text = local_reply if after is None else after
             self.assertIn("總計 NT$300", final_text)
+            self.assertIn("預算剩 NT$1,700", final_text)
+
+            # Hard cap on web_search per turn prevents 108-search spirals
+            for i in range(plugin.MAX_SEARCHES_PER_TURN):
+                self.assertIsNone(plugin.pre_tool_call("web_search", {"query": f"q{i}"}, session_id="s_cap", turn_id="t_cap"))
+            blocked = plugin.pre_tool_call("web_search", {"query": "too_many"}, session_id="s_cap", turn_id="t_cap")
+            self.assertIsInstance(blocked, dict)
+            self.assertEqual(blocked.get("action"), "block")
         finally:
             if old is None:
                 os.environ.pop("HERMES_HOME", None)
