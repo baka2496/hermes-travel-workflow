@@ -570,7 +570,7 @@ DATES_PROBLEM = ("使用者寫的 {span} 是 {nights} 晚，可是又說「{said
                  "（「{first}」還是「{second}」），不要自己挑日期，也先不要查價格，等使用者選了再查、再組方案。"
                  "clarify 沒人回答或逾時，就把這個問題當最後回覆送出，結束這一輪。")
 # While the dates are open, research waits too (2026-11-26 exam: 19 minutes of searching around a refused plan).
-RESEARCH = re.compile(r'travel\.py["\']?\s+(?:local|overseas|detail|prices|photo|add-place)\b|format-plan|trip-cost|page-prices|places\.py|booking-links|place-photo')
+RESEARCH = re.compile(r'travel\.py(?:\\*["\'])?\s+(?:local|overseas|detail|prices|photo|add-place)\b|format-plan|trip-cost|page-prices|places\.py|booking-links|place-photo')
 RESEARCH_TOOLS = ("web_search", "web_extract", "browser_exec")
 
 
@@ -718,7 +718,7 @@ def offered(session_id, home):
                         "AND (tool_calls LIKE ? OR tool_calls LIKE ?)",
                         (session_id, since, "%format-plan%", "%travel.py%")):
                     for call_id, _, arguments in sessions.calls(value):
-                        if "--package" not in arguments and not re.search(r'travel\.py["\']?\s+local\b', arguments):
+                        if "--package" not in arguments and not re.search(r'travel\.py(?:\\*["\'])?\s+local\b', arguments):
                             continue
                         row = db.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'tool' AND "
                                          "tool_call_id = ?", (session_id, call_id)).fetchone()
@@ -1263,7 +1263,7 @@ def hand_written(text, session_id, home):
     return any(head not in made for head in heads)
 
 
-TRAVEL_PLAN_SUBCMD = re.compile(r'travel\.py["\']?\s+(?:local|overseas|detail)\b')
+TRAVEL_PLAN_SUBCMD = re.compile(r'travel\.py(?:\\*["\'])?\s+(?:local|overseas|detail)\b')
 
 
 def travel_plan_outputs(session_id, home):
