@@ -74,6 +74,43 @@ class UpkeepTests(unittest.TestCase):
         saved = json.loads((self.root / "shared/travel-workflow/upkeep-last.json").read_text(encoding="utf-8"))
         self.assertEqual(saved["at"], result["at"])
 
+    def test_a_gateway_left_down_is_started_inside_the_lock_and_the_outcome_recorded(self):
+        # Antigravity's review: the start was outside the lock, unchecked, and could crash before record().
+        for worked in (True, False):
+            started = []
+
+            def start(hermes):
+                started.append(bool(self.locked))
+                return worked
+            result = upkeep.upkeep(self.root, now=NOW, run=lambda *a: (0, ""), activity=lambda r: 0,
+                                   lock=self.fake_lock, hermes="hermes", gateway=lambda h: False, start=start)
+            self.assertEqual(started, [True])
+            self.assertIs(result["gateway_started_again"], worked)
+        self.assertFalse(upkeep.start_gateway(str(self.root / "no-such-hermes.exe")))
+
+    def test_a_message_during_the_harvest_never_gives_negative_minutes(self):
+        result = upkeep.upkeep(self.root, run=lambda *a: (0, ""), activity=lambda r: NOW + 60,
+                               lock=self.fake_lock, hermes="hermes", gateway=lambda h: True, clock=lambda: NOW)
+        self.assertEqual(result["maintain"]["skipped"], "0 分鐘前還有人在對話，這週不清理")
+
+    def test_runs_without_a_console_as_the_weekly_task_does(self):
+        # Antigravity's review: pythonw has no stdout/stderr, and reconfigure() crashed before anything ran.
+        import os
+        import sys
+        from unittest import mock
+        with mock.patch.object(sys, "stdout", None), mock.patch.object(sys, "stderr", None), \
+                mock.patch.object(sys, "argv", ["upkeep.py", "status"]), \
+                mock.patch.dict(os.environ, {"HERMES_ROOT": str(self.root)}):
+            self.assertEqual(upkeep.main(), 0)
+
+    @contextlib.contextmanager
+    def fake_lock(self):
+        self.locked.append(True)
+        try:
+            yield
+        finally:
+            self.locked.pop()
+
     def test_last_activity_reads_every_profile(self):
         for name, stamp in (("trip", 100.0), ("project-manager", 250.5)):
             folder = self.root / "profiles" / name

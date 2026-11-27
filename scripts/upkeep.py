@@ -111,28 +111,35 @@ def gateway_running(hermes):
     return "running" in text
 
 
+def start_gateway(hermes):
+    """True when `hermes gateway start` worked."""
+    try:
+        return subprocess.run([hermes, "gateway", "start"], capture_output=True, timeout=120).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def upkeep(root, *, now=None, run=run_script, activity=last_activity, lock=WatchdogLock,
-           hermes=None, gateway=gateway_running):
+           hermes=None, gateway=gateway_running, start=start_gateway, clock=time.time):
     """One weekly pass. Returns the result dict (also what upkeep-last.json holds)."""
-    now = now or time.time()
-    result = {"at": dt.datetime.fromtimestamp(now).isoformat(timespec="seconds")}
+    result = {"at": dt.datetime.fromtimestamp(now or clock()).isoformat(timespec="seconds")}
     code, text = run("places.py", "harvest")
     result["harvest"] = {"ok": code == 0, "summary": text}
-    idle = (now - activity(root)) / 60
+    # The time after the harvest: someone may have written meanwhile (Antigravity's review: idle came out negative).
+    idle = max(0.0, ((now or clock()) - activity(root)) / 60)
     if idle < ACTIVE_MINUTES:
         result["maintain"] = {"ok": False, "skipped": f"{round(idle)} 分鐘前還有人在對話，這週不清理"}
         return result
+    hermes = hermes or shutil.which("hermes")
     try:
         with lock():
             code, text = run("db-maintain.py", *MAINTAIN_ARGS)
+            result["maintain"] = {"ok": code == 0, "summary": text}
+            # db-maintain restarts it; make sure while the watchdog is still held off (Antigravity's review)
+            if hermes and gateway(hermes) is False:
+                result["gateway_started_again"] = start(hermes)
     except (OSError, TimeoutError) as error:
-        result["maintain"] = {"ok": False, "skipped": str(error)}
-        return result
-    result["maintain"] = {"ok": code == 0, "summary": text}
-    hermes = hermes or shutil.which("hermes")
-    if hermes and gateway(hermes) is False:  # db-maintain restarts it; make sure (the watchdog was held off)
-        subprocess.run([hermes, "gateway", "start"], capture_output=True, timeout=120)
-        result["gateway_started_again"] = True
+        result.setdefault("maintain", {"ok": False, "skipped": str(error)})
     return result
 
 
@@ -161,7 +168,8 @@ def install_task(day="MON", at="04:07"):
 
 def main():
     for stream in (sys.stdout, sys.stderr):
-        stream.reconfigure(encoding="utf-8")
+        if stream is not None:  # pythonw (the weekly task) has neither (Antigravity's review)
+            stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run")
@@ -179,7 +187,8 @@ def main():
         return 0
     result = upkeep(root)
     record(root, result)
-    print(json.dumps(result, ensure_ascii=False, indent=1))
+    if sys.stdout is not None:
+        print(json.dumps(result, ensure_ascii=False, indent=1))
     return 0 if result["harvest"]["ok"] and (result["maintain"].get("ok") or result["maintain"].get("skipped")) else 1
 
 
