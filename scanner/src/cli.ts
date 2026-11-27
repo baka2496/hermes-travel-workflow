@@ -232,8 +232,15 @@ async function cached<T>(kind: string, key: readonly unknown[], compute: () => P
     try {
       const legacy = JSON.parse(readFileSync(join(CACHE_DIR, `${cacheKey}.json`), 'utf8')) as { savedAt: string; value: T };
       if (Date.now() - Date.parse(legacy.savedAt) < CACHE_HOURS * 3_600_000) {
-        setCacheEntry({ cacheKey, kind, city, countryCode, keyJson, valueJson: JSON.stringify(legacy.value), savedAt: legacy.savedAt });
-        return legacy.value;
+        let value = legacy.value;
+        if (kind === 'stays' && city && value && typeof value === 'object' && Array.isArray((value as unknown as { picks?: Pick[] }).picks)) {
+          const picks = (value as unknown as { picks: Pick[] }).picks;
+          const cleaned = sanitizeCachedPicks(city, picks, name => freshProfile(name)?.hotelUrl ?? null);
+          if (cleaned.needsRefresh) throw new Error('legacy stays cache contaminated');
+          value = { ...(value as object), picks: cleaned.picks } as T;
+        }
+        setCacheEntry({ cacheKey, kind, city, countryCode, keyJson, valueJson: JSON.stringify(value), savedAt: legacy.savedAt });
+        return value;
       }
     } catch { /* no usable legacy cache entry */ }
   }
@@ -531,7 +538,7 @@ const PROFILES_PER_RUN = 4;
  */
 async function profileHotels(limit = PROFILES_PER_RUN): Promise<number> {
   let fetched = 0;
-  const since = new Date(Date.now() - CACHE_HOURS * 3_600_000).toISOString();
+  const since = new Date(Date.now() - CACHE_PRUNE_HOURS * 3_600_000).toISOString();
   for (const row of listCacheEntries(['stays'], since)) {
     let key: [Stay, string, ...unknown[]];
     let value: { picks: Pick[] } | null;
@@ -1272,6 +1279,7 @@ async function tick() {
   }
   pruneObservations(new Date(Date.now() - OBSERVATION_DAYS * 86_400_000));
   pruneCacheEntries(new Date(Date.now() - CACHE_PRUNE_HOURS * 3_600_000).toISOString());
+  deleteHotelProfilesByCountry('tw');
   await runJobs();
 }
 

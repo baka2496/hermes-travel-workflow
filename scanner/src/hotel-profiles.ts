@@ -62,7 +62,7 @@ function ensureMigrated(): void {
   if (autoMigrated) return;
   autoMigrated = true;
   if (countHotelProfiles() === 0 && existsSync(LEGACY_PROFILES_FILE)) {
-    importLegacyProfiles(LEGACY_PROFILES_FILE);
+    importLegacyProfiles(LEGACY_PROFILES_FILE, { skipCountries: ['tw'] });
   }
 }
 

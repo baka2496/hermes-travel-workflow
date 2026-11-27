@@ -153,19 +153,16 @@ def read_places(path):
                 write_places(path, migrated)
                 return read_places(path)
         return []
+    con = _open_places_db(path)
     try:
-        con = _open_places_db(path)
-        try:
-            rows = con.execute(
-                "SELECT name, area, kind, country_code, official, price_page, phone, "
-                "prices_json, free_json, checked_at, added_at, status, fail_reason, extra_json "
-                "FROM places ORDER BY id ASC"
-            ).fetchall()
-            return [_row_to_place(r) for r in rows]
-        finally:
-            con.close()
-    except sqlite3.Error:
-        return []
+        rows = con.execute(
+            "SELECT name, area, kind, country_code, official, price_page, phone, "
+            "prices_json, free_json, checked_at, added_at, status, fail_reason, extra_json "
+            "FROM places ORDER BY id ASC"
+        ).fetchall()
+        return [_row_to_place(r) for r in rows]
+    finally:
+        con.close()
 
 
 def write_places(path, places):
@@ -208,12 +205,12 @@ def write_places(path, places):
                     str(p.get("kind") or ""),
                     str(p.get("country_code") or "tw"),
                     str(p.get("official") or ""),
-                    str(p.get("price_page") or p.get("official") or ""),
+                    str(p.get("price_page") or ""),
                     str(p.get("phone") or ""),
                     json.dumps(p.get("prices") if isinstance(p.get("prices"), list) else [], ensure_ascii=False),
                     json.dumps(p.get("free", False), ensure_ascii=False),
                     str(p.get("checked_at") or ""),
-                    str(p.get("added_at") or p.get("checked_at") or ""),
+                    str(p.get("added_at") or ""),
                     str(p.get("status") or "ok"),
                     p.get("fail_reason"),
                     json.dumps(extra, ensure_ascii=False),

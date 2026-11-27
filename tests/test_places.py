@@ -312,6 +312,19 @@ class PlacesSqliteTests(unittest.TestCase):
         self.assertIn("已將 1 筆台灣地點", out2)
         self.assertTrue(db2.exists())
 
+    def test_corrupt_sqlite_db_raises_instead_of_returning_empty_list(self):
+        # Regression (Claude review): read_places must never swallow sqlite3.Error as [], or add() would wipe the DB.
+        corrupt = self.root / "corrupt.db"
+        corrupt.write_bytes(b"not a valid sqlite file")
+        rc, _, err = self.run_places(
+            "add", "--name", "甲湯屋", "--area", "礁溪", "--kind", "溫泉",
+            "--official", "https://a.example/spa",
+            html=page("甲湯屋", "<p>雙人湯屋 NT$500 / 1小時</p>"),
+            places_path=corrupt,
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertIn("DatabaseError", err)
+
 
 if __name__ == "__main__":
     unittest.main()
