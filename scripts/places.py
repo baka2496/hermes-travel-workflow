@@ -201,9 +201,9 @@ TAIWAN_COUNTIES = {
 }
 DEFAULT_HARVEST_COUNTIES = ("台北", "新北", "基隆", "桃園", "宜蘭")
 OLD_STREET_HINTS = ("老街", "夜市", "廟口", "九份", "平溪", "烏來", "金山", "淡水", "深坑", "三峽", "鶯歌", "大溪老街")
-BEACH_HINTS = ("海水浴場", "海濱", "漁港", "漁人碼頭", "燈塔", "左岸", "蜜月灣", "沙灘", "海岸", "潮境", "野柳", "和平島", "富貴角", "淺水灣", "白沙灣", "金色水岸")
-TRAIL_HINTS = ("步道", "瀑布", "國家公園", "森林遊樂區", "茶園", "風景特定區", "風景區", "擎天崗", "冷水坑", "象山", "自然保留區", "運動公園", "官邸")
-SKIP_TITLES = ("遊客中心", "水上運動中心", "溫泉", "博物館", "美術館", "紀念館", "文化館")
+BEACH_HINTS = ("海濱", "漁港", "漁人碼頭", "燈塔", "左岸", "蜜月灣", "沙灘", "海岸", "潮境", "富貴角", "淺水灣", "白沙灣", "金色水岸")
+TRAIL_HINTS = ("步道", "瀑布", "國家公園", "茶園", "風景特定區", "風景區", "擎天崗", "冷水坑", "象山", "自然保留區", "運動公園")
+SKIP_TITLES = ("遊客中心", "水上運動中心", "溫泉", "博物館", "美術館", "紀念館", "文化館", "森林遊樂區", "地質公園", "海水浴場", "官邸", "樂園")
 AREA_TOKENS = (
     "北投", "士林", "淡水", "九份", "瑞芳", "烏來", "金山", "萬里", "石門", "三芝", "平溪", "十分",
     "深坑", "三峽", "鶯歌", "八里", "福隆", "貢寮", "鼻頭", "基隆", "大溪", "桃園", "礁溪", "羅東",
@@ -350,13 +350,14 @@ def harvest(args):
         if not lines and not free:
             skipped.append(f"{item['name']}（官網讀不到價格）")
             continue
+        live_phone = (phones[0].split()[-1] if phones else "")
         place = {
             "name": item["name"].strip(),
             "area": item["area"].strip(),
             "kind": item["kind"],
             "official": item.get("official") or item["price_page"],
             "price_page": item["price_page"],
-            "phone": item.get("phone") or (phones[0].split()[-1] if phones else ""),
+            "phone": live_phone,
             "prices": lines[:6],
             "free": free,
             "checked_at": today(args.now),
@@ -378,6 +379,9 @@ def harvest(args):
                 matched_idx = i
                 break
         if matched_idx is not None:
+            # Prefer live-verified phone; if page had none today, preserve existing phone rather than wiping it
+            if not place["phone"] and places[matched_idx].get("phone"):
+                place["phone"] = places[matched_idx]["phone"]
             places[matched_idx] = {**places[matched_idx], **place,
                                    "added_at": places[matched_idx].get("added_at", today(args.now))}
             updated.append(place["name"])

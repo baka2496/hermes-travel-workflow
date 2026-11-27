@@ -18,6 +18,7 @@ import datetime as dt
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -146,13 +147,13 @@ def inspect_db(db_path, *, keep_days=7, keep_reasoning_days=7, now=None):
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=15)
     try:
         reasoning_rows, reasoning_bytes = 0, 0
-        if _has_table(con, "messages") and _has_column(con, "messages", "codex_reasoning_items") and _has_table(con, "sessions"):
+        if _has_table(con, "messages") and _has_column(con, "messages", "codex_reasoning_items"):
             row = con.execute(
-                "SELECT COUNT(*), COALESCE(SUM(LENGTH(CAST(m.codex_reasoning_items AS BLOB))), 0) "
-                "FROM messages m JOIN sessions s ON s.id = m.session_id "
-                "WHERE m.codex_reasoning_items IS NOT NULL AND m.codex_reasoning_items != '' "
-                "AND ( (s.ended_at IS NOT NULL AND s.ended_at < ?) OR (s.ended_at IS NULL AND m.timestamp < ?) )",
-                (reason_cutoff, reason_cutoff),
+                "SELECT COUNT(*), COALESCE(SUM(LENGTH(CAST(codex_reasoning_items AS BLOB))), 0) "
+                "FROM messages "
+                "WHERE codex_reasoning_items IS NOT NULL AND codex_reasoning_items != '' "
+                "AND timestamp IS NOT NULL AND timestamp < ?",
+                (reason_cutoff,),
             ).fetchone()
             reasoning_rows, reasoning_bytes = int(row[0] or 0), int(row[1] or 0)
 
@@ -183,6 +184,17 @@ def inspect_db(db_path, *, keep_days=7, keep_reasoning_days=7, now=None):
     }
 
 
+def backup_sqlite_db(src_path, dst_path):
+    """WAL-safe atomic SQLite backup using sqlite3.Connection.backup()."""
+    src = sqlite3.connect(f"file:{src_path}?mode=ro", uri=True, timeout=30)
+    dst = sqlite3.connect(str(dst_path), timeout=30)
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+
+
 def clean_db_bloat(db_path, *, keep_days=7, keep_reasoning_days=7, now=None, backup=True, vacuum=True):
     """Safely prune reasoning blobs & stale gateway state_meta rows from one state.db, then VACUUM."""
     now = now or time.time()
@@ -192,20 +204,18 @@ def clean_db_bloat(db_path, *, keep_days=7, keep_reasoning_days=7, now=None, bac
 
     if backup:
         bak = db_path.with_name(db_path.name + ".before-maintain.bak")
-        shutil.copy2(db_path, bak)
+        backup_sqlite_db(db_path, bak)
 
     con = sqlite3.connect(str(db_path), timeout=30)
     try:
         cleared_reasoning = 0
-        if _has_table(con, "messages") and _has_column(con, "messages", "codex_reasoning_items") and _has_table(con, "sessions"):
+        if _has_table(con, "messages") and _has_column(con, "messages", "codex_reasoning_items"):
+            # Match by message timestamp so long-lived open sessions keep recent reasoning items
             cur = con.execute(
                 "UPDATE messages SET codex_reasoning_items = NULL "
                 "WHERE codex_reasoning_items IS NOT NULL AND codex_reasoning_items != '' "
-                "AND session_id IN ("
-                "  SELECT id FROM sessions WHERE (ended_at IS NOT NULL AND ended_at < ?) "
-                "  OR (ended_at IS NULL AND started_at < ?)"
-                ")",
-                (reason_cutoff, reason_cutoff),
+                "AND timestamp IS NOT NULL AND timestamp < ?",
+                (reason_cutoff,),
             )
             cleared_reasoning = cur.rowcount
 
@@ -239,13 +249,13 @@ def clean_db_bloat(db_path, *, keep_days=7, keep_reasoning_days=7, now=None, bac
     }
 
 
-def prune_expired_snapshots(hermes_root, *, page_days=7, apply=False, now=None):
-    """Count or remove expired shared/travel-workflow/pages/*.json snapshots one explicit file at a time."""
+def prune_expired_snapshots(hermes_root, *, page_days=7, archive=False, now=None):
+    """Count or safely archive (never bulk-delete) expired shared/travel-workflow/pages/*.json snapshots."""
     now = now or time.time()
     cutoff = now - page_days * 86400
     pdir = Path(hermes_root) / "shared" / "travel-workflow" / "pages"
     if not pdir.is_dir():
-        return {"count": 0, "mb": 0.0}
+        return {"count": 0, "mb": 0.0, "archived": 0}
     expired = []
     total_bytes = 0
     for f in sorted(pdir.glob("*.json")):
@@ -256,24 +266,36 @@ def prune_expired_snapshots(hermes_root, *, page_days=7, apply=False, now=None):
         if st.st_mtime < cutoff:
             expired.append(f)
             total_bytes += st.st_size
-    if apply:
+    archived = 0
+    if archive and expired:
+        archive_dir = pdir / ".expired"
+        archive_dir.mkdir(exist_ok=True)
         for f in expired:
             try:
-                f.unlink()
+                f.replace(archive_dir / f.name)
+                archived += 1
             except OSError:
                 pass
-    return {"count": len(expired), "mb": round(total_bytes / 1024 / 1024, 2)}
+    return {"count": len(expired), "mb": round(total_bytes / 1024 / 1024, 2), "archived": archived}
+
+
+def parse_gateway_running(output):
+    """Distinguish 'Gateway process running' from 'Gateway is not running' / 'stopped'."""
+    low = (output or "").lower()
+    if re.search(r"\bnot\s+running\b|\bstopped\b|\binactive\b", low):
+        return False
+    return bool(re.search(r"\brunning\b", low))
 
 
 def gateway_is_running(hermes_bin):
     if not hermes_bin:
-        return False
+        return None  # unknown: CLI missing
     try:
         res = subprocess.run([hermes_bin, "gateway", "status"], capture_output=True, text=True,
-                             encoding="utf-8", errors="replace", timeout=20)
-        return "running" in (res.stdout + res.stderr).lower()
+                             encoding="utf-8", errors="replace", timeout=45)
+        return parse_gateway_running(res.stdout + "\n" + res.stderr)
     except (OSError, subprocess.SubprocessError):
-        return False
+        return None
 
 
 def run_hermes_storage_ops(hermes_bin, profile, keep_session_days=None):
@@ -310,7 +332,8 @@ def main(argv=None):
     parser.add_argument("--keep-days", type=int, default=7, help="Keep gateway cache entries newer than N days (default 7)")
     parser.add_argument("--keep-reasoning-days", type=int, default=7, help="Keep codex_reasoning_items newer than N days (default 7)")
     parser.add_argument("--prune-sessions-days", type=int, help="Also prune ended sessions older than N days via Hermes CLI")
-    parser.add_argument("--page-days", type=int, default=7, help="Remove cached page snapshots older than N days (default 7)")
+    parser.add_argument("--page-days", type=int, default=7, help="Report/archive cached page snapshots older than N days (default 7)")
+    parser.add_argument("--archive-pages", action="store_true", help="Move expired page snapshots into pages/.expired/ instead of deleting")
     parser.add_argument("--apply", action="store_true", help="Actually apply cleanup (without this flag, read-only dry-run)")
     parser.add_argument("--restart-gateway", action="store_true", help="Stop Hermes gateway before --apply and restart it after")
     parser.add_argument("--no-backup", action="store_true", help="Skip rolling .before-maintain.bak backup before --apply")
@@ -331,7 +354,7 @@ def main(argv=None):
                 {"profile": name, **inspect_db(path, keep_days=args.keep_days, keep_reasoning_days=args.keep_reasoning_days)}
                 for name, path in dbs
             ],
-            "expired_pages": prune_expired_snapshots(root, page_days=args.page_days, apply=False),
+            "expired_pages": prune_expired_snapshots(root, page_days=args.page_days, archive=False),
         }
         if args.json:
             print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -345,19 +368,35 @@ def main(argv=None):
                 f"｜FTS 索引 {row['fts_data_mb']} MB（版本={row['fts_version']}）"
             )
         ep = report["expired_pages"]
-        print(f"• pages/ 過期快照：{ep['count']} 份（{ep['mb']} MB）")
+        print(f"• pages/ 過期快照：{ep['count']} 份（{ep['mb']} MB，不會永久刪除；加 --archive-pages 可移至 .expired）")
         print("要實際執行瘦身請加 --apply --restart-gateway。")
         return 0
 
-    # Apply mode
+    # Refuse running --apply from inside a live Hermes agent session (would kill its own gateway)
+    if os.environ.get("HERMES_SESSION_ID") and not args.skip_hermes_cli:
+        print("不可在機器人對話回合內執行資料庫瘦身，請由本機終端或排程執行。", file=sys.stderr)
+        return 1
+
+    # Apply mode: verify gateway state before modifying any SQLite file
     was_running = False
-    if hermes_bin and gateway_is_running(hermes_bin):
-        if not args.restart_gateway:
-            print("偵測到 Hermes 閘道正在執行；為避免資料庫鎖定，請加 --restart-gateway 讓工具先安全停止再重啟。", file=sys.stderr)
+    if not args.skip_hermes_cli:
+        if not hermes_bin:
+            print("找不到 hermes CLI，無法確認閘道是否已停止；為避免損毀使用中的資料庫，拒絕執行 --apply。", file=sys.stderr)
             return 1
-        was_running = True
-        subprocess.run([hermes_bin, "gateway", "stop", "--yes"], capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", timeout=90)
+        running = gateway_is_running(hermes_bin)
+        if running is None:
+            print("無法確認 Hermes 閘道狀態；為避免損毀使用中的資料庫，拒絕執行 --apply。", file=sys.stderr)
+            return 1
+        if running:
+            if not args.restart_gateway:
+                print("偵測到 Hermes 閘道正在執行；為避免資料庫鎖定，請加 --restart-gateway 讓工具先安全停止再重啟。", file=sys.stderr)
+                return 1
+            was_running = True
+            stop_res = subprocess.run([hermes_bin, "gateway", "stop", "--yes"], capture_output=True, text=True,
+                                      encoding="utf-8", errors="replace", timeout=90)
+            if stop_res.returncode != 0 or gateway_is_running(hermes_bin) is not False:
+                print(f"停止 Hermes 閘道失敗（exit {stop_res.returncode}），中止瘦身以保護資料庫。", file=sys.stderr)
+                return 1
 
     results = []
     try:
@@ -374,7 +413,7 @@ def main(argv=None):
             stats["before_mb"] = before_mb
             stats["saved_mb"] = round(before_mb - stats["after_mb"], 2)
             results.append({"profile": name, **stats, "hermes_cli": hermes_notes})
-        expired = prune_expired_snapshots(root, page_days=args.page_days, apply=True)
+        expired = prune_expired_snapshots(root, page_days=args.page_days, archive=args.archive_pages)
     finally:
         if was_running and hermes_bin:
             subprocess.run([hermes_bin, "gateway", "start"], capture_output=True, text=True,
@@ -384,7 +423,7 @@ def main(argv=None):
     if args.json:
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0
-    total_saved = round(sum(r["saved_mb"] for r in results) + expired["mb"], 2)
+    total_saved = round(sum(r["saved_mb"] for r in results), 2)
     print(f"資料庫自動瘦身完成（共釋放 {total_saved} MB）：")
     for r in results:
         print(
@@ -393,7 +432,7 @@ def main(argv=None):
         )
         if r["hermes_cli"]:
             print("  Hermes 內建優化：" + "；".join(r["hermes_cli"]))
-    print(f"• pages/ 清理過期快照：{expired['count']} 份（省下 {expired['mb']} MB）")
+    print(f"• pages/ 過期快照：{expired['count']} 份（{expired['mb']} MB，已歸檔 {expired['archived']} 份）")
     if was_running:
         print("• Hermes 閘道已自動重啟完成。")
     return 0

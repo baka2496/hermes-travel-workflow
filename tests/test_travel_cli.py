@@ -277,8 +277,18 @@ class OverseasTravelTests(unittest.TestCase):
         waterhouse_lines = ["定 價 $2500", "平 日 $ 1980", "假 日 $ 2280", "*加人400元/人。", "兒童每位加收NT$300元"]
         self.assertEqual(travel.select_best_price_line(waterhouse_lines, nights=0, guests=2, is_weekend=True)[1], 2280)
         self.assertEqual(travel.select_best_price_line(waterhouse_lines, nights=0, guests=2, is_weekend=False)[1], 1980)
-        # Overnight stay (nights=1) must NEVER quote a day-trip bathhouse or generic price line
-        self.assertIsNone(travel.select_best_price_line(["雙人湯屋：NT$400 / 60分鐘", "預約政策｜價格：假日NT$1,800"], nights=1, guests=2))
+        # Overnight stay (nights=1) must NEVER quote a day-trip bathhouse/hourly room or generic price line
+        self.assertIsNone(travel.select_best_price_line([
+            "雙人湯屋：NT$400 / 60分鐘",
+            "雙人雅緻湯屋：NT$900",
+            "豪華套房：NT$1,200 / 1小時",
+            "預約政策｜價格：假日NT$1,800",
+        ], nights=1, guests=2))
+        # Room lines noting 服務費另計 / 另加服務費 / 免費停車 must NOT be filtered out as noise
+        self.assertEqual(travel.select_best_price_line(["雙人房 NT$3,200（服務費另計）"], nights=1, guests=2)[1], 3200)
+        self.assertEqual(travel.select_best_price_line(["豪華客房 NT$4,500 另加一成服務費"], nights=1, guests=2)[1], 4500)
+        self.assertEqual(travel.select_best_price_line(["雙人房 NT$3,600 含早餐、免費停車"], nights=1, guests=2)[1], 3600)
+        self.assertIsNone(travel.select_best_price_line(["小客車停車費：100元/次"], nights=0, guests=2))
         # Public bath / ticket without '/人' still multiplies by guests; full-width '～' month range works
         self.assertEqual(travel.select_best_price_line(["大眾池 NT$300"], nights=0, guests=4)[1:], (300, 4))
         self.assertEqual(

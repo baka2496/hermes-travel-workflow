@@ -602,12 +602,12 @@ def _clean_room_label(line, fallback):
 
 
 PURE_NOISE_HINTS = (
-    "加價", "加購", "加人", "加床", "加時", "加收", "酌收", "逾時", "延時", "每加", "另加", "另計",
+    "加價", "加購", "加人", "加床", "加時", "加收", "酌收", "逾時", "延時", "每加",
     "毛巾", "礦泉水", "沐浴品", "清潔費", "押金", "折抵", "憑券",
     "車資", "單程", "退款", "退訂", "處理費", "熱水", "冷水", "其他收費",
-    "優待票", "敬老", "孩童", "兒童票", "愛心票", "罰鍰", "停車",
+    "優待票", "敬老", "孩童", "兒童票", "愛心票", "罰鍰",
 )
-MEAL_SUBITEM_HINTS = ("享用", "套餐", "贈送")
+MEAL_SUBITEM_HINTS = ("享用", "套餐", "贈送", "另加", "另計", "停車")
 MONTH_RANGE_RE = re.compile(r"(?P<a>1[0-2]|0?[1-9])\s*月?\s*[-–~～－〜至到]\s*(?P<b>1[0-2]|0?[1-9])\s*月")
 DATE_RANGE_RE = re.compile(
     r"(?:(?P<y1>\d{4})[/-])?(?P<m1>1[0-2]|0?[1-9])/(?P<d1>\d{1,2})\s*[-–~～－〜至到]\s*"
@@ -733,9 +733,10 @@ def select_best_price_line(lines, *, nights=0, guests=2, is_weekend=True, month=
 
         mode_score = 0
         if nights > 0:
+            has_day_only = any(k in ln for k in ("湯屋", "分鐘", "小時", "泡湯", "大眾池", "裸湯", "風呂"))
             has_overnight = any(k in ln for k in OVERNIGHT_HINTS)
-            if not has_overnight:
-                continue  # overnight stays must match an explicit room/stay line, never a bathhouse or generic price
+            if has_day_only or not has_overnight:
+                continue  # overnight stays must match an explicit room/stay line, never a bathhouse/hourly room
             mode_score = -2
         else:
             if any(k in ln for k in DAY_HINTS):
@@ -1053,7 +1054,6 @@ PASSTHROUGH = {
     "add-place": ("places.py", ["add"]),
     "harvest": ("places.py", ["harvest"]),
     "places": ("places.py", []),
-    "maintain": ("db-maintain.py", []),
     "photo": ("place-photo.py", []),
     "prices": ("page-prices.py", []),
     "schedule": ("calendar-check.py", []),

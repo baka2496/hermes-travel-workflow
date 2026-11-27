@@ -132,7 +132,8 @@ class PlacesTests(unittest.TestCase):
         self.assertIn("重查：甲湯屋", out)
         self.assertEqual(self.saved()[0]["status"], "ok")
 
-    def test_harvest_catalog_enforces_https_and_deduplicates_distinct_taiwan_ids(self):
+    def test_harvest_catalog_enforces_https_unlisted_and_deduplicates_distinct_taiwan_ids(self):
+        # 1. Paid venue catalog + non-HTTPS rejection
         catalog = self.root / "catalog.json"
         catalog.write_text(json.dumps({
             "schema_version": 1,
@@ -141,6 +142,36 @@ class PlacesTests(unittest.TestCase):
                  "official": "https://a.example/", "price_page": "https://a.example/spa"},
                 {"name": "不安全http", "area": "金山", "kind": "溫泉",
                  "official": "http://bad.example/", "price_page": "http://bad.example/spa"},
+            ],
+        }, ensure_ascii=False), encoding="utf-8")
+        spa_html = page("甲湯屋", "<p>雙人湯屋 NT$800 / 60分鐘</p><p>電話 02-2891-1111</p>")
+        rc, out, err = self.run_places(
+            "harvest", "--counties", "none", "--catalog", str(catalog), "--dry-run", html=spa_html
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertIn("預覽模式", out)
+        self.assertFalse(self.places.exists())
+
+        rc, out, err = self.run_places(
+            "harvest", "--counties", "none", "--catalog", str(catalog), html=spa_html
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([p["name"] for p in self.saved()], ["甲湯屋"])
+        self.assertEqual(self.saved()[0]["phone"], "02-2891-1111")
+
+        # Updating when page temporarily has no phone preserves existing phone
+        spa_no_phone = page("甲湯屋", "<p>雙人湯屋 NT$850 / 60分鐘</p>")
+        rc, _, err = self.run_places(
+            "harvest", "--counties", "none", "--catalog", str(catalog), html=spa_no_phone
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.saved()[0]["phone"], "02-2891-1111")
+
+        # 2. Public old streets / night markets with no prices -> free == "unlisted" & distinct taiwan.net.tw ids kept
+        tw_cat = self.root / "tw-catalog.json"
+        tw_cat.write_text(json.dumps({
+            "schema_version": 1,
+            "places": [
                 {"name": "夜市一", "area": "士林", "kind": "老街、小吃、夜市",
                  "official": "https://www.taiwan.net.tw/m1.aspx?sNo=0001090&id=154",
                  "price_page": "https://www.taiwan.net.tw/m1.aspx?sNo=0001090&id=154", "no_fee_listed": True},
@@ -149,22 +180,38 @@ class PlacesTests(unittest.TestCase):
                  "price_page": "https://www.taiwan.net.tw/m1.aspx?sNo=0001090&id=18", "no_fee_listed": True},
             ],
         }, ensure_ascii=False), encoding="utf-8")
-        # Both night markets share the Tourism Bureau phone; distinct id= must keep both!
-        html = page("測試頁", "<p>雙人湯屋 NT$800 / 60分鐘</p><p>電話 (02)2349-1500</p>")
-        rc, out, err = self.run_places(
-            "harvest", "--counties", "none", "--catalog", str(catalog), "--dry-run", html=html
+        no_price_html = page("觀光介紹", "<p>人氣夜市美食</p><p>電話 (02)2349-1500</p>")
+        rc, _, err = self.run_places(
+            "harvest", "--counties", "none", "--catalog", str(tw_cat), html=no_price_html
         )
         self.assertEqual(rc, 0, err)
-        self.assertIn("預覽模式", out)
-        self.assertFalse(self.places.exists())
+        saved = {p["name"]: p for p in self.saved()}
+        self.assertIn("夜市一", saved)
+        self.assertIn("夜市二", saved)
+        self.assertEqual(saved["夜市一"]["free"], "unlisted")
+        self.assertEqual(saved["夜市一"]["prices"], [])
 
-        rc, out, err = self.run_places(
-            "harvest", "--counties", "none", "--catalog", str(catalog), html=html
+    def test_classify_and_crawl_taiwan_county_skips_paid_forest_parks_and_keeps_public_spots(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("places_mod", REPO / "scripts" / "places.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        fake_listing = (
+            '<a href="m1.aspx?sNo=0001091&amp;id=19" title="淡水老街">淡水老街</a>'
+            '<a href="m1.aspx?sNo=0001091&amp;id=721" title="鼻頭角步道">鼻頭角步道</a>'
+            '<a href="m1.aspx?sNo=0001091&amp;id=9658" title="內洞國家森林遊樂區">內洞國家森林遊樂區</a>'
+            '<a href="m1.aspx?sNo=0001091&amp;id=2890" title="野柳地質公園">野柳地質公園</a>'
+            '<a href="m1.aspx?sNo=0001106&amp;id=605" title="大溪蜜月灣">大溪蜜月灣</a>'
         )
-        self.assertEqual(rc, 0, err)
-        names = [p["name"] for p in self.saved()]
-        self.assertEqual(names, ["甲湯屋", "夜市一", "夜市二"])
-        self.assertNotIn("不安全http", names)
+        items = mod.crawl_taiwan_county("新北", html_text=fake_listing)
+        names = [x["name"] for x in items]
+        self.assertIn("淡水老街", names)
+        self.assertIn("鼻頭角步道", names)
+        # Paid ticketed parks must NOT be crawled as unlisted/no-fee from overview pages
+        self.assertNotIn("內洞國家森林遊樂區", names)
+        self.assertNotIn("野柳地質公園", names)
+        self.assertEqual(mod.classify_taiwan_attraction("大溪蜜月灣", "宜蘭"), ("海邊", "宜蘭頭城"))
 
 
 class StrftimeTests(unittest.TestCase):

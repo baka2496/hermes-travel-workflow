@@ -52,13 +52,12 @@
       "kind": "住宿",
       "official": "https://www.art-spa-hotel.com.tw/housesdetail3?.c",
       "price_page": "https://www.art-spa-hotel.com.tw/housesdetail3?.dd",
-      "phone": "03-988-2011",
       "note": "官網載明房內獨立泡湯池"
     },
     {
       "name": "新北市立黃金博物館",
       "area": "瑞芳",
-      "kind": "自然步道、看風景",
+      "kind": "其他",
       "official": "https://www.gep.ntpc.gov.tw/",
       "price_page": "https://www.gep.ntpc.gov.tw/xmdoc/cont?xsmsid=0G246368552167800609"
     },
