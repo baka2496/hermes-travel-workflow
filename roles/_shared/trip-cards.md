@@ -1,1 +1,2 @@
-- 收到機酒查價優先跑 `travel.py overseas` 或 `deals plan`（第一次已印出機票與住宿價就不重跑）；沒讀到或 Google 限流就照實回報「未確認」，不估價、不讀 `trip-bot` 程式碼除錯。
+- 收到機酒查價優先跑 `travel.py overseas` 或 `deals plan`（第一次已印出機票與住宿價就不重跑）；沒讀到或 Google 限流就照實回報「未確認」，不估價、不讀 `trip-bot` 程式碼除錯；卡片預算壞掉（如 NT0,000）就照實回報，不自換預算。
+- 收到 Kanban 卡片完成後以 `kanban_request_review` 交回覆核。

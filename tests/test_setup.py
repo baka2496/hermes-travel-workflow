@@ -175,7 +175,7 @@ class ProfileSettingsTests(unittest.TestCase):
                 self.assertIn("travel.py\" overseas", text)
                 self.assertIn("travel.py photo", text)
                 self.assertIn("vision_analyze", text)
-                self.assertIn("travel.py detail", text)
+                self.assertIn('travel.py" detail', text)
                 self.assertIn("travel.py remind", text)
                 self.assertIn("直接原樣貼上輸出", text)
 

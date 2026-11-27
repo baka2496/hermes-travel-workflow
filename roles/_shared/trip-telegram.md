@@ -1,1 +1,1 @@
-- 每天 04:00 或閒置 1 小時後開新對話；首則訊息很短時先看最近紀錄或 `pending_question`，對不上再用 `clarify` 問。
+- 每天 04:00 或閒置 1 小時後開新對話；首則訊息很短時先看最近紀錄、`pending_question` 或用 `session_search` 搜舊對話，對不上再用 `clarify` 問。

@@ -177,14 +177,33 @@ LIVE_PLUGINS = ("project-manager", "trip", "us-market")
 LIVE_HEAD = "SOUL.head.md"
 
 
-def sync_live(root, *, python=None):
+def sync_live(root, *, python=None, force=False, stamp=None):
     """Single-source-of-truth sync from this repo into a live Hermes root.
 
-    Updates shared/travel-workflow scripts, live profile scripts, travel-reply-check plugins,
-    and rebuilds SOUL.md from SOUL.head.md + roles/_shared without touching user state JSON files.
+    Updates shared/travel-workflow scripts, live profile scripts, existing travel-reply-check
+    plugins, and rebuilds SOUL.md from SOUL.head.md + roles/_shared without touching user state.
+    Backs up existing files that differ before overwriting (refuses unless force=True when a
+    previous backup with the same timestamp exists), and returns live_souls()'s exit code.
     """
+    import datetime
     root = Path(root).expanduser().resolve()
+    stamp = stamp or datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
     updated = unchanged = 0
+
+    def write_sync(dest, data):
+        nonlocal updated, unchanged
+        if dest.is_file() and dest.read_bytes() == data:
+            unchanged += 1
+            return
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.is_file() and not force:
+            backup = dest.with_name(f"{dest.name}.before-sync-{stamp}")
+            if backup.exists():
+                raise RuntimeError(f"backup already exists: {backup}")
+            shutil.copy2(dest, backup)
+        dest.write_bytes(data)
+        updated += 1
+
     for source, target in PACKAGE_SCRIPTS:
         if target.startswith("shared/travel-workflow/"):
             dest = root / target
@@ -194,37 +213,19 @@ def sync_live(root, *, python=None):
             dest = root / "profiles/trip/scripts/scan-trip.py"
         else:
             continue
-        data = rendered(PACKAGE / source, root)
-        if dest.is_file() and dest.read_bytes() == data:
-            unchanged += 1
-        else:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(data)
-            updated += 1
+        write_sync(dest, rendered(PACKAGE / source, root))
     for profile in LIVE_PLUGINS:
-        if not (root / "profiles" / profile).is_dir():
+        plugin_dir = root / "profiles" / profile / "plugins" / REPLY_CHECK
+        # Only sync into profiles that already have travel-reply-check installed
+        if not plugin_dir.is_dir():
             continue
         for name in REPLY_CHECK_FILES:
-            dest = root / "profiles" / profile / "plugins" / REPLY_CHECK / name
-            data = (PACKAGE / "plugins" / REPLY_CHECK / name).read_bytes()
-            if dest.is_file() and dest.read_bytes() == data:
-                unchanged += 1
-            else:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(data)
-                updated += 1
+            write_sync(plugin_dir / name, (PACKAGE / "plugins" / REPLY_CHECK / name).read_bytes())
         for name in SHARED_MODULES:
-            dest = root / "profiles" / profile / "plugins" / REPLY_CHECK / name
-            data = (PACKAGE / "scripts" / name).read_bytes()
-            if dest.is_file() and dest.read_bytes() == data:
-                unchanged += 1
-            else:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(data)
-                updated += 1
-    live_souls(root, write=True, python=python)
+            write_sync(plugin_dir / name, (PACKAGE / "scripts" / name).read_bytes())
+    soul_status = live_souls(root, write=True, python=python, stamp=stamp)
     print(f"Synced live root {root}: {updated} file(s) updated, {unchanged} unchanged.")
-    return 0
+    return soul_status
 
 
 def live_soul(head, root, python=None):
@@ -703,10 +704,11 @@ def main():
     command = sub.add_parser("sync-live", help="sync scripts, plugins, and SOUL.md from this repo into a live Hermes root")
     command.add_argument("--root", type=Path, required=True)
     command.add_argument("--python", help="interpreter path for {{PYTHON}} (default: this one)")
+    command.add_argument("--force", action="store_true", help="skip creating .before-sync backups")
     args = parser.parse_args()
     try:
         if args.command == "sync-live":
-            return sync_live(args.root, python=args.python)
+            return sync_live(args.root, python=args.python, force=args.force)
         if args.command == "live-souls":
             return live_souls(args.root, write=args.write, python=args.python)
         if args.command == "check":

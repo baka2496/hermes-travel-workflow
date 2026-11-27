@@ -165,6 +165,57 @@ class OverseasTravelTests(unittest.TestCase):
         self.assertIn("未確認", out)
         self.assertNotIn("開賣", out)
 
+    def test_different_airlines_unknown_room_and_no_stay_total_estimation(self):
+        raw = """🏨 *大阪 住宿*
+05/15(六)–05/19(三)・4 晚
+✈️ [去 台灣虎航 06:40→10:15](https://www.tigerairtw.com/out)
+[回 樂桃 11:20→13:15](https://www.flypeach.com/back)
+來回每人 NT$9,000
+＋托運行李約 NT$1,800（估算）
+
+1. [Mystery Hotel](https://www.google.com/travel/search?q=mystery)
+⭐4.2・📍大阪
+每晚含稅 NT$2,000
+在 [Booking](https://www.booking.com/hotel/jp/mystery) 訂
+"""
+        rc, out, err = self.run_overseas(raw, "--guests", "2", city="大阪", out="2027-05-15", ret="2027-05-19")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("台灣虎航／樂桃", out)
+        self.assertIn("去 05/15 台灣虎航 06:40→10:15", out)
+        self.assertIn("回 05/19 樂桃 11:20→13:15", out)
+        self.assertIn("Mystery Hotel（房型未確認）", out)
+        # Must NOT fabricate 4晚 NT$8,000 when scanner only printed nightly rate
+        self.assertNotIn("NT$8,000", out)
+        self.assertIn("每晚 NT$2,000", out)
+
+    def test_show_unconfirmed_false_drops_unconfirmed_hotels_and_ignores_non_twd_budget(self):
+        d = Path(scratch.new_dir("travel-overseas-unconf"))
+        shared = d / "shared" / "travel-workflow"
+        shared.mkdir(parents=True)
+        (shared / "preferences.json").write_text(json.dumps({
+            "show_unconfirmed": False,
+            "budget": {"amount": 50000, "currency": "JPY", "scope": "entire_trip", "quote": "5萬日圓"},
+        }, ensure_ascii=False), encoding="utf-8")
+        raw = d / "raw.txt"
+        raw.write_text(SAMPLE_FULL_SERVICE, encoding="utf-8")
+        res = subprocess.run(
+            [sys.executable, str(TRAVEL), "overseas", "福岡", "2027-06-05", "2027-06-09",
+             "--guests", "2", "--raw-output", str(raw), "--hermes-root", str(d)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertNotIn("MIYUKIHOUSE", res.stdout)
+        self.assertNotIn("預算", res.stdout)  # JPY budget must not be treated as TWD
+
+    def test_four_guests_scaling_for_local_prices(self):
+        travel = load_travel()
+        # Per-person ticket scales with 4 guests
+        label, unit, qty = travel.select_best_price_line(["全票：200元 / 每人"], nights=0, guests=4)
+        self.assertEqual((unit, qty), (200, 4))
+        # Overnight 2 nights for 4 guests needs 2 rooms x 2 nights = 4 room-nights
+        label, unit, qty = travel.select_best_price_line(["標準雙人房：3000元"], nights=2, guests=4)
+        self.assertEqual((unit, qty), (3000, 4))
+
 
 class LocalTravelTests(unittest.TestCase):
     def test_local_builds_three_packages_with_owner_transport_and_no_disqualified(self):
@@ -208,7 +259,7 @@ class LocalTravelTests(unittest.TestCase):
         (shared / "recommended.json").write_text("[]", encoding="utf-8")
 
         res = subprocess.run(
-            [sys.executable, str(TRAVEL), "local", "--area", "礁溪", "--kind", "溫泉",
+            [sys.executable, str(TRAVEL), "local", "--area", "礁溪", "--kind", "泡湯",
              "--date", "2026-12-05", "--budget", "2000",
              "--hermes-root", str(d), "--html-file", str(html)],
             capture_output=True, text=True, encoding="utf-8",
@@ -224,12 +275,29 @@ class LocalTravelTests(unittest.TestCase):
         self.assertNotIn("大眾運輸", res.stdout)
         self.assertIn("總計 NT$600，預算剩 NT$1,400", res.stdout)
 
+    def test_profile_hermes_home_resolves_shared_root(self):
+        travel = load_travel()
+        import os
+        old = os.environ.get("HERMES_HOME")
+        try:
+            os.environ["HERMES_HOME"] = r"C:\fake\hermes\profiles\project-manager"
+            self.assertEqual(travel.default_hermes_root(), Path(r"C:\fake\hermes"))
+        finally:
+            if old is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = old
+
 
 class SyncLiveTests(unittest.TestCase):
-    def test_sync_live_deploys_scripts_plugins_and_souls_without_touching_state(self):
+    def test_sync_live_deploys_only_existing_plugins_backs_up_and_keeps_state(self):
         root = Path(scratch.new_dir("sync-live"))
         for prof in ("project-manager", "trip", "us-market"):
             (root / "profiles" / prof).mkdir(parents=True)
+        # Only project-manager already has travel-reply-check installed
+        pm_plugin = root / "profiles/project-manager/plugins/travel-reply-check"
+        pm_plugin.mkdir(parents=True)
+        (pm_plugin / "__init__.py").write_text("# old plugin\n", encoding="utf-8")
         (root / "profiles/trip/SOUL.head.md").write_text(
             "# Trip\n{{INCLUDE:roles/_shared/trip-telegram.md}}\n", encoding="utf-8"
         )
@@ -241,14 +309,24 @@ class SyncLiveTests(unittest.TestCase):
         user_prefs = '{"budget": null, "custom": true}\n'
         (shared / "preferences.json").write_text(user_prefs, encoding="utf-8")
 
-        rc = setup.sync_live(root, python="C:/py/python.exe")
+        rc = setup.sync_live(root, python="C:/py/python.exe", stamp="20261127T120000")
         self.assertEqual(rc, 0)
         self.assertTrue((shared / "travel.py").is_file())
-        self.assertTrue((root / "profiles/project-manager/plugins/travel-reply-check/__init__.py").is_file())
+        self.assertTrue((pm_plugin / "__init__.py").is_file())
+        # Old plugin file was backed up before overwrite
+        self.assertTrue((pm_plugin / "__init__.py.before-sync-20261127T120000").is_file())
+        # us-market had no travel-reply-check plugin, so sync-live did NOT inject one
+        self.assertFalse((root / "profiles/us-market/plugins/travel-reply-check").exists())
         self.assertTrue((root / "profiles/trip/SOUL.md").is_file())
         self.assertIn("travel.py overseas", (root / "profiles/project-manager/SOUL.md").read_text(encoding="utf-8"))
         # User state is untouched
         self.assertEqual((shared / "preferences.json").read_text(encoding="utf-8"), user_prefs)
+
+    def test_sync_live_propagates_missing_soul_head_error(self):
+        root = Path(scratch.new_dir("sync-live-err"))
+        (root / "profiles/trip").mkdir(parents=True)
+        rc = setup.sync_live(root, python="C:/py/python.exe", stamp="20261127T120001")
+        self.assertEqual(rc, 1)
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ flowchart TB
 
     subgraph S2["2. 交付與行前閉環"]
         direction LR
-        out["Telegram 手機卡片<br/>含班號時間・房型・可點擊連結"] --> owner["本人決策<br/>確認訂位與付款"] --> remind["自動行前提醒<br/>取消前24h・前一晚・前1h"]
+        out["Telegram 手機卡片<br/>含航空時間・房型・可點擊連結"] --> owner["本人決策<br/>確認訂位與付款"] --> remind["自動行前提醒<br/>取消前24h・前一晚・前1h"]
     end
 
     scanner --> engine
@@ -94,7 +94,7 @@ py -3 .\setup.py check --root "$workflowRoot"
 
 `setup.py check` 只讀取、不修改，會列出三個排程的狀態、投遞目標和最近一次結果，並指出缺少的掃描器套件、連續失敗的排程，以及提醒還在等待哪些資料（例如 `budget`、`calendar_coverage`）。有問題時結束代碼為 1。行程涵蓋的結束日已過時，提醒會視為涵蓋不足而保持靜默。推送到 GitHub 時，`.github/workflows/test.yml` 會自動執行上面三組測試。
 
-要出方案時，機器人統一透過 `travel.py` 執行（`travel.py local` 一次給 3 個能直接訂的國內方案，`travel.py overseas` 直接查海外機酒並產出含班號時間、房型與可點擊連結的手機卡片，不再繞經多輪看板派工與 AI 覆核）。
+要出方案時，機器人統一透過 `travel.py` 執行（`travel.py local` 一次給 3 個能直接訂的國內方案，`travel.py overseas` 直接查海外機酒並產出含去回程航空與時間、房型與可點擊連結的手機卡片，不再繞經多輪看板派工與 AI 覆核）。
 
 正在跑的 `trip`、`project-manager` 兩個 profile 不是 `install` 裝的：各自的 `SOUL.head.md` 只放自己的規則（身分、路徑、Telegram ID，不放進這個公開 repo），共用規則用 `{{INCLUDE:roles/_shared/…}}` 帶進來。執行 `py -3 .\setup.py sync-live --root "$workflowRoot"` 可一次將最新腳本（含 `travel.py`）、外掛與精簡 `SOUL.md` 同步到正式環境，不會動到使用者資料檔；只檢查規則可跑 `py -3 .\setup.py live-souls --root "$workflowRoot"`。
 

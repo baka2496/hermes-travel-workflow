@@ -570,7 +570,7 @@ DATES_PROBLEM = ("使用者寫的 {span} 是 {nights} 晚，可是又說「{said
                  "（「{first}」還是「{second}」），不要自己挑日期，也先不要查價格，等使用者選了再查、再組方案。"
                  "clarify 沒人回答或逾時，就把這個問題當最後回覆送出，結束這一輪。")
 # While the dates are open, research waits too (2026-11-26 exam: 19 minutes of searching around a refused plan).
-RESEARCH = re.compile(r"travel\.py|format-plan|trip-cost|page-prices|places\.py|booking-links|place-photo")
+RESEARCH = re.compile(r'travel\.py["\']?\s+(?:local|overseas|detail|prices|photo|add-place)\b|format-plan|trip-cost|page-prices|places\.py|booking-links|place-photo')
 RESEARCH_TOOLS = ("web_search", "web_extract", "browser_exec")
 
 
@@ -718,7 +718,7 @@ def offered(session_id, home):
                         "AND (tool_calls LIKE ? OR tool_calls LIKE ?)",
                         (session_id, since, "%format-plan%", "%travel.py%")):
                     for call_id, _, arguments in sessions.calls(value):
-                        if "--package" not in arguments and "local" not in arguments:
+                        if "--package" not in arguments and not re.search(r'travel\.py["\']?\s+local\b', arguments):
                             continue
                         row = db.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'tool' AND "
                                          "tool_call_id = ?", (session_id, call_id)).fetchone()
@@ -1263,6 +1263,34 @@ def hand_written(text, session_id, home):
     return any(head not in made for head in heads)
 
 
+TRAVEL_PLAN_SUBCMD = re.compile(r'travel\.py["\']?\s+(?:local|overseas|detail)\b')
+
+
+def travel_plan_outputs(session_id, home):
+    """Outputs of travel.py plan-producing subcommands (local, overseas, detail) only."""
+    for path in sessions.databases(home):
+        try:
+            with sessions.read_only(path) as db:
+                if not db.execute("SELECT 1 FROM messages WHERE session_id = ? LIMIT 1", (session_id,)).fetchone():
+                    continue
+                ids = [call_id for (value,) in db.execute(
+                           "SELECT tool_calls FROM messages WHERE session_id = ? AND tool_calls LIKE ? ORDER BY id",
+                           (session_id, "%travel.py%"))
+                       for call_id, _, arguments in sessions.calls(value)
+                       if TRAVEL_PLAN_SUBCMD.search(arguments)]
+                outputs = []
+                for call_id in ids:
+                    row = db.execute("SELECT content FROM messages WHERE session_id = ? AND role = 'tool' "
+                                     "AND tool_call_id = ? ORDER BY id DESC LIMIT 1", (session_id, call_id)).fetchone()
+                    output = sessions.result_text(row[0]) if row else ""
+                    if output:
+                        outputs.append(output)
+                return outputs
+        except sqlite3.Error:
+            continue
+    return UNKNOWN
+
+
 def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
     if not session_id or not isinstance(response_text, str):
         return None
@@ -1285,8 +1313,8 @@ def transform_llm_output(response_text="", session_id="", turn_id="", **kwargs):
             runs = [] if outputs is UNKNOWN else [blocks for o in outputs if (blocks := cost_blocks(o))]
             blocks = [b for run in runs for b in run]  # one per package of a format-plan.py --package run
             fixed = corrected_costs(fixed, blocks) if blocks else fixed
-            if hide:  # every package of the latest run (plus full travel.py card) is trusted
-                travel_out = tool_outputs(session_id, home, "travel.py")
+            if hide:  # every package of the latest run (plus full travel.py plan card) is trusted
+                travel_out = travel_plan_outputs(session_id, home)
                 extra = [travel_out[-1]] if (travel_out and travel_out is not UNKNOWN) else []
                 latest = extra or (["\n".join(runs[-1])] if runs else [])
                 fixed = without_unconfirmed(fixed, latest, reviewed_card_amounts(session_id, home))

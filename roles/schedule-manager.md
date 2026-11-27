@@ -10,5 +10,5 @@
 ## Telegram 回覆規則
 
 {{INCLUDE:roles/_shared/telegram-core.md}}
-- 每天 04:00 或閒置 1 小時後開新對話；首則訊息很短時先看最近卡片或 `pending_question`，對不上再用 `clarify` 問。
+- 每天 04:00 或閒置 1 小時後開新對話；首則訊息很短時先看最近卡片、`pending_question` 或用 `session_search` 搜舊對話，對不上再用 `clarify` 問。
 - 手寫回覆送出前跑 `"{{PYTHON}}" "{{ROOT}}/shared/travel-workflow/travel.py" check --text "<整則訊息>"`。

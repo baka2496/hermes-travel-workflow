@@ -40,11 +40,15 @@ def load_module(name, filename):
 
 
 def default_hermes_root():
-    if os.environ.get("HERMES_HOME"):
-        return Path(os.environ["HERMES_HOME"])
-    # Installed under <root>/shared/travel-workflow/travel.py
+    # Installed under <root>/shared/travel-workflow/travel.py: HERE is authoritative
+    # because Hermes sets HERMES_HOME to <root>/profiles/<profile> inside a profile's terminal.
     if HERE.name == "travel-workflow" and HERE.parent.name == "shared":
         return HERE.parent.parent
+    if os.environ.get("HERMES_HOME"):
+        home = Path(os.environ["HERMES_HOME"])
+        if home.parent.name == "profiles":
+            return home.parent.parent
+        return home
     local = os.environ.get("LOCALAPPDATA")
     if local and (Path(local) / "hermes").is_dir():
         return Path(local) / "hermes"
@@ -218,7 +222,7 @@ def parse_deals_plan(raw_text, city, outbound_date, return_date, guests):
                 "google_url": hm.group(3).strip(),
                 "rating": None,
                 "room_type": None,
-                "room_confirmed": True,
+                "room_confirmed": False,
                 "public_bath": False,
                 "area": None,
                 "nightly": None,
@@ -254,10 +258,10 @@ def parse_deals_plan(raw_text, city, outbound_date, return_date, guests):
                 elif hotel["room_type"] is None:
                     for part in sub.split("・"):
                         p = part.strip()
-                        if any(k in p for k in ("雙人房", "雙床房", "小雙人房", "三人房", "家庭房", "套房", "和室", "單人房")):
-                            hotel["room_type"] = p.lstrip("✅❔ ").strip()
-                            if "未確認" in p:
-                                hotel["room_confirmed"] = False
+                        if any(k in p for k in ("雙人房", "雙床房", "小雙人房", "三人房", "家庭房", "套房", "和室", "單人房", "標準房", "客房", "私人房")) or re.search(r"\b(double|twin|queen|king|single|suite|studio|standard)\b", p, re.I):
+                            cleaned = p.lstrip("✅❔ ").strip()
+                            hotel["room_type"] = cleaned
+                            hotel["room_confirmed"] = ("未確認" not in p) and (not p.startswith("❔"))
                             break
                 if sub.startswith("每晚含稅"):
                     hotel["nightly"] = parse_amount(sub)
@@ -277,9 +281,9 @@ def parse_deals_plan(raw_text, city, outbound_date, return_date, guests):
                 elif sub.startswith("每人 "):
                     hotel["per_person_total"] = parse_amount(sub)
                 j += 1
-            if hotel["stay_total"] is None and hotel["nightly"] is not None:
-                rooms = max(1, (guests + 1) // 2)
-                hotel["stay_total"] = hotel["nightly"] * nights * rooms
+            if hotel["room_type"] is None:
+                hotel["room_type"] = "房型未確認"
+                hotel["room_confirmed"] = False
             data["hotels"].append(hotel)
             i = j
             continue
@@ -346,7 +350,7 @@ def _baggage_label(status):
     }.get(status, "行李未確認")
 
 
-def format_overseas_card(parsed, budget=None, top=2, calendar_note=None):
+def format_overseas_card(parsed, budget=None, top=2, calendar_note=None, show_unconfirmed=True):
     """Render a deterministic, phone-ready Telegram message (<= 14 phone lines) from parsed data."""
     city = parsed["city"]
     out_s = short_date(parsed["outbound_date"])
@@ -363,19 +367,24 @@ def format_overseas_card(parsed, budget=None, top=2, calendar_note=None):
 
     fl = parsed["flight"]
     bag_text = _baggage_label(fl["baggage_status"])
+    if not show_unconfirmed and bag_text == "行李未確認":
+        bag_text = ""
     per_flight = fl["per_person"] or 0
     if fl["bag_estimate_per_person"]:
         per_flight += fl["bag_estimate_per_person"]
     total_flight = per_flight * guests if per_flight else None
 
-    # Prefer hotels with confirmed room types first, then cheapest combined/stay price
+    # Prefer hotels with confirmed room types; when show_unconfirmed is False, drop unconfirmed-room hotels
     hotels = list(parsed["hotels"])
     confirmed_hotels = [h for h in hotels if h.get("room_confirmed")]
-    ranked = (confirmed_hotels + [h for h in hotels if not h.get("room_confirmed")])[:max(1, top)]
+    if show_unconfirmed:
+        ranked = (confirmed_hotels + [h for h in hotels if not h.get("room_confirmed")])[:max(1, top)]
+    else:
+        ranked = confirmed_hotels[:max(1, top)]
 
     lines = [header]
     if calendar_note:
-        lines.append(f"⚠️ 行事曆：{calendar_note[:28]}")
+        lines.append(f"⚠️ 行事曆：{calendar_note[:24]}")
 
     # Headline total (from top hotel if available, else flight-only)
     if ranked and ranked[0].get("combined_total"):
@@ -387,17 +396,25 @@ def format_overseas_card(parsed, budget=None, top=2, calendar_note=None):
         else:
             lines.append(f"總計 {money(best_total)}")
     elif total_flight is not None:
-        lines.append(f"機票 {guests}人 {money(total_flight)}（{bag_text}）")
+        bag_suffix = f"（{bag_text}）" if bag_text else ""
+        lines.append(f"機票 {guests}人 {money(total_flight)}{bag_suffix}")
 
-    # Flight block (always includes times + baggage + clickable link)
+    # Flight block (always includes both airlines when they differ, times, baggage & clickable link)
     if fl["outbound_text"] and fl["inbound_text"]:
-        airline = fl["outbound_text"].split()[0]
-        flight_amt = f" {guests}人 {money(total_flight)}" if total_flight else ""
-        lines.append(f"✈️ {airline}{flight_amt}（{bag_text}）")
-        out_time = fl["outbound_text"][len(airline):].strip() if fl["outbound_text"].startswith(airline) else fl["outbound_text"]
+        out_airline = fl["outbound_text"].split()[0]
         in_airline = fl["inbound_text"].split()[0]
+        same_airline = (out_airline == in_airline)
+        airline_hdr = out_airline if same_airline else f"{out_airline}／{in_airline}"
+        flight_amt = f" {guests}人 {money(total_flight)}" if total_flight else ""
+        bag_suffix = f"（{bag_text}）" if bag_text else ""
+        lines.append(f"✈️ {airline_hdr}{flight_amt}{bag_suffix}")
+        out_time = fl["outbound_text"][len(out_airline):].strip() if fl["outbound_text"].startswith(out_airline) else fl["outbound_text"]
         in_time = fl["inbound_text"][len(in_airline):].strip() if fl["inbound_text"].startswith(in_airline) else fl["inbound_text"]
-        lines.append(f"• 去 {out_s} {out_time}｜回 {ret_s} {in_time}")
+        if same_airline:
+            lines.append(f"• 去 {out_s} {out_time}｜回 {ret_s} {in_time}")
+        else:
+            lines.append(f"• 去 {out_s} {out_airline} {out_time}")
+            lines.append(f"• 回 {ret_s} {in_airline} {in_time}")
         if fl["separate_tickets"] and fl["outbound_url"] and fl["inbound_url"]:
             link_line = f"• [去程機票]({fl['outbound_url']})／[回程機票]({fl['inbound_url']})"
         elif fl["outbound_url"]:
@@ -413,14 +430,19 @@ def format_overseas_card(parsed, budget=None, top=2, calendar_note=None):
     else:
         flight_url = fl["outbound_url"] or fl["all_flights_url"]
         link_part = f"｜[看航班]({flight_url})" if flight_url else ""
-        amt_part = f"{guests}人 {money(total_flight)}" if total_flight else "價格未確認"
-        lines.append(f"✈️ 機票 {amt_part}（{bag_text}）{link_part}")
+        amt_part = f"{guests}人 {money(total_flight)}" if total_flight else ("價格未確認" if show_unconfirmed else "")
+        bag_suffix = f"（{bag_text}）" if bag_text else ""
+        if amt_part or link_part:
+            lines.append(f"✈️ 機票 {amt_part}{bag_suffix}{link_part}".strip())
 
-    # Hotel block (always includes full name, room type, nights total, clickable booking link)
+    # Hotel block (always includes full name, room type, verified stay/nightly price, clickable booking link)
     marks = "①②③"
     if not ranked:
         all_h = f"｜[看住宿]({parsed['all_hotels_url']})" if parsed.get("all_hotels_url") else ""
-        lines.append(f"🏨 住宿：這次沒讀到價格，未確認{all_h}")
+        if show_unconfirmed:
+            lines.append(f"🏨 住宿：這次沒讀到價格，未確認{all_h}")
+        elif all_h:
+            lines.append(f"🏨 住宿：這次沒讀到確認房型{all_h}")
     else:
         for idx, h in enumerate(ranked):
             mark = marks[idx] if idx < len(marks) else f"{idx + 1}."
@@ -429,6 +451,10 @@ def format_overseas_card(parsed, budget=None, top=2, calendar_note=None):
             parts = []
             if h.get("stay_total") is not None:
                 parts.append(f"{nights}晚 {money(h['stay_total'])}")
+            elif h.get("nightly") is not None:
+                parts.append(f"每晚 {money(h['nightly'])}")
+            elif show_unconfirmed:
+                parts.append("住宿總價未確認")
             if idx > 0 and h.get("combined_total") is not None:
                 parts.append(f"合計 {money(h['combined_total'])}")
             if h.get("rating"):
@@ -444,9 +470,11 @@ def format_overseas_card(parsed, budget=None, top=2, calendar_note=None):
 
 
 def owner_quoted_budget(prefs):
-    """Return budget amount ONLY when preferences.json carries the owner's own quote."""
+    """Return TWD entire-trip budget amount ONLY when preferences.json carries the owner's own quote."""
     b = prefs.get("budget") if isinstance(prefs, dict) else None
     if isinstance(b, dict) and b.get("amount") and b.get("quote"):
+        if str(b.get("currency", "")).upper() != "TWD" or b.get("scope") != "entire_trip":
+            return None
         try:
             val = int(b["amount"])
             return val if val > 0 else None
@@ -460,6 +488,7 @@ def cmd_overseas(args):
     prefs = read_json_safe(root / "shared" / "travel-workflow" / "preferences.json")
     guests = args.guests or default_guests(prefs)
     budget = args.budget if args.budget is not None else owner_quoted_budget(prefs)
+    show_unconfirmed = prefs.get("show_unconfirmed", True) is not False
 
     if args.raw_output:
         raw_text = Path(args.raw_output).read_text(encoding="utf-8")
@@ -484,18 +513,24 @@ def cmd_overseas(args):
             return 1
 
     parsed = parse_deals_plan(raw_text, args.city, args.outbound, args.ret, guests)
-    message = format_overseas_card(parsed, budget=budget, top=args.top, calendar_note=cal_note)
-
     phone_check = load_module("phone_check", "phone-check.py")
+    message = format_overseas_card(parsed, budget=budget, top=args.top, calendar_note=cal_note, show_unconfirmed=show_unconfirmed)
     report = phone_check.check(message)
+    # Auto-trim to 1 hotel if 2 hotels pushed past the 14-line phone limit
+    if report["problems"] and args.top > 1 and any(p.get("kind") == "too_long" for p in report["problems"]):
+        shorter = format_overseas_card(parsed, budget=budget, top=1, calendar_note=cal_note, show_unconfirmed=show_unconfirmed)
+        shorter_report = phone_check.check(shorter)
+        if not shorter_report["problems"]:
+            message, report = shorter, shorter_report
+
     if args.json:
         print(json.dumps({"parsed": parsed, "message": message, "phone_check": report}, ensure_ascii=False, indent=2))
-        return 0
+        return 0 if not report["problems"] else 1
     if report["problems"]:
         for p in report["problems"]:
             print(f"- {p['kind']}: {p.get('text', '')} {p.get('hint', '')}".strip(), file=sys.stderr)
-    else:
-        print("已通過 phone-check.py 手機排版檢查，可直接原樣送出。", file=sys.stderr)
+        return 1
+    print("已通過 phone-check.py 手機排版檢查，可直接原樣送出。", file=sys.stderr)
     print(message)
     return 0
 
@@ -528,8 +563,9 @@ def _clean_room_label(line, fallback):
     return head
 
 
-def select_best_price_line(lines, *, nights=0, is_weekend=True, cheaper_than=None, budget=None, kind=""):
+def select_best_price_line(lines, *, nights=0, guests=2, is_weekend=True, cheaper_than=None, budget=None, kind=""):
     """Pick the best matching (label, unit_price, qty) from page-prices.py lines."""
+    rooms = max(1, (guests + 1) // 2)
     scored = []
     for ln in lines or []:
         prices = _extract_prices_from_line(ln)
@@ -555,7 +591,12 @@ def select_best_price_line(lines, *, nights=0, is_weekend=True, cheaper_than=Non
                 mode_score = 2
 
         per_person = any(k in ln for k in ("/人", "每人", "一位", "成人", "全票")) and "雙人" not in ln and "2人" not in ln
-        qty = 2 if (per_person and nights == 0) else max(1, nights) if nights > 0 else 1
+        if per_person:
+            qty = max(1, guests) * (nights if nights > 0 else 1)
+        elif nights > 0:
+            qty = rooms * nights
+        else:
+            qty = rooms if ("雙人" in ln or "湯屋" in ln) else 1
         unit = min(prices)
         total = unit * qty
         if cheaper_than is not None and total >= cheaper_than:
@@ -637,6 +678,28 @@ def pick_mixed_candidates(places_mod, all_places, history, *, kind=None, area=No
     return picked
 
 
+KIND_ALIASES = {
+    "泡湯": "溫泉", "湯屋": "溫泉", "溫泉湯屋": "溫泉", "泡溫泉": "溫泉", "溫泉泡湯": "溫泉",
+    "過夜": "住宿", "飯店": "住宿", "民宿": "住宿", "旅館": "住宿", "住一晚": "住宿",
+    "步道": "自然步道、看風景", "爬山": "自然步道、看風景", "健行": "自然步道、看風景",
+    "踏青": "自然步道、看風景", "風景": "自然步道、看風景", "自然步道": "自然步道、看風景", "看風景": "自然步道、看風景",
+    "海灘": "海邊", "沙灘": "海邊", "看海": "海邊", "玩水": "海邊",
+    "老街": "老街、小吃、夜市", "小吃": "老街、小吃、夜市", "夜市": "老街、小吃、夜市", "美食": "老街、小吃、夜市",
+}
+
+
+def normalize_kind(kind):
+    if not kind:
+        return None
+    k = kind.strip()
+    if k in KIND_ALIASES:
+        return KIND_ALIASES[k]
+    for alias, canonical in KIND_ALIASES.items():
+        if alias in k:
+            return canonical
+    return k
+
+
 def cmd_local(args):
     root = Path(args.hermes_root or default_hermes_root())
     shared = root / "shared" / "travel-workflow"
@@ -656,7 +719,7 @@ def cmd_local(args):
     prices_mod = load_module("page_prices", "page-prices.py")
     format_mod = load_module("format_plan", "format-plan.py")
 
-    effective_kind = args.kind or ("住宿" if nights > 0 else None)
+    effective_kind = normalize_kind(args.kind) or ("住宿" if nights > 0 else None)
     all_places = places_mod.read_places(places_path)
     if nights > 0:
         disq = (prefs.get("hot_spring_stay") or {}).get("disqualified") or []
@@ -692,16 +755,19 @@ def cmd_local(args):
         )
 
     all_pkg_objs = []
+    skip_reasons = set()
     for cand, (url, page, err) in zip(cands, fetched):
         if err or page is None:
+            skip_reasons.add("其他候選頁今天讀不到價格")
             continue
         _title, price_lines, phones = page
-        phone = (phones[0].split()[-1] if phones else "") or cand.get("phone") or ""
-        phone_source = url if (phones or phone) else None
+        # Only use a phone number verified on THIS opened page today
+        phone = (phones[0].split()[-1] if phones else "") or None
+        phone_source = url if phone else None
         transport = transport_text(prefs, cand.get("area"))
 
         picked_price = select_best_price_line(
-            price_lines, nights=nights, is_weekend=is_weekend,
+            price_lines, nights=nights, guests=guests, is_weekend=is_weekend,
             cheaper_than=args.cheaper_than, budget=budget, kind=cand.get("kind", ""),
         )
         if picked_price:
@@ -709,18 +775,23 @@ def cmd_local(args):
             item_spec = f"{label}={unit}x{qty}@{url}" if qty > 1 else f"{label}={unit}@{url}"
             all_pkg_objs.append(make_pkg(
                 cand["name"], label, transport, [item_spec], None,
-                cand.get("official") or url, phone or None, phone_source if phone else None,
+                cand.get("official") or url, phone, phone_source,
             ))
         elif cand.get("free") is True and nights == 0:
             all_pkg_objs.append(make_pkg(
                 cand["name"], "免費入園", transport, [f"門票=0@{url}"], None,
-                cand.get("official") or url, phone or None, phone_source if phone else None,
+                cand.get("official") or url, phone, phone_source,
             ))
         elif cand.get("free") == "unlisted" and nights == 0:
             all_pkg_objs.append(make_pkg(
                 cand["name"], "未列收費景點", transport, [], url,
-                cand.get("official") or url, phone or None, phone_source if phone else None,
+                cand.get("official") or url, phone, phone_source,
             ))
+        else:
+            if args.cheaper_than is not None:
+                skip_reasons.add("其他候選比原方案貴或未符合價格門檻")
+            else:
+                skip_reasons.add("其他候選頁今天沒找到符合條件的價格")
 
     if not all_pkg_objs:
         print("地點庫候選頁今天都讀不到符合條件的即時價格；請用 web_search 找新官網並用 travel.py add-place 收錄。", file=sys.stderr)
@@ -741,17 +812,21 @@ def cmd_local(args):
             break
         ident = format_mod.place_identity(cand_pkg.place, cand_pkg.official, cand_pkg.phone)
         if any(format_mod.same_place(ident, prev) for prev in seen_identities):
+            skip_reasons.add("其餘候選為重複地點")
             continue
         probe_args = argparse.Namespace(**{**common_base, **{k: v for k, v in vars(cand_pkg).items() if v not in (None, [])}})
         if cand_pkg.no_fee_listed:
             if format_mod.no_fee_problem(cand_pkg.no_fee_listed, SimpleNamespace(**common_base)):
+                skip_reasons.add("其餘候選未通過官網核對")
                 continue
         else:
             cost_out, why = format_mod.run_costs(probe_args, [])
             if why or not cost_out or "（全部未確認）" in cost_out.splitlines()[0]:
+                skip_reasons.add("其餘候選未通過價格核對")
                 continue
         _, link_why = format_mod.run_links(probe_args)
         if link_why:
+            skip_reasons.add("其餘候選連結未通過核對")
             continue
         pkg_objs.append(cand_pkg)
         seen_identities.append(ident)
@@ -764,7 +839,8 @@ def cmd_local(args):
     date_label = f"{short_date(date_iso)}–{short_date(checkout_iso)}" if checkout_iso else short_date(date_iso)
     area_label = args.area or (effective_kind or "週末出遊")
     header = f"{date_label} {area_label} {guests}人"
-    few_reason = f"只有 {len(pkg_objs)} 間符合條件，因為其他候選頁今天讀不到價格" if len(pkg_objs) < 3 else None
+    reason_text = "、".join(sorted(skip_reasons)) if skip_reasons else "地點庫目前符合的筆數不足"
+    few_reason = f"只有 {len(pkg_objs)} 間符合條件，因為{reason_text}" if len(pkg_objs) < 3 else None
 
     common = SimpleNamespace(header=header, few_reason=few_reason, **common_base)
     message, problems, notes = format_mod.build_packages(common, pkg_objs)
@@ -775,7 +851,15 @@ def cmd_local(args):
             print(f"- {p}", file=sys.stderr)
         return 1
     if cal_note:
-        message = f"⚠️ 行事曆：{cal_note[:30]}\n" + message
+        with_cal = f"⚠️ 行事曆：{cal_note[:24]}\n" + message
+        phone_check = load_module("phone_check", "phone-check.py")
+        cal_problems = phone_check.check(with_cal)["problems"]
+        if args.for_clarify:
+            cal_problems = [p for p in cal_problems if p.get("kind") != "missing_photo"]
+        if not cal_problems:
+            message = with_cal
+        else:
+            print(f"行事曆提醒：{cal_note}", file=sys.stderr)
     if args.json:
         print(json.dumps({"header": header, "packages_count": len(pkg_objs), "message": message}, ensure_ascii=False, indent=2))
         return 0
