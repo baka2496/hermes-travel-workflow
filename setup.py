@@ -91,6 +91,7 @@ MODEL_SETTING_KEYS = {
 PACKAGE_SCRIPTS = (
     ("scripts/travel-scout.py", "profiles/travel-commander/scripts/travel-scout.py"),
     ("scripts/scan-trip.py", "profiles/trip/scripts/scan-trip.py"),
+    ("scripts/travel.py", "shared/travel-workflow/travel.py"),
     ("scripts/phone-check.py", "shared/travel-workflow/phone-check.py"),
     ("scripts/booking-links.py", "shared/travel-workflow/booking-links.py"),
     ("scripts/trip-cost.py", "shared/travel-workflow/trip-cost.py"),
@@ -172,7 +173,58 @@ def rendered(path, root):
 # only its own rules (who it is, its paths and IDs, which stay out of this public repo) in SOUL.head.md,
 # with {{INCLUDE:roles/_shared/…}} lines for the shared rules; `live-souls` builds SOUL.md from the two.
 LIVE_SOULS = ("trip", "project-manager")
+LIVE_PLUGINS = ("project-manager", "trip", "us-market")
 LIVE_HEAD = "SOUL.head.md"
+
+
+def sync_live(root, *, python=None):
+    """Single-source-of-truth sync from this repo into a live Hermes root.
+
+    Updates shared/travel-workflow scripts, live profile scripts, travel-reply-check plugins,
+    and rebuilds SOUL.md from SOUL.head.md + roles/_shared without touching user state JSON files.
+    """
+    root = Path(root).expanduser().resolve()
+    updated = unchanged = 0
+    for source, target in PACKAGE_SCRIPTS:
+        if target.startswith("shared/travel-workflow/"):
+            dest = root / target
+        elif source == "scripts/travel-scout.py" and (root / "profiles/project-manager").is_dir():
+            dest = root / "profiles/project-manager/scripts/travel-scout.py"
+        elif source == "scripts/scan-trip.py" and (root / "profiles/trip").is_dir():
+            dest = root / "profiles/trip/scripts/scan-trip.py"
+        else:
+            continue
+        data = rendered(PACKAGE / source, root)
+        if dest.is_file() and dest.read_bytes() == data:
+            unchanged += 1
+        else:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+            updated += 1
+    for profile in LIVE_PLUGINS:
+        if not (root / "profiles" / profile).is_dir():
+            continue
+        for name in REPLY_CHECK_FILES:
+            dest = root / "profiles" / profile / "plugins" / REPLY_CHECK / name
+            data = (PACKAGE / "plugins" / REPLY_CHECK / name).read_bytes()
+            if dest.is_file() and dest.read_bytes() == data:
+                unchanged += 1
+            else:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(data)
+                updated += 1
+        for name in SHARED_MODULES:
+            dest = root / "profiles" / profile / "plugins" / REPLY_CHECK / name
+            data = (PACKAGE / "scripts" / name).read_bytes()
+            if dest.is_file() and dest.read_bytes() == data:
+                unchanged += 1
+            else:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(data)
+                updated += 1
+    live_souls(root, write=True, python=python)
+    print(f"Synced live root {root}: {updated} file(s) updated, {unchanged} unchanged.")
+    return 0
 
 
 def live_soul(head, root, python=None):
@@ -648,8 +700,13 @@ def main():
     command.add_argument("--root", type=Path, required=True)
     command.add_argument("--write", action="store_true", help="back up and rewrite each SOUL.md that differs")
     command.add_argument("--python", help="interpreter path for {{PYTHON}} (default: this one)")
+    command = sub.add_parser("sync-live", help="sync scripts, plugins, and SOUL.md from this repo into a live Hermes root")
+    command.add_argument("--root", type=Path, required=True)
+    command.add_argument("--python", help="interpreter path for {{PYTHON}} (default: this one)")
     args = parser.parse_args()
     try:
+        if args.command == "sync-live":
+            return sync_live(args.root, python=args.python)
         if args.command == "live-souls":
             return live_souls(args.root, write=args.write, python=args.python)
         if args.command == "check":
