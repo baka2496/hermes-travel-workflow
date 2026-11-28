@@ -570,9 +570,9 @@ class PlacesSqliteTests(unittest.TestCase):
 
         self.assertTrue(mod.is_official_venue_url("https://www.suispring.com/", "呆水溫泉 Sui Spring｜礁溪溫泉"))
         self.assertTrue(mod.is_official_venue_url("https://www.kagaya.com.tw/spring/5f/", "日勝生加賀屋 - 5F 雙人湯屋"))
+        self.assertTrue(mod.is_official_venue_url("https://www.gep.ntpc.gov.tw/x", "新北市立黃金博物館"))
         self.assertFalse(mod.is_official_venue_url("https://duckduckgo.com/y.js?ad=1", "廣告"))
         self.assertFalse(mod.is_official_venue_url("https://www.travel.taipei/zh-tw/attraction/details/1", "北投溫泉 | 臺北旅遊網"))
-        self.assertFalse(mod.is_official_venue_url("https://www.gep.ntpc.gov.tw/x", "新北市政府網站"))
         self.assertFalse(mod.is_official_venue_url("https://www.klook.com/zh-TW/activity/123", "礁溪湯屋"))
         self.assertFalse(mod.is_official_venue_url("https://www.agoda.com/hotel/123", "礁溪飯店"))
         self.assertFalse(mod.is_official_venue_url("https://www.trivago.com.tw/zh-Hant-TW/odr/x", "淡水區飯店，起"))
@@ -589,6 +589,20 @@ class PlacesSqliteTests(unittest.TestCase):
         self.assertEqual(mod.clean_discovered_name("歡迎來到礁溪寒沐酒店"), "礁溪寒沐酒店")
         self.assertEqual(mod.clean_discovered_name("票價與交通資訊-埔心牧場"), "埔心牧場")
         self.assertEqual(mod.clean_discovered_name("Xpark │ 票價&購票"), "Xpark")
+        self.assertEqual(mod.clean_discovered_name("某某溫泉 - 首頁"), "某某溫泉")
+        self.assertFalse(any(s in "某某溫泉 - 首頁" for s in mod._DISCOVER_SKIP_TITLES))
+        # FeeInfo refinement regressions: "不收費"/"無收費"/"部分路段濕滑" kept; "停車另收費" & "需購買門票，兒童免費" excluded
+        self.assertFalse(mod._city_portal_is_paid("免費參觀"))
+        self.assertFalse(mod._city_portal_is_paid("不收費"))
+        self.assertFalse(mod._city_portal_is_paid("無收費"))
+        self.assertFalse(mod._city_portal_is_paid("部分路段濕滑，免費開放"))
+        self.assertTrue(mod._city_portal_is_paid("免費參觀，停車另收費"))
+        self.assertTrue(mod._city_portal_is_paid("需購買門票，兒童免費"))
+        # Area verification regressions: 02 phone alone never confirms district; loose body "台北" does not override Hualien address
+        self.assertIsNone(mod._verify_discovered_area("神秘湯屋", "神秘湯屋", "", ["02-2891-1234"], "淡水"))
+        self.assertIsNone(mod._verify_discovered_area("神秘湯屋", "神秘湯屋", "從台北出發約2小時，花蓮縣瑞穗鄉溫泉路1號", [], "宜蘭"))
+        self.assertIsNone(mod._verify_discovered_area("神秘湯屋", "神秘湯屋", "地址：宜蘭縣礁溪鄉某路1號", ["04-2222-3333"], "礁溪"))
+        self.assertEqual(mod._verify_discovered_area("斑比山丘", "斑比山丘", "歡迎光臨，宜蘭縣冬山鄉下湖路285號", [], "宜蘭"), "冬山")
         # Live-audit regression: third-person surcharge rules and COVID quarantine notices must not count as rates
         self.assertEqual(
             mod.filter_opendata_price_lines("opendata_hotel", [
@@ -675,6 +689,36 @@ class PlacesSqliteTests(unittest.TestCase):
         self.assertIn("https://www.hualien-spa.example/spring", probed)
         self.assertIn("https://www.mommyblog.example/farm", probed)
         self.assertIn("https://www.js-ticket.example/ticket", probed)
+
+        # 4. Real non-mocked read_page + page_evidence cache integration test inside discover()
+        hualien_html = self.root / "hualien-live.html"
+        hualien_html.write_text(
+            page("神秘山林湯屋", "<p>雙人湯屋｜平日 NT$ 1,800 / 90分鐘</p><p>地址：花蓮縣瑞穗鄉溫泉路一段1號</p>"),
+            encoding="utf-8",
+        )
+        yilan_html = self.root / "yilan-live.html"
+        yilan_html.write_text(
+            page("山谷秘境湯屋", "<p>雙人湯屋｜平日 NT$ 2,200 / 90分鐘</p><p>地址：宜蘭縣礁溪鄉五峰路10號</p>"),
+            encoding="utf-8",
+        )
+        for html_path, test_url, expect_saved in (
+            (hualien_html, "https://hualien-real-cache.example/spa", False),
+            (yilan_html, "https://yilan-real-cache.example/spa", True),
+        ):
+            live_args = SimpleNamespace(
+                places=self.db, history=self.history, hermes_root=self.root,
+                html_file=str(html_path), now=now_ts, timeout=5,
+                max_queries=1, max_candidates=5, delay=0.0, offset=0, dry_run=False,
+            )
+            with mock.patch.object(mod, "ddg_search", return_value=[(test_url, "秘境湯屋")]):
+                # NO mock on read_page and NO mock on _read_page_text: proves page_evidence cache actually carries the page text
+                self.assertIsNone(mod.discover(live_args))
+            names_now = [p["name"] for p in mod.read_places(self.db)]
+            if expect_saved:
+                self.assertIn("山谷秘境湯屋", names_now)
+            else:
+                self.assertNotIn("神秘山林湯屋", names_now)
+                self.assertIn(test_url, mod.read_harvest_checked(self.db, now=now_ts))
 
 
 if __name__ == "__main__":
