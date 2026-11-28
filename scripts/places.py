@@ -693,7 +693,33 @@ _CITY_PORTAL_TRAIL_HINTS = (
 _CITY_PORTAL_ICONIC_RE = re.compile(
     r"不厭亭|陰陽海|桃源谷|神社|步道|古道|瀑布|燈塔|海岸|海灣|漁港|吊橋|老街|猴硐車站|三貂嶺車站|煤礦|觀景|隧道|沙灘|濕地|溼地"
 )
-_CITY_PORTAL_PAID_FEE_RE = re.compile(r"門票|收費|全票|票價|入場費|入園費")
+_CITY_PORTAL_PAID_FEE_RE = re.compile(r"門票|收費|全票|票價|入場費|入園費|需購票|購買")
+_CITY_PORTAL_FREE_ALL_RE = re.compile(r"免費參觀|免費入場|免費入園|免費開放|免門票|免收費|無需門票|不需門票|全館免費")
+_CITY_PORTAL_PARTIAL_FREE_RE = re.compile(r"需購買|購買門票|另計|另收|部分|兒童免費|幼童免費|未滿\d+歲免費")
+
+
+def _city_portal_is_paid(fee_info):
+    """True when FeeInfo indicates paid or partially-free admission (never treat as open free spot)."""
+    if not fee_info:
+        return False
+    if _extract_amounts(fee_info) or _CITY_PORTAL_PARTIAL_FREE_RE.search(fee_info):
+        return True
+    if _CITY_PORTAL_PAID_FEE_RE.search(fee_info):
+        return not _CITY_PORTAL_FREE_ALL_RE.search(fee_info)
+    return False
+
+
+def _city_portal_title_matches(item_name, page_title):
+    """Verify a derived city-portal page title actually belongs to the expected attraction (not a homepage/404 redirect)."""
+    t = html.unescape(page_title or "").replace("臺", "台").strip()
+    if not t or "404" in t or "找不到" in t:
+        return False
+    core = re.sub(r"[（(][^）)]*[）)]", "", item_name or "").replace("臺", "台").strip()
+    if core and core in t:
+        return True
+    # Also accept first token before space when official name combines two segments (e.g. "內溝山 翠湖步道")
+    first = core.split()[0] if core else ""
+    return len(first) >= 2 and first in t
 
 
 def city_portal_url(rec):
@@ -741,8 +767,8 @@ def parse_city_portal_attractions(items, counties, max_items=30, skip_urls=()):
         if any(s in name for s in (*SKIP_TITLES, *_CITY_PORTAL_SKIP_EXTRA)):
             continue
         fee_info = (rec.get("FeeInfo") or "").strip()
-        if _extract_amounts(fee_info) or (_CITY_PORTAL_PAID_FEE_RE.search(fee_info) and "免費" not in fee_info):
-            continue  # never admit paid venues as open unlisted spots
+        if _city_portal_is_paid(fee_info):
+            continue  # never admit paid or partial-free venues as open unlisted spots
         if any(k in name for k in ("老街", "夜市", "廟口")):
             kind = "老街、小吃、夜市"
         elif any(k in name for k in _CITY_PORTAL_BEACH_HINTS):
@@ -795,6 +821,8 @@ DISCOVER_BLOCKED_HOSTS = (
     "startravel.com.tw", "airbnb.com", "airbnb.com.tw", "owlting.com", "dearbnb.com",
     "okgo.tw", "travelking.com.tw", "taiwanstay.net.tw", "easytravel.com.tw",
     "hotel.com.tw", "fourway.com.tw", "fun-taiwan.com", "taiwan.net.tw", "newtaipei.travel",
+    "travel.taipei", "travel.tycg.gov.tw", "travel.yilan.tw", "tour.klcg.gov.tw",
+    "travel.taichung.gov.tw", "twtainan.net", "khh.travel", "gov.tw",
     "expedia.com.tw", "booking.com.tw", "agoda.com.tw", "trip.com.tw",
     "pixnet.net", "popdaily.com.tw", "walkerland.com.tw", "bjsmile.tw", "travelpark.tw",
     "curly.com.tw", "welcometw.com", "keke.tw", "vocus.cc", "medium.com", "wordpress.com",
@@ -967,6 +995,69 @@ def clean_discovered_name(title):
     return picked if len(picked) >= 2 else ""
 
 
+_DISCOVER_SKIP_TITLES = (
+    *(s for s in SKIP_TITLES if s != "溫泉"),
+    "臺北旅遊網", "台北旅遊網", "新北市觀光旅遊網", "基隆旅遊網", "桃園觀光導覽網", "宜蘭勁好玩",
+)
+_AREA_COUNTY_HINTS = {
+    "礁溪": ("礁溪", "宜蘭"),
+    "宜蘭": ("宜蘭", "礁溪", "羅東", "冬山", "頭城", "蘇澳", "員山", "三星", "五結", "壯圍"),
+    "北投": ("北投", "台北", "臺北", "陽明山"),
+    "台北士林": ("士林", "陽明山", "菁山", "台北", "臺北"),
+    "烏來": ("烏來", "新北"),
+    "金山": ("金山", "萬里", "新北"),
+    "瑞芳": ("瑞芳", "九份", "金瓜石", "新北"),
+    "淡水": ("淡水", "新北"),
+    "桃園": ("桃園", "中壢", "大溪", "楊梅", "龍潭", "新屋", "大園", "復興", "埔心"),
+    "基隆": ("基隆", "八斗子", "和平島", "外木山"),
+}
+_ADDRESS_SNIPPET_RE = re.compile(r"(?:地址|位於|位在|ADD|ADDRESS)\s*[：:｜|]?\s*([^\n。]{4,50})", re.I)
+
+
+def _read_page_text(args, url):
+    """Fetch cached plain text of a recently read page for address/area verification."""
+    try:
+        evidence = load("page_evidence", "page_evidence.py")
+        return evidence.latest_page_text(args.hermes_root, url) or ""
+    except Exception:
+        return ""
+
+
+def _verify_discovered_area(name, raw_title, page_text, phones, default_area):
+    """Return a confirmed area from title/page content/address, or None when the page is off-area or unverified."""
+    title_block = f"{name} {raw_title}"
+    addr_hits = " ".join(_ADDRESS_SNIPPET_RE.findall(page_text or ""))
+    # Reject immediately if title or explicit address clearly points outside northern Taiwan
+    if not _OFF_NORTH_AREA_RE.search(default_area):
+        if _OFF_NORTH_AREA_RE.search(title_block):
+            return None
+        if addr_hits and _OFF_NORTH_AREA_RE.search(addr_hits) and not any(
+            tok in addr_hits for tok in _AREA_COUNTY_HINTS.get(default_area, (default_area,))
+        ):
+            return None
+    # Prefer specific northern token found in title or explicit address first, then page body
+    for scope in (title_block, addr_hits, (page_text or "")[:3000]):
+        if not scope:
+            continue
+        inferred = _infer_discovered_area(scope, "")
+        if inferred:
+            # Ensure inferred northern area isn't contradicted by an off-region address
+            return inferred
+    # Fall back to default_area ONLY when page text or phone area code confirms the target county
+    expected = _AREA_COUNTY_HINTS.get(default_area, (default_area,))
+    combined = f"{title_block} {(page_text or '')[:3000]}"
+    if any(tok in combined for tok in expected):
+        return default_area
+    phone_str = " ".join(phones or ())
+    if default_area in ("北投", "台北士林", "烏來", "金山", "瑞芳", "淡水", "基隆") and re.search(r"\b02[-\s]?\d", phone_str):
+        return default_area
+    if default_area in ("礁溪", "宜蘭") and re.search(r"\b03[-\s]?9\d", phone_str):
+        return default_area
+    if default_area == "桃園" and re.search(r"\b03[-\s]?[234]\d", phone_str):
+        return default_area
+    return None
+
+
 def _infer_discovered_area(text, default_area):
     for tok in AREA_TOKENS:
         if tok in text:
@@ -1082,19 +1173,20 @@ def discover(args):
             name = hit_name
         else:
             name = page_name or hit_name
-        if not name or any(s in name for s in ("遊客中心", "懶人包", "攻略", "推薦")):
-            skipped.append(f"{raw_title or host}（頁名無法辨識場所）")
+        if not name or any(s in f"{name} {raw_title}" for s in (*_DISCOVER_SKIP_TITLES, "懶人包", "攻略", "推薦")):
+            skipped.append(f"{raw_title or host}（非單一場所頁或屬入口導覽頁）")
             probed_entries.append((url, raw_title or host, "bad_name"))
-            continue
-        if _OFF_NORTH_AREA_RE.search(f"{name} {raw_title}") and not _OFF_NORTH_AREA_RE.search(item["default_area"]):
-            skipped.append(f"{name}（非目標查詢區域）")
-            probed_entries.append((url, name, "off_area"))
             continue
         if any(_AFFILIATE_BLOG_RE.search(line) for line in lines):
             skipped.append(f"{name}（含聯盟推廣碼，疑似部落格文章）")
             probed_entries.append((url, name, "affiliate_blog"))
             continue
-        area = _infer_discovered_area(f"{name} {raw_title}", item["default_area"])
+        page_text = _read_page_text(args, url)
+        area = _verify_discovered_area(name, raw_title, page_text, phones, item["default_area"])
+        if not area:
+            skipped.append(f"{name}（頁面未確認目標地區或位於其他縣市）")
+            probed_entries.append((url, name, "off_area"))
+            continue
         kind = "溫泉" if any(k in f"{name} {raw_title}" for k in HOT_SPRING_HINTS) else item["default_kind"]
         filter_src = "opendata_hotel" if kind in ("溫泉", "住宿") else "opendata_attraction"
         lines = filter_opendata_price_lines(filter_src, lines)
@@ -1290,8 +1382,8 @@ def harvest(args):
                 probed_entries.append((item["price_page"], item["name"], "fetch_failed"))
             continue
         _title, lines, phones, free = found
-        if is_city_portal and (not _title or "404" in _title or "找不到" in _title):
-            skipped.append(f"{item['name']}（縣市觀光網頁不存在）")
+        if is_city_portal and not _city_portal_title_matches(item["name"], _title):
+            skipped.append(f"{item['name']}（縣市觀光網頁標題不符或不存在）")
             probed_entries.append((item["price_page"], item["name"], "bad_page"))
             continue
         if is_opendata:

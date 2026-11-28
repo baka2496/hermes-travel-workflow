@@ -493,6 +493,20 @@ class PlacesSqliteTests(unittest.TestCase):
                 "PostalAddress": {"City": "新北市", "Town": "瑞芳區"},
             },
             {
+                "AttractionID": "Attraction_382000000A_999004",
+                "AttractionName": "某部分免費古道",
+                "WebsiteURL": "",
+                "FeeInfo": "需購買門票，兒童免費",
+                "PostalAddress": {"City": "新北市", "Town": "瑞芳區"},
+            },
+            {
+                "AttractionID": "Attraction_382000000A_999005",
+                "AttractionName": "跳轉首頁假步道",
+                "WebsiteURL": "",
+                "FeeInfo": "",
+                "PostalAddress": {"City": "新北市", "Town": "瑞芳區"},
+            },
+            {
                 "AttractionID": "Attraction_382000000A_999002",
                 "AttractionName": "某市立博物館",
                 "WebsiteURL": "",
@@ -508,19 +522,22 @@ class PlacesSqliteTests(unittest.TestCase):
             },
         ]
         city_cands = mod.parse_city_portal_attractions(ntpc_records, ["新北"], max_items=10)
-        self.assertEqual([c["name"] for c in city_cands], ["陰陽海", "不厭亭"])
+        # Paid and partial-free ("需購買門票，兒童免費") trails are excluded; open spots are kept
+        self.assertEqual([c["name"] for c in city_cands], ["跳轉首頁假步道", "陰陽海", "不厭亭"])
         by_city_name = {c["name"]: c for c in city_cands}
         self.assertEqual(by_city_name["不厭亭"]["price_page"], "https://newtaipei.travel/zh-tw/attractions/detail/110088")
         self.assertEqual(by_city_name["陰陽海"]["kind"], "海邊")
         self.assertTrue(by_city_name["不厭亭"]["no_fee_listed"])
 
-        # Distinct newtaipei.travel IDs must NOT collapse into one place during harvest()
+        # Distinct newtaipei.travel IDs must NOT collapse, and homepage/404 redirects are rejected as bad_page
         empty_cat = self.root / "empty-cat-city.json"
         empty_cat.write_text('{"places": []}', encoding="utf-8")
 
         def fake_city_read(url, args):
             if "110088" in url:
                 return ("不厭亭 | 新北市觀光旅遊網", [], ["02-2960-3456"], False), None
+            if "999005" in url:
+                return ("新北市觀光旅遊網", [], ["02-2960-3456"], False), None  # homepage redirect mismatch
             return ("陰陽海 | 新北市觀光旅遊網", [], ["02-2960-3456"], False), None
 
         city_args = SimpleNamespace(
@@ -535,11 +552,27 @@ class PlacesSqliteTests(unittest.TestCase):
             self.assertIsNone(mod.harvest(city_args))
         saved_city = mod.read_places(self.db)
         self.assertEqual({p["name"] for p in saved_city}, {"不厭亭", "陰陽海"})
+        self.assertIn("https://newtaipei.travel/zh-tw/attractions/detail/999005", mod.read_harvest_checked(self.db, now=now_ts))
 
-        # 2. Official venue URL filter & title cleaning
+        # 2. DuckDuckGo HTML parser + official venue URL filter + title cleaning
+        ddg_html = (
+            '<div class="results">'
+            '<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.suispring.com%2Fspring&amp;rut=1">呆水溫泉｜礁溪湯屋</a>'
+            '<a class="result__a" href="https://duckduckgo.com/y.js?ad_domain=foo">廣告連結</a>'
+            '</div>'
+        )
+        parser = mod._DDGResultParser()
+        parser.feed(ddg_html)
+        unwrapped = [(mod._unwrap_ddg_url(h), t) for h, t in parser.results]
+        self.assertEqual(unwrapped[0], ("https://www.suispring.com/spring", "呆水溫泉｜礁溪湯屋"))
+        self.assertTrue(mod.is_official_venue_url(*unwrapped[0]))
+        self.assertFalse(mod.is_official_venue_url(*unwrapped[1]))
+
         self.assertTrue(mod.is_official_venue_url("https://www.suispring.com/", "呆水溫泉 Sui Spring｜礁溪溫泉"))
         self.assertTrue(mod.is_official_venue_url("https://www.kagaya.com.tw/spring/5f/", "日勝生加賀屋 - 5F 雙人湯屋"))
         self.assertFalse(mod.is_official_venue_url("https://duckduckgo.com/y.js?ad=1", "廣告"))
+        self.assertFalse(mod.is_official_venue_url("https://www.travel.taipei/zh-tw/attraction/details/1", "北投溫泉 | 臺北旅遊網"))
+        self.assertFalse(mod.is_official_venue_url("https://www.gep.ntpc.gov.tw/x", "新北市政府網站"))
         self.assertFalse(mod.is_official_venue_url("https://www.klook.com/zh-TW/activity/123", "礁溪湯屋"))
         self.assertFalse(mod.is_official_venue_url("https://www.agoda.com/hotel/123", "礁溪飯店"))
         self.assertFalse(mod.is_official_venue_url("https://www.trivago.com.tw/zh-Hant-TW/odr/x", "淡水區飯店，起"))
@@ -576,7 +609,7 @@ class PlacesSqliteTests(unittest.TestCase):
             [],
         )
 
-        # 3. End-to-end discover(): only real-priced official venues saved, rejects affiliate blogs / off-area / fake-free
+        # 3. End-to-end discover(): only real-priced, area-verified official venues saved
         def fake_ddg(query, timeout=12):
             return [
                 ("https://www.klook.com/zh-TW/activity/99", "礁溪溫泉湯屋"),
@@ -584,6 +617,7 @@ class PlacesSqliteTests(unittest.TestCase):
                 ("https://www.noprice-spa.example/spring", "沒寫價湯屋｜礁溪溫泉"),
                 ("https://www.blog-list.example/", "2026礁溪10間必泡湯屋推薦"),
                 ("https://www.qingjing-farm.example/ticket", "票價營業資訊-清境農場"),
+                ("https://www.hualien-spa.example/spring", "神秘湯屋會館"),
                 ("https://www.mommyblog.example/farm", "某秘密農場門票資訊"),
                 ("https://www.js-ticket.example/ticket", "某水族館 │ 票價&購票"),
             ]
@@ -593,11 +627,20 @@ class PlacesSqliteTests(unittest.TestCase):
                 return ("呆水溫泉 Sui Spring｜礁溪雙人湯屋", ["雙人湯屋｜平日 NT$ 2,800／90分鐘"], ["03-988-3566"], False), None
             if "qingjing-farm" in url:
                 return ("票價營業資訊-清境農場", ["入園票價｜全票 270元"], [], False), None
+            if "hualien-spa" in url:
+                return ("神秘湯屋會館", ["雙人湯屋｜平日 NT$ 1,800／90分鐘"], [], False), None
             if "mommyblog" in url:
                 return ("某秘密農場門票資訊", ["票價：全票200元，輸入KLOOK購票碼ABC99享優惠"], [], False), None
             if "js-ticket" in url:
                 return ("某水族館 │ 票價&購票", [], [], True), None  # child-free notice on JS ticket page must NOT pass
             return ("沒寫價湯屋", ["免費停車", "加床平日$800元"], [], True), None
+
+        def fake_page_text(args, url):
+            if "hualien-spa" in url:
+                return "神秘湯屋會館 地址：花蓮縣瑞穗鄉溫泉路一段1號"
+            if "suispring.com" in url:
+                return "呆水溫泉 地址：宜蘭縣礁溪鄉五峰路89-6號"
+            return ""
 
         disc_args = SimpleNamespace(
             places=self.db, history=self.history, hermes_root=self.root,
@@ -605,12 +648,13 @@ class PlacesSqliteTests(unittest.TestCase):
             max_queries=1, max_candidates=10, delay=0.0, offset=0, dry_run=True,
         )
         with mock.patch.object(mod, "ddg_search", side_effect=fake_ddg), \
-             mock.patch.object(mod, "read_page", side_effect=fake_discover_read):
+             mock.patch.object(mod, "read_page", side_effect=fake_discover_read), \
+             mock.patch.object(mod, "_read_page_text", side_effect=fake_page_text):
             # dry-run writes nothing
             self.assertIsNone(mod.discover(disc_args))
             self.assertEqual(len(mod.read_places(self.db)), 2)
             self.assertNotIn("https://www.noprice-spa.example/spring", mod.read_harvest_checked(self.db, now=now_ts))
-            # real run saves 呆水溫泉 only, and records rejected candidates in harvest_checked
+            # real run saves 呆水溫泉 only, and records rejected candidates (incl. Hualien address mismatch) in harvest_checked
             disc_args.dry_run = False
             self.assertIsNone(mod.discover(disc_args))
 
@@ -619,6 +663,7 @@ class PlacesSqliteTests(unittest.TestCase):
         self.assertIn("呆水溫泉", names)
         self.assertNotIn("沒寫價湯屋", names)
         self.assertNotIn("清境農場", names)
+        self.assertNotIn("神秘湯屋會館", names)
         self.assertNotIn("某秘密農場門票資訊", names)
         self.assertNotIn("某水族館", names)
         sui = next(p for p in saved_all if p["name"] == "呆水溫泉")
@@ -627,6 +672,7 @@ class PlacesSqliteTests(unittest.TestCase):
         probed = mod.read_harvest_checked(self.db, now=now_ts)
         self.assertIn("https://www.noprice-spa.example/spring", probed)
         self.assertIn("https://www.qingjing-farm.example/ticket", probed)
+        self.assertIn("https://www.hualien-spa.example/spring", probed)
         self.assertIn("https://www.mommyblog.example/farm", probed)
         self.assertIn("https://www.js-ticket.example/ticket", probed)
 
