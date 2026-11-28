@@ -325,6 +325,84 @@ class PlacesSqliteTests(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertIn("DatabaseError", err)
 
+    def test_opendata_parsers_and_harvest_checked_incremental_tracking(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("places_mod", REPO / "scripts" / "places.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        # Expanded open-public classification keeps real northern open spots while still skipping paid parks
+        self.assertEqual(mod.classify_taiwan_attraction("西門町商圈", "台北"), ("老街、小吃、夜市", "台北萬華"))
+        self.assertEqual(mod.classify_taiwan_attraction("冬山河親水公園", "宜蘭"), ("自然步道、看風景", "冬山"))
+        self.assertEqual(mod.classify_taiwan_attraction("南方澳", "宜蘭"), ("海邊", "蘇澳"))
+        self.assertEqual(mod.classify_taiwan_attraction("臺北龍山寺", "台北"), ("其他", "台北"))
+
+        # Tourism V2.1 Attraction parser: enforces HTTPS, skips social links, never guesses paid spots as free
+        attr_items = [
+            {"AttractionName": "潮境智能海洋館", "PostalAddress": {"City": "基隆市", "Town": "中正區"},
+             "WebsiteURL": "https://iocean.nmmst.gov.tw/", "IsAccessibleForFree": 1, "FeeInfo": "全票300元"},
+            {"AttractionName": "菌寶貝博物館", "PostalAddress": {"City": "宜蘭縣", "Town": "宜蘭市"},
+             "WebsiteURL": "https://www.junbaby.com.tw/", "IsAccessibleForFree": 1, "FeeInfo": "全館免費入場"},
+            {"AttractionName": "臉書粉專景點", "PostalAddress": {"City": "新北市", "Town": "瑞芳區"},
+             "WebsiteURL": "https://www.facebook.com/foo", "IsAccessibleForFree": 1, "FeeInfo": "免費"},
+            {"AttractionName": "南部景點", "PostalAddress": {"City": "高雄市", "Town": "左營區"},
+             "WebsiteURL": "https://kh.example/", "IsAccessibleForFree": 1, "FeeInfo": "免費"},
+        ]
+        parsed_attr = mod.parse_opendata_attractions(attr_items, ["基隆", "宜蘭", "新北"])
+        by_name = {x["name"]: x for x in parsed_attr}
+        self.assertEqual(set(by_name), {"潮境智能海洋館", "菌寶貝博物館"})
+        self.assertFalse(by_name["潮境智能海洋館"]["no_fee_listed"])  # FeeInfo has 300元 -> must read live price
+        self.assertTrue(by_name["菌寶貝博物館"]["no_fee_listed"])     # explicit free with no price
+
+        # Tourism V2.1 Hotel parser: prioritizes hot springs, enforces no_fee_listed=False, respects skip_urls
+        hotel_items = [
+            {"HotelName": "一般商旅", "PostalAddress": {"City": "桃園市", "Town": "中壢區"},
+             "WebsiteURL": "https://biz.example/", "Description": "商務住宿"},
+            {"HotelName": "礁溪溫泉飯店", "PostalAddress": {"City": "宜蘭縣", "Town": "礁溪鄉"},
+             "WebsiteURL": "https://spa.example/", "Description": "美人湯溫泉湯屋"},
+            {"HotelName": "已測過旅館", "PostalAddress": {"City": "臺北市", "Town": "中正區"},
+             "WebsiteURL": "https://checked.example/", "Description": "飯店"},
+            {"HotelName": "HTTP舊站", "PostalAddress": {"City": "新北市", "Town": "淡水區"},
+             "WebsiteURL": "http://insecure.example/", "Description": "飯店"},
+        ]
+        parsed_hot = mod.parse_opendata_hotels(hotel_items, ["桃園", "宜蘭", "台北", "新北"], skip_urls={"https://checked.example/"})
+        self.assertEqual([x["name"] for x in parsed_hot], ["礁溪溫泉飯店", "一般商旅"])
+        self.assertEqual(parsed_hot[0]["kind"], "溫泉")
+        self.assertEqual(parsed_hot[0]["area"], "礁溪")
+        self.assertFalse(parsed_hot[0]["no_fee_listed"])
+        self.assertEqual(parsed_hot[1]["kind"], "住宿")
+        self.assertFalse(parsed_hot[1]["no_fee_listed"])
+
+        # harvest_checked remembers probed URLs for 30 days and expires older ones
+        mod.write_places(self.db, [])
+        mod.record_harvest_checked(self.db, [("https://old.example/", "舊站", "no_price")], "2026-09-01")
+        mod.record_harvest_checked(self.db, [("https://recent.example/", "近站", "no_price")], "2026-11-25")
+        now_ts = time.mktime((2026, 11, 28, 12, 0, 0, 0, 0, -1))
+        checked = mod.read_harvest_checked(self.db, max_age_days=30, now=now_ts)
+        self.assertIn("https://recent.example/", checked)
+        self.assertNotIn("https://old.example/", checked)
+
+        # Quality filter rejects hotel surcharges/fines/subsidies and souvenir-shop shipping/cart prices
+        self.assertEqual(
+            mod.filter_opendata_price_lines("opendata_hotel", [
+                "暖陽雙人房｜NT$ 3,600 起／晚",
+                "加床，平日$800元/人",
+                "退房時間11:00，延遲退房每小時$1000",
+                "禁菸違規罰鍰新台幣10,000元",
+                "2026旅展住宿券每張NT$3,500起",
+            ]),
+            ["暖陽雙人房｜NT$ 3,600 起／晚"],
+        )
+        self.assertEqual(
+            mod.filter_opendata_price_lines("opendata_attraction", [
+                "烏來台車｜全票單程50元",
+                "0 個商品 - NT$0",
+                "本島滿$3000免運費",
+                "熱門商品｜NT$690",
+            ]),
+            ["烏來台車｜全票單程50元"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

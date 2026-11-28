@@ -18,13 +18,16 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import importlib.util
+import io
 import json
 from pathlib import Path
 import re
 import sqlite3
+import ssl
 import sys
 import time
 import urllib.request
+import zipfile
 
 HERE = Path(__file__).resolve().parent
 KINDS = ("溫泉", "住宿", "自然步道、看風景", "海邊", "老街、小吃、夜市", "其他")
@@ -71,6 +74,12 @@ CREATE TABLE IF NOT EXISTS places (
 CREATE INDEX IF NOT EXISTS idx_places_kind_status ON places (kind, status);
 CREATE INDEX IF NOT EXISTS idx_places_area_status ON places (area, status);
 CREATE INDEX IF NOT EXISTS idx_places_country ON places (country_code);
+CREATE TABLE IF NOT EXISTS harvest_checked (
+  url TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  checked_at TEXT NOT NULL
+);
 """
 
 _STANDARD_PLACE_KEYS = {
@@ -220,6 +229,37 @@ def write_places(path, places):
                 "prices_json, free_json, checked_at, added_at, status, fail_reason, extra_json) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
+            )
+    finally:
+        con.close()
+
+
+def read_harvest_checked(path, max_age_days=30, now=None):
+    """Return URLs already probed by Open Data harvest within max_age_days (SQLite only)."""
+    path = Path(path)
+    if not is_sqlite_path(path) or not path.exists():
+        return set()
+    cutoff = (dt.date.fromtimestamp(now or time.time()) - dt.timedelta(days=max_age_days)).isoformat()
+    con = _open_places_db(path)
+    try:
+        rows = con.execute("SELECT url FROM harvest_checked WHERE checked_at >= ?", (cutoff,)).fetchall()
+        return {r["url"] for r in rows if r["url"]}
+    finally:
+        con.close()
+
+
+def record_harvest_checked(path, entries, checked_date):
+    """Remember probed Open Data URLs so weekly harvests explore new hotels/spots instead of retrying failed sites."""
+    path = Path(path)
+    if not entries or not is_sqlite_path(path):
+        return
+    con = _open_places_db(path)
+    try:
+        with con:
+            con.executemany(
+                "INSERT INTO harvest_checked (url, name, outcome, checked_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(url) DO UPDATE SET name = excluded.name, outcome = excluded.outcome, checked_at = excluded.checked_at",
+                [(url, name, outcome, checked_date) for url, name, outcome in entries],
             )
     finally:
         con.close()
@@ -376,15 +416,80 @@ TAIWAN_COUNTIES = {
     "台東": "0001123", "臺東": "0001123",
 }
 DEFAULT_HARVEST_COUNTIES = ("台北", "新北", "基隆", "桃園", "宜蘭")
-OLD_STREET_HINTS = ("老街", "夜市", "廟口", "九份", "平溪", "烏來", "金山", "淡水", "深坑", "三峽", "鶯歌", "大溪老街")
-BEACH_HINTS = ("海濱", "漁港", "漁人碼頭", "燈塔", "左岸", "蜜月灣", "沙灘", "海岸", "潮境", "富貴角", "淺水灣", "白沙灣", "金色水岸")
-TRAIL_HINTS = ("步道", "瀑布", "國家公園", "茶園", "風景特定區", "風景區", "擎天崗", "冷水坑", "象山", "自然保留區", "運動公園")
+OLD_STREET_HINTS = ("老街", "夜市", "廟口", "商圈", "花市", "紅樓", "九份", "平溪", "烏來", "金山", "淡水", "深坑", "三峽", "鶯歌", "大溪老街")
+BEACH_HINTS = ("海濱", "漁港", "漁人碼頭", "燈塔", "左岸", "蜜月灣", "沙灘", "海岸", "潮境", "富貴角", "淺水灣", "白沙灣", "金色水岸",
+               "海潮", "奇岩", "石門洞", "南方澳", "基隆港", "基隆嶼", "海洋公園", "藍色公路", "碼頭")
+TRAIL_HINTS = ("步道", "瀑布", "國家公園", "茶園", "風景特定區", "風景區", "擎天崗", "冷水坑", "象山", "自然保留區", "運動公園",
+               "親水公園", "植物園", "自然中心", "水庫", "梯田", "綠色走廊", "公園", "露營區", "慈湖", "砲臺", "砲台", "綠園", "地質區")
+CULTURE_OPEN_HINTS = ("紀念堂", "忠烈祠", "龍山寺", "保安宮", "行天宮", "城隍廟", "孔廟", "指南宮", "法鼓山", "祖師廟",
+                      "慈祐宮", "青山宮", "關渡宮", "王公廟", "天公廟", "昭應宮", "書院")
 SKIP_TITLES = ("遊客中心", "水上運動中心", "溫泉", "博物館", "美術館", "紀念館", "文化館", "森林遊樂區", "地質公園", "海水浴場", "官邸", "樂園")
 AREA_TOKENS = (
     "北投", "士林", "淡水", "九份", "瑞芳", "烏來", "金山", "萬里", "石門", "三芝", "平溪", "十分",
     "深坑", "三峽", "鶯歌", "八里", "福隆", "貢寮", "鼻頭", "基隆", "大溪", "桃園", "礁溪", "羅東",
-    "宜蘭", "陽明山", "貓空", "華西街", "饒河", "寧夏", "野柳", "富貴角", "淡水",
+    "宜蘭", "陽明山", "貓空", "華西街", "饒河", "寧夏", "野柳", "富貴角", "蘇澳", "頭城", "冬山",
+    "三星", "大同", "員山", "五結", "壯圍", "南澳", "中壢", "龍潭", "復興", "新屋", "大園",
+    "西門", "信義", "大安", "松山", "萬華", "中山", "中正", "關渡", "碧潭", "板橋", "龍洞", "八斗子", "外木山", "南方澳",
 )
+
+TOURISM_ATTRACTIONS_ZIP = "https://media.taiwan.net.tw/XMLReleaseAll_public/v2.0/Zh_tw/Attraction-json.zip"
+TOURISM_HOTELS_ZIP = "https://media.taiwan.net.tw/XMLReleaseAll_public/v2.0/Zh_tw/Hotel-json.zip"
+OPENDATA_CITY_MAP = {
+    "台北": ("臺北市", "台北市"), "臺北": ("臺北市", "台北市"),
+    "新北": ("新北市",),
+    "基隆": ("基隆市",),
+    "桃園": ("桃園市",),
+    "宜蘭": ("宜蘭縣",),
+    "新竹": ("新竹市", "新竹縣"),
+    "台中": ("臺中市", "台中市"), "臺中": ("臺中市", "台中市"),
+    "台南": ("臺南市", "台南市"), "臺南": ("臺南市", "台南市"),
+    "高雄": ("高雄市",),
+    "花蓮": ("花蓮縣",),
+    "台東": ("臺東縣", "台東縣"), "臺東": ("臺東縣", "台東縣"),
+}
+SOCIAL_HOSTS = ("facebook.com", "fb.com", "instagram.com", "line.me", "youtube.com", "youtu.be", "twitter.com", "x.com")
+HOT_SPRING_HINTS = ("溫泉", "湯屋", "冷泉", "湯泉", "湯旅", "湯宿", "溫泉會館", "溫泉飯店")
+PRIORITY_TOWNS = ("礁溪", "烏來", "北投", "金山", "萬里", "淡水", "瑞芳", "九份", "羅東", "冬山", "頭城", "蘇澳", "大溪", "中正", "大安", "信義", "中山", "萬華", "板橋")
+_HOTEL_REAL_RATE_RE = re.compile(
+    r"雙人房|四人房|三人房|單人房|家庭房|套房|客房|房型|房價|包棟|住宿|每晚|／晚|/晚|湯屋|泡湯|大眾池|露天風呂|風呂|暖湯|定價|平日|假日|參考房價|2\s*人|雙人"
+)
+_HOTEL_NON_RATE_RE = re.compile(
+    r"加人|加床|加棉被|加枕頭|人頭費|延退|延遲退房|逾時|清潔費|押金|保證金|賠償|遺失|工本費|小孩滿|罰鍰|補助|折抵|獎助|優惠券|折扣|立減|現折|住宿券|餐券|蛋糕|甜點|停車|導覽|寵物|毛孩|體型|手續費|手績費|場地設備|USD|points",
+    re.I,
+)
+_ATTR_TICKET_RE = re.compile(r"全票|半票|門票|入園|入場|參觀|單程|來回|票價|優惠票|敬老票|兒童票|學生票|團體票|DIY|體驗")
+_ECOMMERCE_NOISE_RE = re.compile(r"0\s*個商品|免運|運費|購物金|建議售價|熱門商品|購物車|訂金|宅配|超取|爆米花|巧克力|乳液|蛋糕|熱銷組")
+_PRICE_NUM_RE = re.compile(r"(?:NT\$|\$)\s*([\d,]+)|([\d,]+)\s*元")
+
+
+def filter_opendata_price_lines(source, lines):
+    """Keep only genuine stay/spa rates or attraction tickets; reject e-commerce shipping, fines, and surcharges."""
+    kept = []
+    for line in lines:
+        nums = []
+        for m in _PRICE_NUM_RE.finditer(line):
+            raw = (m.group(1) or m.group(2) or "").replace(",", "")
+            if raw.isdigit():
+                nums.append(int(raw))
+        if source == "opendata_hotel":
+            if _HOTEL_NON_RATE_RE.search(line) or _ECOMMERCE_NOISE_RE.search(line):
+                continue
+            if not _HOTEL_REAL_RATE_RE.search(line):
+                continue
+            if not any(n >= 300 for n in nums):
+                continue
+            kept.append(line)
+        elif source == "opendata_attraction":
+            if _ECOMMERCE_NOISE_RE.search(line):
+                continue
+            if not _ATTR_TICKET_RE.search(line):
+                continue
+            if not any(n >= 10 for n in nums):
+                continue
+            kept.append(line)
+        else:
+            kept.append(line)
+    return kept
 
 
 def classify_taiwan_attraction(title, county):
@@ -392,12 +497,14 @@ def classify_taiwan_attraction(title, county):
     t = (title or "").strip()
     if not t or t.startswith("#") or any(s in t for s in SKIP_TITLES):
         return None
-    if any(k in t for k in ("老街", "夜市", "廟口")) or t in ("九份", "平溪", "烏來", "金山"):
+    if any(k in t for k in ("老街", "夜市", "廟口", "商圈", "花市", "紅樓")) or t in ("九份", "平溪", "烏來", "金山"):
         kind = "老街、小吃、夜市"
     elif any(k in t for k in BEACH_HINTS):
         kind = "海邊"
     elif any(k in t for k in TRAIL_HINTS):
         kind = "自然步道、看風景"
+    elif any(k in t for k in CULTURE_OPEN_HINTS):
+        kind = "其他"
     else:
         return None
     area = next((tok for tok in AREA_TOKENS if tok in t), county)
@@ -409,18 +516,155 @@ def classify_taiwan_attraction(title, county):
         area = "萬里"
     elif area == "富貴角":
         area = "石門"
-    elif area == "華西街":
+    elif area in ("華西街", "西門", "萬華"):
         area = "台北萬華"
     elif area == "貓空":
         area = "台北文山"
     elif area == "陽明山":
         area = "台北士林"
+    elif area in ("龍洞",):
+        area = "貢寮"
+    elif area in ("八斗子", "外木山"):
+        area = "基隆"
+    elif area == "南方澳":
+        area = "蘇澳"
     elif county == "宜蘭" and area == "大溪":
         area = "宜蘭頭城"
     return kind, area
 
 
-def crawl_taiwan_county(county, timeout=12, max_items=12, html_text=None):
+def _clean_https_url(raw):
+    url = (raw or "").strip()
+    if not url.startswith("https://") or len(url) > 300:
+        return None
+    low = url.lower()
+    if any(host in low for host in SOCIAL_HOSTS):
+        return None
+    return url
+
+
+def _opendata_area(postal, fallback_county):
+    city = (postal.get("City") or "").replace("臺", "台")
+    town = (postal.get("Town") or "").strip()
+    short_city = city.rstrip("縣市") or fallback_county
+    short_town = re.sub(r"[區鄉鎮市]$", "", town) if town else ""
+    if short_town in ("礁溪", "烏來", "北投", "金山", "萬里", "淡水", "瑞芳", "平溪", "貢寮", "三峽", "鶯歌", "深坑", "八里", "羅東", "蘇澳", "頭城", "冬山", "大溪", "士林", "石門", "三芝"):
+        return short_town
+    if short_town and short_town != short_city:
+        return f"{short_city}{short_town}"
+    return short_city
+
+
+def fetch_tourism_zip_json(url, timeout=30):
+    """Download a Taiwan Tourism Administration V2.1 JSON ZIP archive and return its record list."""
+    ctx = ssl.create_default_context()
+    if hasattr(ssl, "VERIFY_X509_STRICT"):
+        ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; hermes-travel-workflow/2.0)"})
+    raw = urllib.request.urlopen(req, timeout=timeout, context=ctx).read()
+    with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+        jnames = [n for n in zf.namelist() if n.lower().endswith(".json")]
+        if not jnames:
+            return []
+        data = json.loads(zf.read(jnames[0]).decode("utf-8-sig"))
+    for value in data.values():
+        if isinstance(value, list):
+            return value
+    return []
+
+
+def parse_opendata_attractions(items, counties, max_items=40, skip_urls=()):
+    """Extract live-verifiable HTTPS attractions from Tourism V2.1 AttractionList.json."""
+    target_cities = {}
+    for c in counties:
+        for city_name in OPENDATA_CITY_MAP.get(c, ()):
+            target_cities[city_name] = c.replace("臺", "台")
+    skip = set(skip_urls)
+    found, seen = [], set()
+    for rec in items:
+        if not isinstance(rec, dict):
+            continue
+        postal = rec.get("PostalAddress") or {}
+        city_key = postal.get("City") or ""
+        county = target_cities.get(city_key)
+        if not county:
+            continue
+        name = (rec.get("AttractionName") or "").strip()
+        url = _clean_https_url(rec.get("WebsiteURL"))
+        if not name or not url or url in skip or url in seen or "遊客中心" in name:
+            continue
+        seen.add(url)
+        if any(k in name for k in HOT_SPRING_HINTS):
+            kind = "溫泉"
+        elif any(k in name for k in ("老街", "夜市", "廟口", "商圈")):
+            kind = "老街、小吃、夜市"
+        elif any(k in name for k in BEACH_HINTS):
+            kind = "海邊"
+        elif any(k in name for k in (*TRAIL_HINTS, "森林", "山", "湖", "谷", "農場", "牧場", "生態")):
+            kind = "自然步道、看風景"
+        else:
+            kind = "其他"
+        fee_info = (rec.get("FeeInfo") or "").strip()
+        is_explicit_free = (rec.get("IsAccessibleForFree") in (1, True)
+                            and bool(re.search(r"免費|無門票|免收費", fee_info))
+                            and not re.search(r"\d+\s*元|NT\$", fee_info))
+        tels = [t.get("Tel", "").strip() for t in (rec.get("Telephones") or []) if isinstance(t, dict) and t.get("Tel")]
+        found.append({
+            "name": name,
+            "area": _opendata_area(postal, county),
+            "kind": kind,
+            "official": url,
+            "price_page": url,
+            "phone": tels[0] if tels else "",
+            "no_fee_listed": is_explicit_free,
+            "source": "opendata_attraction",
+        })
+        if len(found) >= max_items:
+            break
+    return found
+
+
+def parse_opendata_hotels(items, counties, max_items=60, skip_urls=()):
+    """Extract live-verifiable HTTPS legal hotels & hot-spring inns from Tourism V2.1 HotelList.json."""
+    target_cities = {}
+    for c in counties:
+        for city_name in OPENDATA_CITY_MAP.get(c, ()):
+            target_cities[city_name] = c.replace("臺", "台")
+    skip = set(skip_urls)
+    scored, seen = [], set()
+    for rec in items:
+        if not isinstance(rec, dict):
+            continue
+        postal = rec.get("PostalAddress") or {}
+        city_key = postal.get("City") or ""
+        county = target_cities.get(city_key)
+        if not county:
+            continue
+        name = (rec.get("HotelName") or "").strip()
+        url = _clean_https_url(rec.get("WebsiteURL"))
+        if not name or not url or url in skip or url in seen:
+            continue
+        seen.add(url)
+        desc = (rec.get("Description") or "")
+        is_hot_spring = any(k in name or k in desc[:200] for k in HOT_SPRING_HINTS)
+        area = _opendata_area(postal, county)
+        priority = (0 if is_hot_spring else 1, 0 if any(t in area for t in PRIORITY_TOWNS) else 1, name)
+        tels = [t.get("Tel", "").strip() for t in (rec.get("Telephones") or []) if isinstance(t, dict) and t.get("Tel")]
+        scored.append((priority, {
+            "name": name,
+            "area": area,
+            "kind": "溫泉" if is_hot_spring else "住宿",
+            "official": url,
+            "price_page": url,
+            "phone": tels[0] if tels else "",
+            "no_fee_listed": False,  # hotels MUST show live readable prices on their official site
+            "source": "opendata_hotel",
+        }))
+    scored.sort(key=lambda row: row[0])
+    return [item for _, item in scored[:max_items]]
+
+
+def crawl_taiwan_county(county, timeout=12, max_items=40, html_text=None):
     """Fetch official taiwan.net.tw county attraction list and return candidate dicts."""
     sno = TAIWAN_COUNTIES.get(county)
     if not sno:
@@ -485,6 +729,10 @@ def harvest(args):
             return f"讀取目錄檔 {catalog_path} 失敗：{exc}"
 
     # 2. Crawl official taiwan.net.tw regional attraction indexes in parallel
+    existing_places = read_places(args.places)
+    existing_urls = {p.get("price_page") for p in existing_places if p.get("price_page")}
+    already_probed = read_harvest_checked(args.places, max_age_days=30, now=args.now)
+
     if counties:
         with ThreadPoolExecutor(max_workers=min(5, len(counties))) as pool:
             crawled_groups = list(pool.map(
@@ -497,6 +745,31 @@ def harvest(args):
                     seen_urls.add(item["price_page"])
                     candidates_list.append(item)
 
+        # 2b. Official Taiwan Tourism Administration V2.1 Open Data (attractions + legal hotels/hot-spring inns)
+        use_opendata = getattr(args, "opendata", True) and not getattr(args, "html_file", None)
+        if use_opendata:
+            skip_opendata = seen_urls | existing_urls | already_probed
+            max_attr = getattr(args, "max_attractions", 40)
+            max_hot = getattr(args, "max_hotels", 60)
+            if max_attr > 0:
+                try:
+                    attr_items = fetch_tourism_zip_json(TOURISM_ATTRACTIONS_ZIP, timeout=max(20, args.timeout))
+                    for item in parse_opendata_attractions(attr_items, counties, max_items=max_attr, skip_urls=skip_opendata):
+                        if item["price_page"] not in seen_urls:
+                            seen_urls.add(item["price_page"])
+                            candidates_list.append(item)
+                except Exception as exc:
+                    print(f"觀光署景點開放資料暫時抓不到（略過）：{exc}", file=sys.stderr)
+            if max_hot > 0:
+                try:
+                    hotel_items = fetch_tourism_zip_json(TOURISM_HOTELS_ZIP, timeout=max(20, args.timeout))
+                    for item in parse_opendata_hotels(hotel_items, counties, max_items=max_hot, skip_urls=skip_opendata | seen_urls):
+                        if item["price_page"] not in seen_urls:
+                            seen_urls.add(item["price_page"])
+                            candidates_list.append(item)
+                except Exception as exc:
+                    print(f"觀光署旅宿開放資料暫時抓不到（略過）：{exc}", file=sys.stderr)
+
     if not candidates_list:
         return "沒有可抓的候選來源（請指定 --counties 或 --catalog）"
 
@@ -505,28 +778,40 @@ def harvest(args):
         found, err = read_page(item["price_page"], args)
         return item, found, err
 
-    with ThreadPoolExecutor(max_workers=min(6, len(candidates_list))) as pool:
+    with ThreadPoolExecutor(max_workers=min(10, len(candidates_list))) as pool:
         results = list(pool.map(verify_one, candidates_list))
 
-    places = read_places(args.places)
+    places = existing_places
     plan = load("format_plan", "format-plan.py")
     added, updated, skipped = [], [], []
+    probed_entries = []
 
     for item, found, err in results:
+        is_opendata = str(item.get("source") or "").startswith("opendata_")
         official_url = item.get("official") or item["price_page"]
         if not official_url.startswith("https://") or not item["price_page"].startswith("https://"):
             skipped.append(f"{item['name']}（非 https 網址，booking-links.py 不接受）")
+            if is_opendata:
+                probed_entries.append((item["price_page"], item["name"], "non_https"))
             continue
         if found is None:
             skipped.append(f"{item['name']}（{err}）")
+            if is_opendata:
+                probed_entries.append((item["price_page"], item["name"], "fetch_failed"))
             continue
         _title, lines, phones, free = found
+        if is_opendata:
+            lines = filter_opendata_price_lines(item.get("source"), lines)
         if not lines and not free and item.get("no_fee_listed"):
             free = "unlisted"
         if not lines and not free:
             skipped.append(f"{item['name']}（官網讀不到價格）")
+            if is_opendata:
+                probed_entries.append((item["price_page"], item["name"], "no_price"))
             continue
-        live_phone = (phones[0].split()[-1] if phones else "")
+        if is_opendata:
+            probed_entries.append((item["price_page"], item["name"], "ok"))
+        live_phone = (phones[0].split()[-1] if phones else "") or (item.get("phone") or "")
         place = {
             "name": item["name"].strip(),
             "area": item["area"].strip(),
@@ -567,6 +852,8 @@ def harvest(args):
 
     if not args.dry_run and (added or updated):
         write_places(args.places, places)
+    if not args.dry_run and probed_entries:
+        record_harvest_checked(args.places, probed_entries, today(args.now))
 
     by_kind = {}
     for p in places:
@@ -610,7 +897,11 @@ def main():
     harv.add_argument("--counties", default=",".join(DEFAULT_HARVEST_COUNTIES),
                       help="要抓的縣市，逗號分隔（例如 台北,新北,基隆,桃園,宜蘭，或 none 只跑目錄）")
     harv.add_argument("--catalog", help="精選官網 JSON 目錄（預設 scripts/places-catalog.json）")
-    harv.add_argument("--max-per-county", type=int, default=12)
+    harv.add_argument("--max-per-county", type=int, default=40)
+    harv.add_argument("--max-attractions", type=int, default=40, help="每次從觀光署 V2.1 景點開放資料最多驗證幾筆新 HTTPS 景點")
+    harv.add_argument("--max-hotels", type=int, default=60, help="每次從觀光署 V2.1 旅宿開放資料最多驗證幾間新 HTTPS 飯店／溫泉民宿")
+    harv.add_argument("--no-opendata", dest="opendata", action="store_false", default=True,
+                      help="停用觀光署 V2.1 開放資料（只跑精選目錄與 taiwan.net.tw 縣市頁）")
     harv.add_argument("--dry-run", action="store_true", help="只預覽結果，不改寫 places.db")
     mig = sub.add_parser("migrate", help="將舊版 places.json 遷移進 SQLite（places.db）")
     mig.add_argument("--from", dest="source", help="來源 places.json 路徑（預設與 --places 同目錄）")
