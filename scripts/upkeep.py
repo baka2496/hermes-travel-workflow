@@ -125,6 +125,8 @@ def upkeep(root, *, now=None, run=run_script, activity=last_activity, lock=Watch
     result = {"at": dt.datetime.fromtimestamp(now or clock()).isoformat(timespec="seconds")}
     code, text = run("places.py", "harvest")
     result["harvest"] = {"ok": code == 0, "summary": text}
+    d_code, d_text = run("places.py", "discover")
+    result["discover"] = {"ok": d_code == 0, "summary": d_text}
     # The time after the harvest: someone may have written meanwhile (Antigravity's review: idle came out negative).
     idle = max(0.0, ((now or clock()) - activity(root)) / 60)
     if idle < ACTIVE_MINUTES:
@@ -147,7 +149,9 @@ def record(root, result):
     folder = Path(root) / "shared" / "travel-workflow"
     (folder / "upkeep-last.json").write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
     lines = [f"===== {result['at']}"]
-    for part in ("harvest", "maintain"):
+    for part in ("harvest", "discover", "maintain"):
+        if part not in result:
+            continue
         info = result.get(part, {})
         lines.append(f"[{part}] " + ("OK" if info.get("ok") else "略過" if info.get("skipped") else "失敗"))
         lines.append(info.get("skipped") or info.get("summary") or "")
