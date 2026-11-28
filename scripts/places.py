@@ -838,6 +838,8 @@ DISCOVER_BLOCKED_HOSTS = (
     "pchome.com.tw", "books.com.tw", "ruten.com.tw", "costco.com.tw", "funnow.com",
     "myfunnow.com", "niceday.tw", "accupass.com", "ibon.com.tw",
 )
+_GOV_PORTAL_HOST_RE = re.compile(r"^(?:tour|travel|tourism)\.[^.]+\.gov\.tw$")
+_GOV_PORTAL_TITLE_RE = re.compile(r"市政府|縣政府|旅遊網|觀光網|觀光導覽|新聞稿|市政新聞|最新公告")
 _LISTICLE_TITLE_RE = re.compile(
     r"\d+\s*[間家個處大選]|推薦|懶人包|總整理|精選|必去|必住|必泡|排名|TOP\s*\d+|攻略|評比|心得|開箱|住宿券|團購|折價券|優惠碼|代訂|比價|區飯店|飯店[，,]\s*\$|住宿[，,]\s*\$",
     re.I,
@@ -939,6 +941,8 @@ def is_official_venue_url(url, title=""):
         return False
     if any(host == bad or host.endswith("." + bad) for bad in DISCOVER_BLOCKED_HOSTS):
         return False
+    if _GOV_PORTAL_HOST_RE.match(host):
+        return False
     if host.endswith((".jp", ".kr", ".cn", ".hk", ".mo")):
         return False
     path = (parsed.path or "").lower()
@@ -946,6 +950,8 @@ def is_official_venue_url(url, title=""):
         return False
     t = (title or "").strip()
     if t and (_LISTICLE_TITLE_RE.search(t) or _FOREIGN_TITLE_RE.search(t) or t.count("。") >= 2):
+        return False
+    if host.endswith(".gov.tw") and t and _GOV_PORTAL_TITLE_RE.search(t):
         return False
     return True
 
@@ -1015,7 +1021,20 @@ _ADDRESS_SNIPPET_RE = re.compile(r"(?:地址|位於|位在|交通位置|ADD|ADDR
 _TW_FULL_ADDR_RE = re.compile(
     r"(?:台|臺)(?:北|中|南|東)市[\u4e00-\u9fff]{1,4}[區鄉鎮市]|(?:新北|基隆|桃園|新竹|苗栗|彰化|南投|雲林|嘉義|高雄|屏東|宜蘭|花蓮|澎湖|金門)[縣市][\u4e00-\u9fff]{1,4}[區鄉鎮市]"
 )
-_OFF_NORTH_PHONE_RE = re.compile(r"\b(?:0[45678][-\s]?\d|03[-\s]?8\d|037[-\s]?\d|049[-\s]?\d|089[-\s]?\d)")
+_TOLL_FREE_PHONE_RE = re.compile(r"^\(?080[09]\)?")
+_OFF_NORTH_PHONE_START_RE = re.compile(r"^(?:\(?0(?:[4567]|37|49|89)\)?|\(?08\)?(?!0[09])|\(?03\)?[-\s]?8)[-\s]?\d")
+
+
+def _has_off_north_phone(phones):
+    """True only when a phone number STARTS with a non-northern Taiwan area code (never matching middle digits or 0800)."""
+    for raw in phones or ():
+        for tok in re.split(r"[\s,、/／]+", str(raw or "").strip()):
+            cleaned = tok.strip()
+            if not cleaned or _TOLL_FREE_PHONE_RE.match(cleaned):
+                continue
+            if _OFF_NORTH_PHONE_START_RE.match(cleaned):
+                return True
+    return False
 
 
 def _read_page_text(args, url):
@@ -1029,9 +1048,8 @@ def _verify_discovered_area(name, raw_title, page_text, phones, default_area):
     title_block = f"{name} {raw_title}"
     addr_parts = _ADDRESS_SNIPPET_RE.findall(page_text or "") + _TW_FULL_ADDR_RE.findall(page_text or "")
     addr_hits = " ".join(addr_parts)
-    # 1. Phone area code is ONLY used to exclude mismatched regions (never to confirm a district)
-    phone_str = " ".join(phones or ())
-    if not _OFF_NORTH_AREA_RE.search(default_area) and _OFF_NORTH_PHONE_RE.search(phone_str):
+    # 1. Phone area code is ONLY used to exclude mismatched regions (checked at phone start, excluding 0800/0809)
+    if not _OFF_NORTH_AREA_RE.search(default_area) and _has_off_north_phone(phones):
         return None
     # 2. Reject if title or explicit address clearly points outside northern Taiwan
     if not _OFF_NORTH_AREA_RE.search(default_area):
@@ -1181,7 +1199,13 @@ def discover(args):
             skipped.append(f"{name}（含聯盟推廣碼，疑似部落格文章）")
             probed_entries.append((url, name, "affiliate_blog"))
             continue
-        page_text = _read_page_text(args, url)
+        try:
+            page_text = _read_page_text(args, url)
+        except Exception as exc:
+            print(f"讀取 {name} 頁面快取失敗（略過該筆）：{exc}", file=sys.stderr)
+            skipped.append(f"{name}（頁面快取讀取失敗）")
+            probed_entries.append((url, name, "cache_error"))
+            continue
         area = _verify_discovered_area(name, raw_title, page_text, phones, item["default_area"])
         if not area:
             skipped.append(f"{name}（頁面未確認目標地區或位於其他縣市）")
