@@ -235,14 +235,16 @@ def write_places(path, places):
 
 
 def read_harvest_checked(path, max_age_days=30, now=None):
-    """Return URLs already probed by Open Data harvest within max_age_days (SQLite only)."""
+    """Return non-ok URLs already probed by Open Data harvest within max_age_days (SQLite only)."""
     path = Path(path)
     if not is_sqlite_path(path) or not path.exists():
         return set()
-    cutoff = (dt.date.fromtimestamp(now or time.time()) - dt.timedelta(days=max_age_days)).isoformat()
+    cutoff = (dt.date.fromisoformat(today(now)) - dt.timedelta(days=max_age_days)).isoformat()
     con = _open_places_db(path)
     try:
-        rows = con.execute("SELECT url FROM harvest_checked WHERE checked_at >= ?", (cutoff,)).fetchall()
+        rows = con.execute(
+            "SELECT url FROM harvest_checked WHERE outcome != 'ok' AND checked_at >= ?", (cutoff,)
+        ).fetchall()
         return {r["url"] for r in rows if r["url"]}
     finally:
         con.close()
@@ -418,9 +420,10 @@ TAIWAN_COUNTIES = {
 DEFAULT_HARVEST_COUNTIES = ("台北", "新北", "基隆", "桃園", "宜蘭")
 OLD_STREET_HINTS = ("老街", "夜市", "廟口", "商圈", "花市", "紅樓", "九份", "平溪", "烏來", "金山", "淡水", "深坑", "三峽", "鶯歌", "大溪老街")
 BEACH_HINTS = ("海濱", "漁港", "漁人碼頭", "燈塔", "左岸", "蜜月灣", "沙灘", "海岸", "潮境", "富貴角", "淺水灣", "白沙灣", "金色水岸",
-               "海潮", "奇岩", "石門洞", "南方澳", "基隆港", "基隆嶼", "海洋公園", "藍色公路", "碼頭")
+               "海潮", "奇岩", "石門洞", "南方澳", "基隆港", "基隆嶼", "海洋公園")
 TRAIL_HINTS = ("步道", "瀑布", "國家公園", "茶園", "風景特定區", "風景區", "擎天崗", "冷水坑", "象山", "自然保留區", "運動公園",
-               "親水公園", "植物園", "自然中心", "水庫", "梯田", "綠色走廊", "公園", "露營區", "慈湖", "砲臺", "砲台", "綠園", "地質區")
+               "親水公園", "植物園", "自然中心", "水庫", "梯田", "綠色走廊", "公園", "露營區", "慈湖", "砲臺", "砲台", "綠園", "地質區",
+               "碼頭", "藍色公路")
 CULTURE_OPEN_HINTS = ("紀念堂", "忠烈祠", "龍山寺", "保安宮", "行天宮", "城隍廟", "孔廟", "指南宮", "法鼓山", "祖師廟",
                       "慈祐宮", "青山宮", "關渡宮", "王公廟", "天公廟", "昭應宮", "書院")
 SKIP_TITLES = ("遊客中心", "水上運動中心", "溫泉", "博物館", "美術館", "紀念館", "文化館", "森林遊樂區", "地質公園", "海水浴場", "官邸", "樂園")
@@ -449,6 +452,8 @@ OPENDATA_CITY_MAP = {
 }
 SOCIAL_HOSTS = ("facebook.com", "fb.com", "instagram.com", "line.me", "youtube.com", "youtu.be", "twitter.com", "x.com")
 HOT_SPRING_HINTS = ("溫泉", "湯屋", "冷泉", "湯泉", "湯旅", "湯宿", "溫泉會館", "溫泉飯店")
+HOT_SPRING_DESC_FACILITY_RE = re.compile(r"館內溫泉|附設湯屋|專屬湯屋|私人湯屋|露天風呂|大眾湯池|獨立湯屋|客房內泡湯")
+AMBIGUOUS_DISTRICTS = ("中正", "中山", "信義", "大安", "松山", "大同")
 PRIORITY_TOWNS = ("礁溪", "烏來", "北投", "金山", "萬里", "淡水", "瑞芳", "九份", "羅東", "冬山", "頭城", "蘇澳", "大溪", "中正", "大安", "信義", "中山", "萬華", "板橋")
 _HOTEL_REAL_RATE_RE = re.compile(
     r"雙人房|四人房|三人房|單人房|家庭房|套房|客房|房型|房價|包棟|住宿|每晚|／晚|/晚|湯屋|泡湯|大眾池|露天風呂|風呂|暖湯|定價|平日|假日|參考房價|2\s*人|雙人"
@@ -530,6 +535,8 @@ def classify_taiwan_attraction(title, county):
         area = "蘇澳"
     elif county == "宜蘭" and area == "大溪":
         area = "宜蘭頭城"
+    elif area in AMBIGUOUS_DISTRICTS:
+        area = f"{county.replace('臺', '台')}{area}"
     return kind, area
 
 
@@ -606,8 +613,8 @@ def parse_opendata_attractions(items, counties, max_items=40, skip_urls=()):
             kind = "其他"
         fee_info = (rec.get("FeeInfo") or "").strip()
         is_explicit_free = (rec.get("IsAccessibleForFree") in (1, True)
-                            and bool(re.search(r"免費|無門票|免收費", fee_info))
-                            and not re.search(r"\d+\s*元|NT\$", fee_info))
+                            and bool(re.search(r"免費入園|免費入場|免費參觀|全館免費|無門票|免門票|免收費", fee_info))
+                            and not re.search(r"\d+\s*元|NT\$|另計|另收|部分|停車", fee_info))
         tels = [t.get("Tel", "").strip() for t in (rec.get("Telephones") or []) if isinstance(t, dict) and t.get("Tel")]
         found.append({
             "name": name,
@@ -646,7 +653,7 @@ def parse_opendata_hotels(items, counties, max_items=60, skip_urls=()):
             continue
         seen.add(url)
         desc = (rec.get("Description") or "")
-        is_hot_spring = any(k in name or k in desc[:200] for k in HOT_SPRING_HINTS)
+        is_hot_spring = any(k in name for k in HOT_SPRING_HINTS) or bool(HOT_SPRING_DESC_FACILITY_RE.search(desc[:200]))
         area = _opendata_area(postal, county)
         priority = (0 if is_hot_spring else 1, 0 if any(t in area for t in PRIORITY_TOWNS) else 1, name)
         tels = [t.get("Tel", "").strip() for t in (rec.get("Telephones") or []) if isinstance(t, dict) and t.get("Tel")]
@@ -730,7 +737,11 @@ def harvest(args):
 
     # 2. Crawl official taiwan.net.tw regional attraction indexes in parallel
     existing_places = read_places(args.places)
-    existing_urls = {p.get("price_page") for p in existing_places if p.get("price_page")}
+    # Only skip recently verified places (<7 days) so older open-data entries still get refreshed weekly
+    existing_fresh_urls = {
+        p.get("price_page") for p in existing_places
+        if p.get("price_page") and age_days(p, args.now) < 7
+    }
     already_probed = read_harvest_checked(args.places, max_age_days=30, now=args.now)
 
     if counties:
@@ -748,7 +759,7 @@ def harvest(args):
         # 2b. Official Taiwan Tourism Administration V2.1 Open Data (attractions + legal hotels/hot-spring inns)
         use_opendata = getattr(args, "opendata", True) and not getattr(args, "html_file", None)
         if use_opendata:
-            skip_opendata = seen_urls | existing_urls | already_probed
+            skip_opendata = seen_urls | existing_fresh_urls | already_probed
             max_attr = getattr(args, "max_attractions", 40)
             max_hot = getattr(args, "max_hotels", 60)
             if max_attr > 0:

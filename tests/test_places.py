@@ -336,6 +336,10 @@ class PlacesSqliteTests(unittest.TestCase):
         self.assertEqual(mod.classify_taiwan_attraction("冬山河親水公園", "宜蘭"), ("自然步道、看風景", "冬山"))
         self.assertEqual(mod.classify_taiwan_attraction("南方澳", "宜蘭"), ("海邊", "蘇澳"))
         self.assertEqual(mod.classify_taiwan_attraction("臺北龍山寺", "台北"), ("其他", "台北"))
+        # Regression (Claude review): riverside wharves are NOT beaches; ambiguous districts keep county prefix
+        self.assertNotEqual(mod.classify_taiwan_attraction("大稻埕碼頭", "台北")[0], "海邊")
+        self.assertEqual(mod.classify_taiwan_attraction("中正紀念堂", "台北"), ("其他", "台北中正"))
+        self.assertEqual(mod.classify_taiwan_attraction("中正公園", "基隆"), ("自然步道、看風景", "基隆中正"))
 
         # Tourism V2.1 Attraction parser: enforces HTTPS, skips social links, never guesses paid spots as free
         attr_items = [
@@ -343,6 +347,8 @@ class PlacesSqliteTests(unittest.TestCase):
              "WebsiteURL": "https://iocean.nmmst.gov.tw/", "IsAccessibleForFree": 1, "FeeInfo": "全票300元"},
             {"AttractionName": "菌寶貝博物館", "PostalAddress": {"City": "宜蘭縣", "Town": "宜蘭市"},
              "WebsiteURL": "https://www.junbaby.com.tw/", "IsAccessibleForFree": 1, "FeeInfo": "全館免費入場"},
+            {"AttractionName": "免費停車另計園區", "PostalAddress": {"City": "新北市", "Town": "瑞芳區"},
+             "WebsiteURL": "https://park.example/", "IsAccessibleForFree": 1, "FeeInfo": "免費停車，門票另計"},
             {"AttractionName": "臉書粉專景點", "PostalAddress": {"City": "新北市", "Town": "瑞芳區"},
              "WebsiteURL": "https://www.facebook.com/foo", "IsAccessibleForFree": 1, "FeeInfo": "免費"},
             {"AttractionName": "南部景點", "PostalAddress": {"City": "高雄市", "Town": "左營區"},
@@ -350,37 +356,87 @@ class PlacesSqliteTests(unittest.TestCase):
         ]
         parsed_attr = mod.parse_opendata_attractions(attr_items, ["基隆", "宜蘭", "新北"])
         by_name = {x["name"]: x for x in parsed_attr}
-        self.assertEqual(set(by_name), {"潮境智能海洋館", "菌寶貝博物館"})
+        self.assertEqual(set(by_name), {"潮境智能海洋館", "菌寶貝博物館", "免費停車另計園區"})
         self.assertFalse(by_name["潮境智能海洋館"]["no_fee_listed"])  # FeeInfo has 300元 -> must read live price
         self.assertTrue(by_name["菌寶貝博物館"]["no_fee_listed"])     # explicit free with no price
+        self.assertFalse(by_name["免費停車另計園區"]["no_fee_listed"])  # "免費停車，門票另計" must NOT count as free
 
         # Tourism V2.1 Hotel parser: prioritizes hot springs, enforces no_fee_listed=False, respects skip_urls
         hotel_items = [
             {"HotelName": "一般商旅", "PostalAddress": {"City": "桃園市", "Town": "中壢區"},
              "WebsiteURL": "https://biz.example/", "Description": "商務住宿"},
+            {"HotelName": "礁溪小旅宿", "PostalAddress": {"City": "宜蘭縣", "Town": "礁溪鄉"},
+             "WebsiteURL": "https://near-spa.example/", "Description": "鄰近礁溪溫泉區步行5分鐘即可抵達"},
             {"HotelName": "礁溪溫泉飯店", "PostalAddress": {"City": "宜蘭縣", "Town": "礁溪鄉"},
-             "WebsiteURL": "https://spa.example/", "Description": "美人湯溫泉湯屋"},
+             "WebsiteURL": "https://spa.example/", "Description": "館內溫泉與附設湯屋"},
             {"HotelName": "已測過旅館", "PostalAddress": {"City": "臺北市", "Town": "中正區"},
              "WebsiteURL": "https://checked.example/", "Description": "飯店"},
             {"HotelName": "HTTP舊站", "PostalAddress": {"City": "新北市", "Town": "淡水區"},
              "WebsiteURL": "http://insecure.example/", "Description": "飯店"},
         ]
         parsed_hot = mod.parse_opendata_hotels(hotel_items, ["桃園", "宜蘭", "台北", "新北"], skip_urls={"https://checked.example/"})
-        self.assertEqual([x["name"] for x in parsed_hot], ["礁溪溫泉飯店", "一般商旅"])
-        self.assertEqual(parsed_hot[0]["kind"], "溫泉")
-        self.assertEqual(parsed_hot[0]["area"], "礁溪")
-        self.assertFalse(parsed_hot[0]["no_fee_listed"])
-        self.assertEqual(parsed_hot[1]["kind"], "住宿")
-        self.assertFalse(parsed_hot[1]["no_fee_listed"])
+        by_h = {x["name"]: x for x in parsed_hot}
+        self.assertEqual(parsed_hot[0]["name"], "礁溪溫泉飯店")
+        self.assertEqual(by_h["礁溪溫泉飯店"]["kind"], "溫泉")
+        self.assertEqual(by_h["礁溪溫泉飯店"]["area"], "礁溪")
+        # Mentioning "鄰近礁溪溫泉區" in description must NOT tag a plain hotel as 溫泉
+        self.assertEqual(by_h["礁溪小旅宿"]["kind"], "住宿")
+        self.assertEqual(by_h["一般商旅"]["kind"], "住宿")
+        self.assertFalse(by_h["一般商旅"]["no_fee_listed"])
 
-        # harvest_checked remembers probed URLs for 30 days and expires older ones
+        # harvest_checked remembers non-ok URLs for 30 days, expires older ones, and lets ok URLs refresh
         mod.write_places(self.db, [])
+        mod.record_harvest_checked(self.db, [
+            ("https://old.example/", "舊站", "no_price"),
+            ("https://recent.example/", "近站", "no_price"),
+            ("https://ok.example/", "成功站", "ok"),
+        ], "2026-11-25")
         mod.record_harvest_checked(self.db, [("https://old.example/", "舊站", "no_price")], "2026-09-01")
-        mod.record_harvest_checked(self.db, [("https://recent.example/", "近站", "no_price")], "2026-11-25")
         now_ts = time.mktime((2026, 11, 28, 12, 0, 0, 0, 0, -1))
         checked = mod.read_harvest_checked(self.db, max_age_days=30, now=now_ts)
         self.assertIn("https://recent.example/", checked)
         self.assertNotIn("https://old.example/", checked)
+        self.assertNotIn("https://ok.example/", checked)
+
+        # End-to-end harvest() flow with mocked Open Data ZIP + live reader: verifies dry-run, --no-opendata, and harvest_checked persistence
+        from types import SimpleNamespace
+        from unittest import mock
+
+        mock_hotels = [
+            {"HotelName": "真房價飯店", "PostalAddress": {"City": "宜蘭縣", "Town": "礁溪鄉"},
+             "WebsiteURL": "https://good-stay.example/", "Description": "溫泉套房"},
+            {"HotelName": "無價飯店", "PostalAddress": {"City": "宜蘭縣", "Town": "礁溪鄉"},
+             "WebsiteURL": "https://no-price-stay.example/", "Description": "民宿"},
+        ]
+        def fake_fetch_zip(url, timeout=30):
+            return [] if "Attraction" in url else mock_hotels
+
+        def fake_read_page(url, args):
+            if url == "https://good-stay.example/":
+                return ("真房價飯店", ["暖陽雙人房｜NT$ 3,600 起／晚"], ["03-988-0001"], False), None
+            return ("無價飯店", ["加床，平日$800元/人"], [], False), None
+
+        empty_cat = self.root / "empty-cat.json"
+        empty_cat.write_text('{"places": []}', encoding="utf-8")
+        base_args = dict(
+            places=self.db, history=self.history, hermes_root=self.root,
+            html_file=None, now=now_ts, timeout=5, counties="宜蘭",
+            catalog=str(empty_cat), max_per_county=5, max_attractions=5, max_hotels=5,
+        )
+        with mock.patch.object(mod, "crawl_taiwan_county", return_value=[]), \
+             mock.patch.object(mod, "fetch_tourism_zip_json", side_effect=fake_fetch_zip), \
+             mock.patch.object(mod, "read_page", side_effect=fake_read_page):
+            # 1. --dry-run writes neither places nor harvest_checked
+            self.assertIsNone(mod.harvest(SimpleNamespace(**base_args, opendata=True, dry_run=True)))
+            self.assertEqual(mod.read_places(self.db), [])
+            self.assertNotIn("https://no-price-stay.example/", mod.read_harvest_checked(self.db, now=now_ts))
+            # 2. --no-opendata skips Open Data completely
+            self.assertIsNotNone(mod.harvest(SimpleNamespace(**base_args, opendata=False, dry_run=False)))
+            # 3. Real harvest persists good-stay in places and records no-price-stay in harvest_checked
+            self.assertIsNone(mod.harvest(SimpleNamespace(**base_args, opendata=True, dry_run=False)))
+            saved = mod.read_places(self.db)
+            self.assertEqual([p["name"] for p in saved], ["真房價飯店"])
+            self.assertIn("https://no-price-stay.example/", mod.read_harvest_checked(self.db, now=now_ts))
 
         # Quality filter rejects hotel surcharges/fines/subsidies and souvenir-shop shipping/cart prices
         self.assertEqual(
