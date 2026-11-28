@@ -464,18 +464,23 @@ _HOTEL_NON_RATE_RE = re.compile(
 )
 _ATTR_TICKET_RE = re.compile(r"全票|半票|門票|入園|入場|參觀|單程|來回|票價|優惠票|敬老票|兒童票|學生票|團體票|DIY|體驗")
 _ECOMMERCE_NOISE_RE = re.compile(r"0\s*個商品|免運|運費|購物金|建議售價|熱門商品|購物車|訂金|宅配|超取|爆米花|巧克力|乳液|蛋糕|熱銷組")
-_PRICE_NUM_RE = re.compile(r"(?:NT\$|\$)\s*([\d,]+)|([\d,]+)\s*元")
+
+
+def _extract_amounts(text):
+    tm = load("travel_money", "travel_money.py")
+    nums = []
+    for tok in tm.PRICE.findall(text or ""):
+        digits = re.sub(r"\D", "", tok)
+        if digits:
+            nums.append(int(digits))
+    return nums
 
 
 def filter_opendata_price_lines(source, lines):
     """Keep only genuine stay/spa rates or attraction tickets; reject e-commerce shipping, fines, and surcharges."""
     kept = []
     for line in lines:
-        nums = []
-        for m in _PRICE_NUM_RE.finditer(line):
-            raw = (m.group(1) or m.group(2) or "").replace(",", "")
-            if raw.isdigit():
-                nums.append(int(raw))
+        nums = _extract_amounts(line)
         if source == "opendata_hotel":
             if _HOTEL_NON_RATE_RE.search(line) or _ECOMMERCE_NOISE_RE.search(line):
                 continue
@@ -614,7 +619,8 @@ def parse_opendata_attractions(items, counties, max_items=40, skip_urls=()):
         fee_info = (rec.get("FeeInfo") or "").strip()
         is_explicit_free = (rec.get("IsAccessibleForFree") in (1, True)
                             and bool(re.search(r"免費入園|免費入場|免費參觀|全館免費|無門票|免門票|免收費", fee_info))
-                            and not re.search(r"\d+\s*元|NT\$|另計|另收|部分|停車", fee_info))
+                            and not _extract_amounts(fee_info)
+                            and not re.search(r"另計|另收|部分|停車", fee_info))
         tels = [t.get("Tel", "").strip() for t in (rec.get("Telephones") or []) if isinstance(t, dict) and t.get("Tel")]
         found.append({
             "name": name,
