@@ -28,7 +28,9 @@ class UpkeepTests(unittest.TestCase):
 
         def run(name, *args):
             self.calls.append((name, args, bool(self.locked)))
-            return codes.get(name, 0), f"{name} done"
+            key = f"{name} {args[0]}" if args else name
+            code = codes.get(key, codes.get(name, 0))
+            return code, f"{key} done"
 
         @contextlib.contextmanager
         def lock():
@@ -43,19 +45,31 @@ class UpkeepTests(unittest.TestCase):
 
     def test_harvest_first_then_cleanup_inside_the_watchdog_lock(self):
         result = self.run_upkeep(NOW - 3600)
-        self.assertEqual([c[0] for c in self.calls], ["places.py", "db-maintain.py"])
+        self.assertEqual([c[0] for c in self.calls], ["places.py", "places.py", "db-maintain.py"])
         self.assertEqual(self.calls[0][1], ("harvest",))
         self.assertFalse(self.calls[0][2])  # harvest needs no gateway stop
-        self.assertTrue(self.calls[1][2])  # cleanup holds the watchdog off
-        self.assertIn("--apply", self.calls[1][1])
-        self.assertIn("--archive-pages", self.calls[1][1])  # moved, never deleted
-        self.assertFalse(any("prune" in a for a in self.calls[1][1]))  # every conversation kept
-        self.assertTrue(result["harvest"]["ok"] and result["maintain"]["ok"])
+        self.assertEqual(self.calls[1][1], ("discover",))
+        self.assertFalse(self.calls[1][2])  # discover needs no gateway stop
+        self.assertTrue(self.calls[2][2])  # cleanup holds the watchdog off
+        self.assertIn("--apply", self.calls[2][1])
+        self.assertIn("--archive-pages", self.calls[2][1])  # moved, never deleted
+        self.assertFalse(any("prune" in a for a in self.calls[2][1]))  # every conversation kept
+        self.assertTrue(result["harvest"]["ok"] and result["discover"]["ok"] and result["maintain"]["ok"])
 
     def test_someone_talking_to_a_bot_skips_the_cleanup(self):
         result = self.run_upkeep(NOW - 5 * 60)
-        self.assertEqual([c[0] for c in self.calls], ["places.py"])
+        self.assertEqual([c[0] for c in self.calls], ["places.py", "places.py"])
         self.assertIn("這週不清理", result["maintain"]["skipped"])
+
+    def test_failed_discover_is_logged_without_blocking_cleanup(self):
+        result = self.run_upkeep(NOW - 3600, codes={"places.py discover": 1})
+        self.assertTrue(result["harvest"]["ok"])
+        self.assertFalse(result["discover"]["ok"])
+        self.assertTrue(result["maintain"]["ok"])
+        upkeep.record(self.root, result)
+        log = (self.root / "shared/travel-workflow/upkeep-log.txt").read_text(encoding="utf-8")
+        self.assertIn("[discover] 失敗", log)
+        self.assertIn("[maintain] OK", log)
 
     def test_the_lock_not_coming_skips_the_cleanup(self):
         def busy():
